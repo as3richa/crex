@@ -11,7 +11,7 @@ int main(void) {
 
   crex_debug_lex(regex_str, regex_length);
 
-  fputs("\n", stderr);
+  fputc('\n', stderr);
 
   crex_debug_parse(regex_str, regex_length);
 

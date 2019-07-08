@@ -2,6 +2,8 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+#include "crex.h"
+
 #ifdef __GNUC__
 #define WARN_UNUSED_RESULT __attribute__((warn_unused_result))
 #else
@@ -149,6 +151,15 @@ static inline int lex(token_t *result, const char **str, const char *eof) {
         result->data.character = byte;
         break;
 
+      case 'd':
+      case 'D':
+      case 's':
+      case 'S':
+      case 'w':
+      case 'W':
+        assert(0 && "FIXME");
+        break;
+
       default:
         assert(0 && "FIXME");
       }
@@ -213,25 +224,32 @@ typedef struct {
   operator_t *data;
 } operator_stack_t;
 
-static inline int push_tree(tree_stack_t *trees, parsetree_t *tree) WARN_UNUSED_RESULT;
-static inline int push_empty(tree_stack_t *trees) WARN_UNUSED_RESULT;
-// static inline void destroy_tree_stack(tree_stack_t* trees)
-// WARN_UNUSED_RESULT;
+static inline void free_parsetree(parsetree_t *tree);
 
-static inline int
-push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator)
-    WARN_UNUSED_RESULT;
-static inline int pop_operator(tree_stack_t *trees, operator_stack_t *operators) WARN_UNUSED_RESULT;
-// static inline void destroy_operator_stack(operator_stack_t* operators)
-// WARN_UNUSED_RESULT;
+WARN_UNUSED_RESULT static inline int push_tree(tree_stack_t *trees, parsetree_t *tree);
+WARN_UNUSED_RESULT static inline int push_empty(tree_stack_t *trees);
+static inline void free_tree_stack(tree_stack_t *trees);
 
-parsetree_t *parse(const char *str, size_t length) {
+WARN_UNUSED_RESULT static inline int
+push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator);
+WARN_UNUSED_RESULT static inline int pop_operator(tree_stack_t *trees, operator_stack_t *operators);
+
+crex_status_t parse(parsetree_t **result, const char *str, size_t length) {
   const char *eof = str + length;
 
   tree_stack_t trees = {0, 0, NULL};
   operator_stack_t operators = {0, 0, NULL};
 
-  assert(push_empty(&trees) && "FIXME");
+#define CHECK_ERRORS(condition, code)                                                              \
+  do {                                                                                             \
+    if (!(condition)) {                                                                            \
+      free_tree_stack(&trees);                                                                     \
+      free(operators.data);                                                                        \
+      return code;                                                                                 \
+    }                                                                                              \
+  } while (0)
+
+  CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
 
   token_t token;
 
@@ -241,10 +259,10 @@ parsetree_t *parse(const char *str, size_t length) {
     case TT_ANCHOR: {
       operator_t operator;
       operator.type = PT_CONCATENATION;
-      assert(push_operator(&trees, &operators, &operator) && "FIXME");
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
 
       parsetree_t *tree = malloc(sizeof(parsetree_t));
-      assert(tree != NULL && "FIXME");
+      CHECK_ERRORS(tree != NULL, CREX_E_NOMEM);
 
       if (token.type == TT_CHARACTER) {
         tree->data.character = token.data.character;
@@ -252,7 +270,7 @@ parsetree_t *parse(const char *str, size_t length) {
         tree->data.anchor_type = token.data.anchor_type;
       }
 
-      assert(push_tree(&trees, tree) && "FIXME");
+      CHECK_ERRORS(push_tree(&trees, tree), CREX_E_NOMEM);
 
       break;
     }
@@ -260,8 +278,8 @@ parsetree_t *parse(const char *str, size_t length) {
     case TT_PIPE: {
       operator_t operator;
       operator.type = PT_ALTERNATION;
-      assert(push_operator(&trees, &operators, &operator) && "FIXME");
-      assert(push_empty(&trees) && "FIXME");
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
+      CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
       break;
     }
 
@@ -270,21 +288,21 @@ parsetree_t *parse(const char *str, size_t length) {
       operator.type = PT_REPETITION;
       operator.repetition.lower_bound = token.data.repetition.lower_bound;
       operator.repetition.upper_bound = token.data.repetition.upper_bound;
-      assert(push_operator(&trees, &operators, &operator) && "FIXME");
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
       break;
     }
 
     case TT_QUESTION_MARK: {
       operator_t operator;
       operator.type = PT_QUESTION_MARK;
-      assert(push_operator(&trees, &operators, &operator) && "FIXME");
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
       break;
     }
 
     case TT_OPEN_PAREN: {
       operator_t operator;
       operator.type = PT_GROUP;
-      assert(push_operator(&trees, &operators, &operator) && "FIXME");
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
       break;
     }
 
@@ -293,14 +311,12 @@ parsetree_t *parse(const char *str, size_t length) {
         if (operators.data[operators.size - 1].type == PT_GROUP) {
           break;
         }
-        assert(pop_operator(&trees, &operators) && "FIXME");
+
+        CHECK_ERRORS(pop_operator(&trees, &operators), CREX_E_NOMEM);
       }
 
-      if (operators.size == 0) {
-        assert(0 && "FIXME");
-      }
-
-      assert(pop_operator(&trees, &operators) && "FIXME");
+      CHECK_ERRORS(operators.size > 0, CREX_E_UNMATCHED_CLOSE_PAREN);
+      CHECK_ERRORS(pop_operator(&trees, &operators), CREX_E_NOMEM);
 
       break;
 
@@ -310,16 +326,47 @@ parsetree_t *parse(const char *str, size_t length) {
   }
 
   while (operators.size > 0) {
-    if (operators.data[operators.size - 1].type == PT_GROUP) {
-      break;
-    }
-
-    assert(pop_operator(&trees, &operators) && "FIXME");
+    CHECK_ERRORS(operators.data[operators.size - 1].type != PT_GROUP, CREX_E_UNMATCHED_OPEN_PAREN);
+    CHECK_ERRORS(pop_operator(&trees, &operators), CREX_E_NOMEM);
   }
 
   assert(trees.size == 1);
 
-  return trees.data[0];
+  (*result) = trees.data[0];
+
+  free(trees.data);
+  free(operators.data);
+
+  return CREX_OK;
+}
+
+static inline void free_parsetree(parsetree_t *tree) {
+  switch (tree->type) {
+  case PT_EMPTY:
+  case PT_CHARACTER:
+  case PT_ANCHOR:
+    break;
+
+  case PT_CONCATENATION:
+  case PT_ALTERNATION:
+    free_parsetree(tree->data.children[0]);
+    free_parsetree(tree->data.children[1]);
+    break;
+
+  case PT_REPETITION:
+    free_parsetree(tree->data.repetition.child);
+    break;
+
+  case PT_QUESTION_MARK:
+  case PT_GROUP:
+    free_parsetree(tree->data.child);
+    break;
+
+  default:
+    assert(0);
+  }
+
+  free(tree);
 }
 
 static inline int push_tree(tree_stack_t *trees, parsetree_t *tree) {
@@ -353,6 +400,14 @@ static inline int push_empty(tree_stack_t *trees) {
   return push_tree(trees, tree);
 }
 
+static inline void free_tree_stack(tree_stack_t *trees) {
+  while (trees->size > 0) {
+    free_parsetree(trees->data[--trees->size]);
+  }
+
+  free(trees->data);
+}
+
 static inline int
 push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator) {
   assert(operators->size <= operators->capacity);
@@ -362,16 +417,18 @@ push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t
   while (operators->size > 0) {
     const parsetree_type_t other_type = operators->data[operators->size - 1].type;
 
-    const int pop =
+    const int should_pop =
         other_type != PT_GROUP &&
         ((type == PT_ALTERNATION) || (type == PT_CONCATENATION && other_type != PT_ALTERNATION) ||
          (type == PT_REPETITION && other_type == PT_REPETITION));
 
-    if (!pop) {
+    if (!should_pop) {
       break;
     }
 
-    assert(pop_operator(trees, operators) && "FIXME");
+    if (!pop_operator(trees, operators)) {
+      return 0;
+    }
   }
 
   if (operators->size == operators->capacity) {
@@ -459,6 +516,26 @@ const char *anchor_type_to_str(anchor_type_t type) {
 
   case AT_NOT_WORD_BOUNDARY:
     return "\\W";
+
+  default:
+    assert(0);
+    return NULL;
+  }
+}
+
+const char *crex_status_to_str(crex_status_t status) {
+  switch (status) {
+  case CREX_OK:
+    return "CREX_OK";
+
+  case CREX_E_NOMEM:
+    return "CREX_E_NOMEM";
+
+  case CREX_E_UNMATCHED_OPEN_PAREN:
+    return "CREX_E_UNMATCHED_OPEN_PAREN";
+
+  case CREX_E_UNMATCHED_CLOSE_PAREN:
+    return "CREX_E_UNMATCHED_CLOSE_PAREN";
 
   default:
     assert(0);
@@ -587,9 +664,14 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth) {
 }
 
 void crex_debug_parse(const char *str, size_t length) {
-  const parsetree_t *tree = parse(str, length);
-  crex_print_parsetree(tree, 0);
-  fputc('\n', stderr);
+  parsetree_t *tree;
+  const crex_status_t status = parse(&tree, str, length);
+  if (status == CREX_OK) {
+    crex_print_parsetree(tree, 0);
+    fputc('\n', stderr);
+  } else {
+    fprintf(stderr, "Parse failed with status %s\n", crex_status_to_str(status));
+  }
 }
 
 #endif
