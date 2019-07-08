@@ -4,7 +4,7 @@
 #include "crex.h"
 
 int main(void) {
-  const char* regex_str = "a+|b*|c?";
+  const char *regex_str = "a+|b*|c?\\x41\\xAA";
   const size_t regex_length = strlen(regex_str);
 
   fprintf(stderr, "%s\n\n", regex_str);

@@ -49,10 +49,9 @@ typedef struct {
   } data;
 } token_t;
 
-static inline int lex(token_t *result, const char **str, const char *eof) {
-  if ((*str) == eof) {
-    return 0;
-  }
+WARN_UNUSED_RESULT static inline crex_status_t
+lex(token_t *result, const char **str, const char *eof) {
+  assert((*str) < eof);
 
   const char byte = *((*str)++);
 
@@ -99,70 +98,97 @@ static inline int lex(token_t *result, const char **str, const char *eof) {
     result->type = TT_CHARACTER;
 
     if ((*str) == eof) {
-      assert(0 && "FIXME");
-    } else {
-      switch (*((*str)++)) {
-      case 'a':
-        result->data.character = '\a';
-        break;
+      return CREX_E_BAD_ESCAPE;
+    }
 
-      case 'b':
-        result->data.character = '\b';
-        break;
+    switch (*((*str)++)) {
+    case 'a':
+      result->data.character = '\a';
+      break;
 
-      case 'f':
-        result->data.character = '\f';
-        break;
+    case 'b':
+      result->data.character = '\b';
+      break;
 
-      case 'n':
-        result->data.character = '\n';
-        break;
+    case 'f':
+      result->data.character = '\f';
+      break;
 
-      case 'r':
-        result->data.character = '\r';
-        break;
+    case 'n':
+      result->data.character = '\n';
+      break;
 
-      case 't':
-        result->data.character = '\t';
-        break;
+    case 'r':
+      result->data.character = '\r';
+      break;
 
-      case 'v':
-        result->data.character = '\v';
-        break;
+    case 't':
+      result->data.character = '\t';
+      break;
 
-      case 'x':
-        assert(0 && "FIXME");
-        break;
+    case 'v':
+      result->data.character = '\v';
+      break;
 
-      case '.':
-      case '|':
-      case '*':
-      case '+':
-      case '?':
-      case '(':
-      case ')':
-      case '[':
-      case ']':
-      case '{':
-      case '}':
-      case '^':
-      case '$':
-      case '\\':
-        result->data.character = byte;
-        break;
+    case 'x':
+    {
+      int value = 0;
 
-      case 'd':
-      case 'D':
-      case 's':
-      case 'S':
-      case 'w':
-      case 'W':
-        assert(0 && "FIXME");
-        break;
+      for(int i = 2; i --;) {
+        if((*str) == eof) {
+          return CREX_E_BAD_ESCAPE;
+        }
 
-      default:
-        assert(0 && "FIXME");
+        const char hex_byte = *((*str)++);
+
+        int digit;
+
+        if('0' <= hex_byte && hex_byte <= '9') {
+          digit = hex_byte - '0';
+        } else if('a' <= hex_byte && hex_byte <= 'f') {
+          digit = hex_byte - 'a' + 0xa;
+        } else if('A' <= hex_byte &&hex_byte <= 'F') {
+          digit = hex_byte - 'A' + 0xa;
+        } else {
+          return CREX_E_BAD_ESCAPE;
+        }
+
+        value = 16 * value + digit;
       }
+
+      result->data.character = value;
+
+      break;
+    }
+
+    case '.':
+    case '|':
+    case '*':
+    case '+':
+    case '?':
+    case '(':
+    case ')':
+    case '[':
+    case ']':
+    case '{':
+    case '}':
+    case '^':
+    case '$':
+    case '\\':
+      result->data.character = byte;
+      break;
+
+    case 'd':
+    case 'D':
+    case 's':
+    case 'S':
+    case 'w':
+    case 'W':
+      assert(0 && "FIXME");
+      break;
+
+    default:
+      return CREX_E_BAD_ESCAPE;
     }
 
     break;
@@ -172,7 +198,7 @@ static inline int lex(token_t *result, const char **str, const char *eof) {
     result->data.character = byte;
   }
 
-  return 1;
+  return CREX_OK;
 }
 
 /** Parser **/
@@ -234,7 +260,7 @@ WARN_UNUSED_RESULT static inline int
 push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator);
 WARN_UNUSED_RESULT static inline int pop_operator(tree_stack_t *trees, operator_stack_t *operators);
 
-crex_status_t parse(parsetree_t **result, const char *str, size_t length) {
+WARN_UNUSED_RESULT crex_status_t parse(parsetree_t **result, const char *str, size_t length) {
   const char *eof = str + length;
 
   tree_stack_t trees = {0, 0, NULL};
@@ -253,7 +279,10 @@ crex_status_t parse(parsetree_t **result, const char *str, size_t length) {
 
   token_t token;
 
-  while (lex(&token, &str, eof)) {
+  while (str != eof) {
+    const crex_status_t lex_status = lex(&token, &str, eof);
+    CHECK_ERRORS(lex_status == CREX_OK, lex_status);
+
     switch (token.type) {
     case TT_CHARACTER:
     case TT_ANCHOR: {
@@ -265,8 +294,10 @@ crex_status_t parse(parsetree_t **result, const char *str, size_t length) {
       CHECK_ERRORS(tree != NULL, CREX_E_NOMEM);
 
       if (token.type == TT_CHARACTER) {
+        tree->type = PT_CHARACTER;
         tree->data.character = token.data.character;
       } else {
+        tree->type = PT_ANCHOR;
         tree->data.anchor_type = token.data.anchor_type;
       }
 
@@ -531,6 +562,9 @@ const char *crex_status_to_str(crex_status_t status) {
   case CREX_E_NOMEM:
     return "CREX_E_NOMEM";
 
+  case CREX_E_BAD_ESCAPE:
+    return "CREX_E_BAD_ESCAPE";
+
   case CREX_E_UNMATCHED_OPEN_PAREN:
     return "CREX_E_UNMATCHED_OPEN_PAREN";
 
@@ -554,7 +588,7 @@ void crex_debug_lex(const char *str, size_t length) {
       if (isprint(token.data.character)) {
         fprintf(stderr, "TT_CHARACTER %c\n", token.data.character);
       } else {
-        fprintf(stderr, "TT_CHARACTER %d\n", (int)token.data.character);
+        fprintf(stderr, "TT_CHARACTER 0x%02x\n", 0xff & (int)token.data.character);
       }
       break;
 
@@ -609,7 +643,7 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth) {
     if (isprint(tree->data.character)) {
       fprintf(stderr, "(PT_CHARACTER %c)", tree->data.character);
     } else {
-      fprintf(stderr, "(PT_CHARACTER 0x%x)", tree->data.character);
+      fprintf(stderr, "(PT_CHARACTER 0x%02x)", 0xff & (int)tree->data.character);
     }
     break;
 
