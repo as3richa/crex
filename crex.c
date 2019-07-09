@@ -30,8 +30,8 @@ typedef enum {
   TT_CHARACTER,
   TT_ANCHOR,
   TT_PIPE,
-  TT_REPETITION,
-  TT_QUESTION_MARK,
+  TT_GREEDY_REPETITION,
+  TT_LAZY_REPETITION,
   TT_OPEN_PAREN,
   TT_CLOSE_PAREN
 } token_type_t;
@@ -72,19 +72,32 @@ lex(token_t *result, const char **str, const char *eof) {
     break;
 
   case '*':
-    result->type = TT_REPETITION;
-    result->data.repetition.lower_bound = 0;
-    result->data.repetition.upper_bound = REPETITION_INFINITY;
-    break;
-
   case '+':
-    result->type = TT_REPETITION;
-    result->data.repetition.lower_bound = 1;
-    result->data.repetition.upper_bound = REPETITION_INFINITY;
-    break;
-
   case '?':
-    result->type = TT_QUESTION_MARK;
+    switch (byte) {
+    case '*':
+      result->data.repetition.lower_bound = 0;
+      result->data.repetition.upper_bound = REPETITION_INFINITY;
+      break;
+
+    case '+':
+      result->data.repetition.lower_bound = 1;
+      result->data.repetition.upper_bound = REPETITION_INFINITY;
+      break;
+
+    case '?':
+      result->data.repetition.lower_bound = 0;
+      result->data.repetition.upper_bound = 1;
+      break;
+    }
+
+    if ((*str) < eof && *(*str) == '?') {
+      (*str)++;
+      result->type = TT_LAZY_REPETITION;
+    } else {
+      result->type = TT_GREEDY_REPETITION;
+    }
+
     break;
 
   case '(':
@@ -220,15 +233,18 @@ lex(token_t *result, const char **str, const char *eof) {
 /** Parser **/
 
 typedef enum {
+  PT_CONCATENATION,
+  PT_ALTERNATION,
+  PT_GREEDY_REPETITION,
+  PT_LAZY_REPETITION,
+  PT_GROUP,
   PT_EMPTY,
   PT_CHARACTER,
   PT_ANCHOR,
-  PT_CONCATENATION,
-  PT_ALTERNATION,
-  PT_REPETITION,
-  PT_QUESTION_MARK,
-  PT_GROUP
 } parsetree_type_t;
+
+/* FIXME: explain this */
+static const size_t operator_precedence[] = {1, 0, 2, 2};
 
 typedef struct parsetree {
   parsetree_type_t type;
@@ -330,18 +346,13 @@ WARN_UNUSED_RESULT crex_status_t parse(parsetree_t **result, const char *str, si
       break;
     }
 
-    case TT_REPETITION: {
+    case TT_GREEDY_REPETITION:
+    case TT_LAZY_REPETITION: {
       operator_t operator;
-      operator.type = PT_REPETITION;
+      operator.type =(token.type == TT_GREEDY_REPETITION) ? PT_GREEDY_REPETITION
+                                                          : PT_LAZY_REPETITION;
       operator.repetition.lower_bound = token.data.repetition.lower_bound;
       operator.repetition.upper_bound = token.data.repetition.upper_bound;
-      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
-      break;
-    }
-
-    case TT_QUESTION_MARK: {
-      operator_t operator;
-      operator.type = PT_QUESTION_MARK;
       CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
       break;
     }
@@ -400,11 +411,11 @@ static inline void free_parsetree(parsetree_t *tree) {
     free_parsetree(tree->data.children[1]);
     break;
 
-  case PT_REPETITION:
+  case PT_GREEDY_REPETITION:
+  case PT_LAZY_REPETITION:
     free_parsetree(tree->data.repetition.child);
     break;
 
-  case PT_QUESTION_MARK:
   case PT_GROUP:
     free_parsetree(tree->data.child);
     break;
@@ -459,15 +470,12 @@ static inline int
 push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator) {
   assert(operators->size <= operators->capacity);
 
-  const parsetree_type_t type = operator->type;
+  const size_t precedence = operator_precedence[operator->type];
 
   while (operators->size > 0) {
     const parsetree_type_t other_type = operators->data[operators->size - 1].type;
 
-    const int should_pop =
-        other_type != PT_GROUP &&
-        ((type == PT_ALTERNATION) || (type == PT_CONCATENATION && other_type != PT_ALTERNATION) ||
-         (type == PT_REPETITION && other_type == PT_REPETITION));
+    const int should_pop = other_type != PT_GROUP && operator_precedence[other_type] >= precedence;
 
     if (!should_pop) {
       break;
@@ -517,14 +525,14 @@ static inline int pop_operator(tree_stack_t *trees, operator_stack_t *operators)
     trees->size--;
     break;
 
-  case PT_REPETITION:
+  case PT_GREEDY_REPETITION:
+  case PT_LAZY_REPETITION:
     assert(trees->size >= 1);
     tree->data.repetition.child = trees->data[trees->size - 1];
     tree->data.repetition.lower_bound = operator->repetition.lower_bound;
     tree->data.repetition.upper_bound = operator->repetition.upper_bound;
     break;
 
-  case PT_QUESTION_MARK:
   case PT_GROUP:
     assert(trees->size >= 1);
     tree->data.child = trees->data[trees->size - 1];
@@ -663,11 +671,11 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
     break;
   }
 
-  case PT_REPETITION:
+  case PT_GREEDY_REPETITION:
     assert(0);
     break;
 
-  case PT_QUESTION_MARK:
+  case PT_LAZY_REPETITION:
     assert(0);
     break;
 
@@ -796,20 +804,21 @@ void crex_debug_lex(const char *str, size_t length) {
       fputs("TT_PIPE\n", stderr);
       break;
 
-    case TT_REPETITION:
-      if (token.data.repetition.upper_bound == REPETITION_INFINITY) {
-        fprintf(stderr, "TT_REPETITION %zu ... inf\n", token.data.repetition.lower_bound);
-      } else {
-        fprintf(stderr,
-                "TT_REPETITION %zu ... %zu\n",
-                token.data.repetition.lower_bound,
-                token.data.repetition.upper_bound);
-      }
-      break;
+    case TT_GREEDY_REPETITION:
+    case TT_LAZY_REPETITION: {
+      const char *str =
+          (token.type == TT_GREEDY_REPETITION) ? "TT_GREEDY_REPETITION" : "TT_LAZY_REPETITION";
 
-    case TT_QUESTION_MARK:
-      fputs("TT_QUESTION_MARK\n", stderr);
+      fprintf(stderr, "%s %zu ... ", str, token.data.repetition.lower_bound);
+
+      if (token.data.repetition.upper_bound == REPETITION_INFINITY) {
+        fputs("inf\n", stderr);
+      } else {
+        fprintf(stderr, "%zu\n", token.data.repetition.upper_bound);
+      }
+
       break;
+    }
 
     case TT_OPEN_PAREN:
       fputs("TT_OPEN_PAREN\n", stderr);
@@ -863,24 +872,24 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth) {
     fputc(')', stderr);
     break;
 
-  case PT_REPETITION:
+  case PT_GREEDY_REPETITION:
+  case PT_LAZY_REPETITION: {
+    const char *str =
+        (tree->type == PT_GREEDY_REPETITION) ? "PT_GREEDY_REPETITION" : "PT_LAZY_REPETITION";
+
+    fprintf(stderr, "(%s %zu ", str, tree->data.repetition.lower_bound);
+
     if (tree->data.repetition.upper_bound == REPETITION_INFINITY) {
-      fprintf(stderr, "(PT_REPETITION %zu inf\n", tree->data.repetition.lower_bound);
+      fputs("inf\n", stderr);
     } else {
-      fprintf(stderr,
-              "(PT_REPETITION %zu %zu\n",
-              tree->data.repetition.lower_bound,
-              tree->data.repetition.upper_bound);
+      fprintf(stderr, "%zu\n", tree->data.repetition.upper_bound);
     }
+
     crex_print_parsetree(tree->data.repetition.child, depth + 1);
     fputc(')', stderr);
-    break;
 
-  case PT_QUESTION_MARK:
-    fputs("(PT_QUESTION_MARK\n", stderr);
-    crex_print_parsetree(tree->data.child, depth + 1);
-    fputc(')', stderr);
     break;
+  }
 
   case PT_GROUP:
     fputs("(PT_GROUP\n", stderr);

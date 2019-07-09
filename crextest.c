@@ -4,7 +4,7 @@
 #include "crex.h"
 
 int main(void) {
-  const char *regex_str = "^aaaaa|bbb\\b$";
+  const char *regex_str = "a???";
   const size_t regex_length = strlen(regex_str);
 
   fprintf(stderr, "%s\n\n", regex_str);
@@ -17,7 +17,7 @@ int main(void) {
 
   fputc('\n', stderr);
 
-  crex_debug_compile(regex_str, regex_length);
+//  crex_debug_compile(regex_str, regex_length);
 
   return 0;
 }
