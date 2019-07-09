@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "crex.h"
 
@@ -106,10 +107,6 @@ lex(token_t *result, const char **str, const char *eof) {
       result->data.character = '\a';
       break;
 
-    case 'b':
-      result->data.character = '\b';
-      break;
-
     case 'f':
       result->data.character = '\f';
       break;
@@ -130,12 +127,31 @@ lex(token_t *result, const char **str, const char *eof) {
       result->data.character = '\v';
       break;
 
-    case 'x':
-    {
+    case 'A':
+      result->type = TT_ANCHOR;
+      result->data.anchor_type = AT_BOF;
+      break;
+
+    case 'z':
+      result->type = TT_ANCHOR;
+      result->data.anchor_type = AT_EOF;
+      break;
+
+    case 'b':
+      result->type = TT_ANCHOR;
+      result->data.anchor_type = AT_WORD_BOUNDARY;
+      break;
+
+    case 'B':
+      result->type = TT_ANCHOR;
+      result->data.anchor_type = AT_NOT_WORD_BOUNDARY;
+      break;
+
+    case 'x': {
       int value = 0;
 
-      for(int i = 2; i --;) {
-        if((*str) == eof) {
+      for (int i = 2; i--;) {
+        if ((*str) == eof) {
           return CREX_E_BAD_ESCAPE;
         }
 
@@ -143,11 +159,11 @@ lex(token_t *result, const char **str, const char *eof) {
 
         int digit;
 
-        if('0' <= hex_byte && hex_byte <= '9') {
+        if ('0' <= hex_byte && hex_byte <= '9') {
           digit = hex_byte - '0';
-        } else if('a' <= hex_byte && hex_byte <= 'f') {
+        } else if ('a' <= hex_byte && hex_byte <= 'f') {
           digit = hex_byte - 'a' + 0xa;
-        } else if('A' <= hex_byte &&hex_byte <= 'F') {
+        } else if ('A' <= hex_byte && hex_byte <= 'F') {
           digit = hex_byte - 'A' + 0xa;
         } else {
           return CREX_E_BAD_ESCAPE;
@@ -523,6 +539,149 @@ static inline int pop_operator(tree_stack_t *trees, operator_stack_t *operators)
   return 1;
 }
 
+/** Compiler */
+
+enum {
+  VM_CHARACTER,
+  VM_ANCHOR_BOF,
+  VM_ANCHOR_BOL,
+  VM_ANCHOR_EOF,
+  VM_ANCHOR_EOL,
+  VM_ANCHOR_WORD_BOUNDARY,
+  VM_ANCHOR_NOT_WORD_BOUNDARY,
+  VM_JUMP,
+  VM_SPLIT_PASSIVE,
+  VM_SPLIT_EAGER
+};
+
+enum {
+  VM_OPERAND_NONE = 0,
+  VM_OPERAND_8 = (1u << 5u),
+  VM_OPERAND_16 = (1u << 6u),
+  VM_OPERAND_32 = (1u << 7u)
+};
+
+typedef struct {
+  size_t size;
+  unsigned char *bytecode;
+} regex_t;
+
+crex_status_t compile(regex_t *result, parsetree_t *tree) {
+  switch (tree->type) {
+  case PT_EMPTY:
+    result->size = 0;
+    result->bytecode = NULL;
+    break;
+
+  case PT_CHARACTER:
+    result->size = 2;
+    result->bytecode = malloc(2);
+
+    if (result->bytecode == NULL) {
+      return CREX_E_NOMEM;
+    }
+
+    result->bytecode[0] = VM_CHARACTER;
+    result->bytecode[1] = tree->data.character;
+
+    break;
+
+  case PT_ANCHOR:
+    result->size = 1;
+    result->bytecode = malloc(1);
+
+    if (result->bytecode == NULL) {
+      return CREX_E_NOMEM;
+    }
+
+    result->bytecode[0] = VM_ANCHOR_BOF + tree->data.anchor_type;
+
+    break;
+
+  case PT_CONCATENATION:
+  case PT_ALTERNATION: {
+    regex_t left;
+    crex_status_t status = compile(&left, tree->data.children[0]);
+
+    if (status != CREX_OK) {
+      return status;
+    }
+
+    regex_t right;
+    status = compile(&right, tree->data.children[1]);
+
+    if (status != CREX_OK) {
+      free(left.bytecode);
+      return status;
+    }
+
+    if (tree->type == PT_CONCATENATION) {
+      result->size = left.size + right.size;
+    } else {
+      result->size = (1 + sizeof(size_t)) + left.size + (1 + sizeof(size_t)) + right.size;
+    }
+
+    result->bytecode = malloc(result->size);
+
+    if (result->bytecode == NULL) {
+      free(left.bytecode);
+      free(right.bytecode);
+      return CREX_E_NOMEM;
+    }
+
+    if (tree->type == PT_CONCATENATION) {
+      memcpy(result->bytecode, left.bytecode, left.size);
+      memcpy(result->bytecode + left.size, right.bytecode, right.size);
+    } else {
+      const size_t split_location = 0;
+      const size_t left_location = 1 + sizeof(long);
+      const size_t jump_location = left_location + left.size;
+      const size_t right_location = jump_location + 1 + sizeof(long);
+
+      const size_t split_origin = split_location + 1 + sizeof(long);
+      const size_t jump_origin = jump_location + 1 + sizeof(long);
+
+      const long split_delta = (long)right_location - (long)split_origin;
+      const long jump_delta = (long)right_location + (long)right.size - (long)jump_origin;
+
+      unsigned char *bytecode = result->bytecode;
+
+      bytecode[split_location] = VM_SPLIT_PASSIVE;
+      memcpy(bytecode + split_location + 1, &split_delta, sizeof(size_t));
+
+      memcpy(bytecode + left_location, left.bytecode, left.size);
+
+      bytecode[jump_location] = VM_JUMP;
+      memcpy(bytecode + jump_location + 1, &jump_delta, sizeof(size_t));
+
+      memcpy(bytecode + right_location, right.bytecode, right.size);
+    }
+
+    free(left.bytecode);
+    free(right.bytecode);
+
+    break;
+  }
+
+  case PT_REPETITION:
+    assert(0);
+    break;
+
+  case PT_QUESTION_MARK:
+    assert(0);
+    break;
+
+  case PT_GROUP:
+    assert(0);
+    break;
+
+  default:
+    assert(0);
+  }
+
+  return CREX_OK;
+}
+
 #ifdef CREX_DEBUG
 
 #include <ctype.h>
@@ -574,6 +733,43 @@ const char *crex_status_to_str(crex_status_t status) {
   default:
     assert(0);
     return NULL;
+  }
+}
+
+const char *crex_vm_code_to_str(unsigned char code) {
+  switch (code) {
+  case VM_CHARACTER:
+    return "VM_CHARACTER";
+
+  case VM_ANCHOR_BOF:
+    return "VM_ANCHOR_BOF";
+
+  case VM_ANCHOR_BOL:
+    return "VM_ANCHOR_BOL";
+
+  case VM_ANCHOR_EOF:
+    return "VM_ANCHOR_EOF";
+
+  case VM_ANCHOR_WORD_BOUNDARY:
+    return "VM_ANCHOR_WORD_BOUNDARY";
+
+  case VM_ANCHOR_NOT_WORD_BOUNDARY:
+    return "VM_ANCHOR_NOT_WORD_BOUNDARY";
+
+  case VM_ANCHOR_EOL:
+    return "VM_ANCHOR_EOL";
+
+  case VM_JUMP:
+    return "VM_JUMP";
+
+  case VM_SPLIT_PASSIVE:
+    return "VM_SPLIT_PASSIVE";
+
+  case VM_SPLIT_EAGER:
+    return "VM_SPLIT_EAGER";
+
+  default:
+    assert(0);
   }
 }
 
@@ -700,9 +896,38 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth) {
 void crex_debug_parse(const char *str, size_t length) {
   parsetree_t *tree;
   const crex_status_t status = parse(&tree, str, length);
+
   if (status == CREX_OK) {
     crex_print_parsetree(tree, 0);
     fputc('\n', stderr);
+  } else {
+    fprintf(stderr, "Parse failed with status %s\n", crex_status_to_str(status));
+  }
+}
+
+void crex_debug_compile(const char *str, size_t length) {
+  parsetree_t *tree;
+  const crex_status_t status = parse(&tree, str, length);
+
+  if (status == CREX_OK) {
+    regex_t regex;
+    compile(&regex, tree);
+
+    for (size_t i = 0; i < regex.size; i++) {
+      const unsigned char code = regex.bytecode[i];
+
+      fprintf(stderr, "%04zx %s ", i, crex_vm_code_to_str(code));
+
+      if (code == VM_JUMP || code == VM_SPLIT_PASSIVE || code == VM_SPLIT_EAGER) {
+        fprintf(stderr, "%04lx\n", *(long *)(regex.bytecode + i + 1));
+        i += sizeof(size_t);
+      } else if (code == VM_CHARACTER) {
+        fprintf(stderr, "%c\n", regex.bytecode[i + 1]);
+        i++;
+      } else {
+        fputc('\n', stderr);
+      }
+    }
   } else {
     fprintf(stderr, "Parse failed with status %s\n", crex_status_to_str(status));
   }
