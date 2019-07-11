@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -41,7 +42,7 @@ typedef struct {
   token_type_t type;
 
   union {
-    char character;
+    unsigned char character;
 
     anchor_type_t anchor_type;
 
@@ -51,8 +52,7 @@ typedef struct {
   } data;
 } token_t;
 
-WARN_UNUSED_RESULT static inline crex_status_t
-lex(token_t *result, const char **str, const char *eof) {
+WARN_UNUSED_RESULT static crex_status_t lex(token_t *result, const char **str, const char *eof) {
   assert((*str) < eof);
 
   const char byte = *((*str)++);
@@ -251,7 +251,7 @@ typedef struct parsetree {
   parsetree_type_t type;
 
   union {
-    char character;
+    unsigned char character;
 
     anchor_type_t anchor_type;
 
@@ -283,15 +283,15 @@ typedef struct {
   operator_t *data;
 } operator_stack_t;
 
-static inline void free_parsetree(parsetree_t *tree);
+static void free_parsetree(parsetree_t *tree);
 
-WARN_UNUSED_RESULT static inline int push_tree(tree_stack_t *trees, parsetree_t *tree);
-WARN_UNUSED_RESULT static inline int push_empty(tree_stack_t *trees);
-static inline void free_tree_stack(tree_stack_t *trees);
+WARN_UNUSED_RESULT static int push_tree(tree_stack_t *trees, parsetree_t *tree);
+WARN_UNUSED_RESULT static int push_empty(tree_stack_t *trees);
+static void free_tree_stack(tree_stack_t *trees);
 
-WARN_UNUSED_RESULT static inline int
+WARN_UNUSED_RESULT static int
 push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator);
-WARN_UNUSED_RESULT static inline int pop_operator(tree_stack_t *trees, operator_stack_t *operators);
+WARN_UNUSED_RESULT static int pop_operator(tree_stack_t *trees, operator_stack_t *operators);
 
 WARN_UNUSED_RESULT crex_status_t parse(parsetree_t **result, const char *str, size_t length) {
   const char *eof = str + length;
@@ -408,7 +408,7 @@ WARN_UNUSED_RESULT crex_status_t parse(parsetree_t **result, const char *str, si
   return CREX_OK;
 }
 
-static inline void free_parsetree(parsetree_t *tree) {
+static void free_parsetree(parsetree_t *tree) {
   switch (tree->type) {
   case PT_EMPTY:
   case PT_CHARACTER:
@@ -437,7 +437,7 @@ static inline void free_parsetree(parsetree_t *tree) {
   free(tree);
 }
 
-static inline int push_tree(tree_stack_t *trees, parsetree_t *tree) {
+static int push_tree(tree_stack_t *trees, parsetree_t *tree) {
   assert(trees->size <= trees->capacity);
 
   if (trees->size == trees->capacity) {
@@ -456,7 +456,7 @@ static inline int push_tree(tree_stack_t *trees, parsetree_t *tree) {
   return 1;
 }
 
-static inline int push_empty(tree_stack_t *trees) {
+static int push_empty(tree_stack_t *trees) {
   parsetree_t *tree = malloc(sizeof(parsetree_t));
 
   if (tree == NULL) {
@@ -468,7 +468,7 @@ static inline int push_empty(tree_stack_t *trees) {
   return push_tree(trees, tree);
 }
 
-static inline void free_tree_stack(tree_stack_t *trees) {
+static void free_tree_stack(tree_stack_t *trees) {
   while (trees->size > 0) {
     free_parsetree(trees->data[--trees->size]);
   }
@@ -476,7 +476,7 @@ static inline void free_tree_stack(tree_stack_t *trees) {
   free(trees->data);
 }
 
-static inline int
+static int
 push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator) {
   assert(operators->size <= operators->capacity);
 
@@ -525,7 +525,7 @@ push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t
   return 1;
 }
 
-static inline int pop_operator(tree_stack_t *trees, operator_stack_t *operators) {
+static int pop_operator(tree_stack_t *trees, operator_stack_t *operators) {
   assert(operators->size > 0);
 
   parsetree_t *tree = malloc(sizeof(parsetree_t));
@@ -569,7 +569,7 @@ static inline int pop_operator(tree_stack_t *trees, operator_stack_t *operators)
   return 1;
 }
 
-/** Compiler */
+/** Compiler **/
 
 enum {
   VM_CHARACTER,
@@ -584,19 +584,12 @@ enum {
   VM_SPLIT_EAGER
 };
 
-enum {
-  VM_OPERAND_NONE = 0,
-  VM_OPERAND_8 = (1u << 5u),
-  VM_OPERAND_16 = (1u << 6u),
-  VM_OPERAND_32 = (1u << 7u)
-};
-
 typedef struct {
   size_t size;
   unsigned char *bytecode;
 } regex_t;
 
-static inline void serialize_long(unsigned char *destination, long value, size_t size) {
+static void serialize_long(unsigned char *destination, long value, size_t size) {
   assert(-2147483647 <= value && value <= 2147483647);
 
   switch (size) {
@@ -623,7 +616,7 @@ static inline void serialize_long(unsigned char *destination, long value, size_t
   }
 }
 
-static inline long deserialize_long(unsigned char *source, size_t size) {
+static long deserialize_long(unsigned char *source, size_t size) {
   switch (size) {
   case 1: {
     int8_t i8_value;
@@ -863,6 +856,243 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
   default:
     assert(0);
   }
+
+  return CREX_OK;
+}
+
+/** Executor **/
+
+typedef struct {
+  int matched;
+} match_result_t;
+
+typedef struct {
+  size_t instruction_pointer;
+} thread_state_t;
+
+typedef struct {
+  size_t size;
+  thread_state_t *states;
+  unsigned char *enqueued;
+} thread_state_set_t;
+
+static int bitmap_test(const unsigned char *bitmap, size_t i) {
+  return (bitmap[i / CHAR_BIT] >> (i % CHAR_BIT)) & 1u;
+}
+
+static void bitmap_set(unsigned char *bitmap, size_t i) {
+  bitmap[i / CHAR_BIT] |= 1u << (i % CHAR_BIT);
+}
+
+static void bitmap_toggle(unsigned char *bitmap, size_t i) {
+  bitmap[i / CHAR_BIT] ^= 1u << (i % CHAR_BIT);
+}
+
+static void clear_set(thread_state_set_t *set, size_t capacity) {
+  const size_t bitmap_size = (capacity + CHAR_BIT - 1) / CHAR_BIT;
+
+  set->size = 0;
+  memset(set->enqueued, 0, bitmap_size);
+}
+
+WARN_UNUSED_RESULT static int initialize_set(thread_state_set_t *set, size_t capacity) {
+  const size_t bitmap_size = (capacity + CHAR_BIT - 1) / CHAR_BIT;
+
+  set->states = malloc(sizeof(thread_state_t) * capacity);
+
+  if (set->states == NULL) {
+    return 0;
+  }
+
+  set->enqueued = malloc(bitmap_size);
+
+  if (set->enqueued == NULL) {
+    free(set->states);
+    return 0;
+  }
+
+  clear_set(set, capacity);
+
+  return 1;
+}
+
+static void push_state(thread_state_set_t *set, const thread_state_t *state) {
+  if (bitmap_test(set->enqueued, state->instruction_pointer)) {
+    return;
+  }
+
+  bitmap_toggle(set->enqueued, state->instruction_pointer);
+  set->states[set->size++] = (*state);
+}
+
+crex_status_t
+execute(match_result_t *match_result, const regex_t *regex, const char *str, size_t length) {
+  thread_state_set_t sets[2];
+
+  assert(initialize_set(&sets[0], regex->size) && "FIXME");
+  assert(initialize_set(&sets[1], regex->size) && "FIXME");
+
+  thread_state_set_t *set = &sets[0];
+  thread_state_set_t *next_set = &sets[1];
+
+  const size_t bitmap_size = (regex->size + CHAR_BIT - 1) / CHAR_BIT;
+
+  unsigned char *visited = malloc(bitmap_size);
+  assert(visited != NULL && "FIXME");
+
+  const thread_state_t initial_state = {0};
+
+  const char *eof = str + length;
+  int prev_character = -1;
+
+  for (;;) {
+    int character = (str == eof) ? -1 : (unsigned char)(*(str++));
+
+    memset(visited, 0, bitmap_size);
+
+    push_state(set, &initial_state);
+
+    for (size_t i = 0; i < set->size; i++) {
+      size_t instruction_pointer = set->states[i].instruction_pointer;
+      assert(bitmap_test(set->enqueued, instruction_pointer));
+
+      int keep = 1;
+
+      for (;;) {
+        if (instruction_pointer == regex->size) {
+          match_result->matched = 1;
+          return CREX_OK; /* FIXME!! */
+        }
+
+        if (bitmap_test(visited, instruction_pointer)) {
+          keep = 0;
+          break;
+        }
+
+        bitmap_set(visited, instruction_pointer);
+
+        const unsigned char code = regex->bytecode[instruction_pointer++];
+
+        if (code == VM_CHARACTER) {
+          assert(instruction_pointer <= regex->size - 1);
+
+          const unsigned char expected_character = regex->bytecode[instruction_pointer++];
+
+          if (character != expected_character) {
+            keep = 0;
+          }
+
+          break;
+        }
+
+        switch (code) {
+        case VM_ANCHOR_BOF:
+          if (prev_character != -1) {
+            keep = 0;
+          }
+          break;
+
+        case VM_ANCHOR_BOL:
+          if (prev_character != -1 && prev_character != '\n') {
+            keep = 0;
+          }
+          break;
+
+        case VM_ANCHOR_EOF:
+          if (character != -1) {
+            keep = 0;
+          }
+          break;
+
+        case VM_ANCHOR_EOL:
+          if (character != -1 && character != '\n') {
+            keep = 0;
+          }
+          break;
+
+        case VM_ANCHOR_WORD_BOUNDARY:
+          assert(0 && "FIXME");
+          break;
+
+        case VM_ANCHOR_NOT_WORD_BOUNDARY:
+          assert(0 && "FIXME");
+          break;
+
+        case VM_JUMP: {
+          assert(instruction_pointer <= regex->size - 4);
+
+          const long delta = deserialize_long(regex->bytecode + instruction_pointer, 4);
+          instruction_pointer += 4;
+
+          instruction_pointer += delta;
+
+          break;
+        }
+
+        case VM_SPLIT_PASSIVE: {
+          assert(instruction_pointer <= regex->size - 4);
+
+          const long delta = deserialize_long(regex->bytecode + instruction_pointer, 4);
+          instruction_pointer += 4;
+
+          thread_state_t target_state;
+          target_state.instruction_pointer = instruction_pointer + delta;
+          // FIXME: copy actual state here
+
+          push_state(set, &target_state);
+
+          break;
+        }
+
+        case VM_SPLIT_EAGER: {
+          assert(instruction_pointer <= regex->size - 4);
+
+          const long delta = deserialize_long(regex->bytecode + instruction_pointer, 4);
+          instruction_pointer += 4;
+
+          thread_state_t target_state;
+          target_state.instruction_pointer = instruction_pointer;
+          // FIXME: copy actual state here
+
+          push_state(set, &target_state);
+
+          instruction_pointer += delta;
+
+          break;
+        }
+
+        default:
+          assert(0);
+        }
+
+        if (!keep) {
+          break;
+        }
+      }
+
+      if (keep) {
+        thread_state_t next_state = set->states[i];
+        next_state.instruction_pointer = instruction_pointer; // FIXME;
+
+        push_state(next_set, &next_state);
+      }
+    }
+
+    if (character == -1) {
+      break;
+    }
+
+    prev_character = character;
+
+    thread_state_set_t *swap = next_set;
+    next_set = set;
+    set = swap;
+    clear_set(next_set, regex->size);
+  }
+
+  match_result->matched = 0;
+
+  /* FIXME: free */
 
   return CREX_OK;
 }
@@ -1132,6 +1362,47 @@ void crex_debug_compile(const char *str, size_t length) {
   }
 
   fprintf(stderr, "%05zd\n ", regex.size);
+}
+
+int main(void) {
+  const char *expression = "^(a+b*c?)+$";
+
+  parsetree_t *tree;
+  crex_status_t status = parse(&tree, expression, strlen(expression));
+
+  fprintf(stderr, "/%s/\n", expression);
+
+  if (status != CREX_OK) {
+    fprintf(stderr, "Parse failed with status %s\n", crex_status_to_str(status));
+    return 1;
+  }
+
+  regex_t regex;
+  status = compile(&regex, tree);
+
+  if (status != CREX_OK) {
+    fprintf(stderr, "Compilation failed with status %s\n", crex_status_to_str(status));
+    return 1;
+  }
+
+  const char *strings[] = {"",     "a",       "aa",       "aaa",       "b",      "ab",    "abb",
+                           "aabb", "aabbbbb", "aaaabbbc", "ac",        "acc",    "abcc",  "abc",
+                           "abca", "abcac",   "abcab",    "abcabcabc", "acacac", "bcabc", "acbc"};
+
+  for (size_t i = 0; i < sizeof(strings) / sizeof(*strings); i++) {
+    match_result_t result;
+
+    status = execute(&result, &regex, strings[i], strlen(strings[i]));
+
+    if (status != CREX_OK) {
+      fprintf(stderr, "Execution failed with status %s\n", crex_status_to_str(status));
+      return 1;
+    }
+
+    fprintf(stderr, "\"%s\": %d\n", strings[i], result.matched);
+  }
+
+  return 0;
 }
 
 #endif
