@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -359,8 +360,14 @@ WARN_UNUSED_RESULT crex_status_t parse(parsetree_t **result, const char *str, si
 
     case TT_OPEN_PAREN: {
       operator_t operator;
+
+      operator.type = PT_CONCATENATION;
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
+
       operator.type = PT_GROUP;
       CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
+
+      CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
       break;
     }
 
@@ -374,6 +381,9 @@ WARN_UNUSED_RESULT crex_status_t parse(parsetree_t **result, const char *str, si
       }
 
       CHECK_ERRORS(operators.size > 0, CREX_E_UNMATCHED_CLOSE_PAREN);
+
+      assert(operators.data[operators.size - 1].type == PT_GROUP);
+
       CHECK_ERRORS(pop_operator(&trees, &operators), CREX_E_NOMEM);
 
       break;
@@ -470,19 +480,31 @@ static inline int
 push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator) {
   assert(operators->size <= operators->capacity);
 
-  const size_t precedence = operator_precedence[operator->type];
+  const parsetree_type_t type = operator->type;
 
-  while (operators->size > 0) {
-    const parsetree_type_t other_type = operators->data[operators->size - 1].type;
+  if (type != PT_GROUP) {
+    const size_t precedence = operator_precedence[type];
 
-    const int should_pop = other_type != PT_GROUP && operator_precedence[other_type] >= precedence;
+    assert(type == PT_CONCATENATION || type == PT_ALTERNATION || type == PT_GREEDY_REPETITION ||
+           type == PT_LAZY_REPETITION);
 
-    if (!should_pop) {
-      break;
-    }
+    while (operators->size > 0) {
+      const parsetree_type_t other_type = operators->data[operators->size - 1].type;
 
-    if (!pop_operator(trees, operators)) {
-      return 0;
+      assert(other_type == PT_GROUP || other_type == PT_CONCATENATION ||
+             other_type == PT_ALTERNATION || other_type == PT_GREEDY_REPETITION ||
+             other_type == PT_LAZY_REPETITION);
+
+      const int should_pop =
+          other_type != PT_GROUP && operator_precedence[other_type] >= precedence;
+
+      if (!should_pop) {
+        break;
+      }
+
+      if (!pop_operator(trees, operators)) {
+        return 0;
+      }
     }
   }
 
@@ -574,6 +596,59 @@ typedef struct {
   unsigned char *bytecode;
 } regex_t;
 
+static inline void serialize_long(unsigned char *destination, long value, size_t size) {
+  assert(-2147483647 <= value && value <= 2147483647);
+
+  switch (size) {
+  case 1: {
+    const int8_t i8_value = value;
+    memcpy(destination, &i8_value, 1);
+    break;
+  }
+
+  case 2: {
+    const int16_t i16_value = value;
+    memcpy(destination, &i16_value, 2);
+    break;
+  }
+
+  case 4: {
+    const int32_t i32_value = value;
+    memcpy(destination, &i32_value, 4);
+    break;
+  }
+
+  default:
+    assert(0);
+  }
+}
+
+static inline long deserialize_long(unsigned char *source, size_t size) {
+  switch (size) {
+  case 1: {
+    int8_t i8_value;
+    memcpy(&i8_value, source, 1);
+    return i8_value;
+  }
+
+  case 2: {
+    int16_t i16_value;
+    memcpy(&i16_value, source, 2);
+    return i16_value;
+  }
+
+  case 4: {
+    int32_t i32_value;
+    memcpy(&i32_value, source, 4);
+    return i32_value;
+  }
+
+  default:
+    assert(0);
+    return 0;
+  }
+}
+
 crex_status_t compile(regex_t *result, parsetree_t *tree) {
   switch (tree->type) {
   case PT_EMPTY:
@@ -608,14 +683,14 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
 
   case PT_CONCATENATION:
   case PT_ALTERNATION: {
-    regex_t left;
+    regex_t left, right;
+
     crex_status_t status = compile(&left, tree->data.children[0]);
 
     if (status != CREX_OK) {
       return status;
     }
 
-    regex_t right;
     status = compile(&right, tree->data.children[1]);
 
     if (status != CREX_OK) {
@@ -626,7 +701,7 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
     if (tree->type == PT_CONCATENATION) {
       result->size = left.size + right.size;
     } else {
-      result->size = (1 + sizeof(size_t)) + left.size + (1 + sizeof(size_t)) + right.size;
+      result->size = (1 + 4) + left.size + (1 + 4) + right.size;
     }
 
     result->bytecode = malloc(result->size);
@@ -642,12 +717,12 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
       memcpy(result->bytecode + left.size, right.bytecode, right.size);
     } else {
       const size_t split_location = 0;
-      const size_t left_location = 1 + sizeof(long);
+      const size_t left_location = 1 + 4;
       const size_t jump_location = left_location + left.size;
-      const size_t right_location = jump_location + 1 + sizeof(long);
+      const size_t right_location = jump_location + 1 + 4;
 
-      const size_t split_origin = split_location + 1 + sizeof(long);
-      const size_t jump_origin = jump_location + 1 + sizeof(long);
+      const size_t split_origin = split_location + 1 + 4;
+      const size_t jump_origin = jump_location + 1 + 4;
 
       const long split_delta = (long)right_location - (long)split_origin;
       const long jump_delta = (long)right_location + (long)right.size - (long)jump_origin;
@@ -655,12 +730,12 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
       unsigned char *bytecode = result->bytecode;
 
       bytecode[split_location] = VM_SPLIT_PASSIVE;
-      memcpy(bytecode + split_location + 1, &split_delta, sizeof(size_t));
+      serialize_long(bytecode + split_location + 1, split_delta, 4);
 
       memcpy(bytecode + left_location, left.bytecode, left.size);
 
       bytecode[jump_location] = VM_JUMP;
-      memcpy(bytecode + jump_location + 1, &jump_delta, sizeof(size_t));
+      serialize_long(bytecode + jump_location + 1, jump_delta, 4);
 
       memcpy(bytecode + right_location, right.bytecode, right.size);
     }
@@ -672,16 +747,118 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
   }
 
   case PT_GREEDY_REPETITION:
-    assert(0);
-    break;
+  case PT_LAZY_REPETITION: {
+    regex_t child;
 
-  case PT_LAZY_REPETITION:
-    assert(0);
-    break;
+    crex_status_t status = compile(&child, tree->data.repetition.child);
 
-  case PT_GROUP:
-    assert(0);
+    if (status != CREX_OK) {
+      return status;
+    }
+
+    const size_t lower_bound = tree->data.repetition.lower_bound;
+    const size_t upper_bound = tree->data.repetition.upper_bound;
+
+    assert(lower_bound <= upper_bound && "FIXME");
+
+    result->size = lower_bound * child.size;
+
+    if (upper_bound == REPETITION_INFINITY) {
+      result->size += 1 + 4 + child.size + 1 + 4;
+    } else {
+      result->size += (upper_bound - lower_bound) * (1 + 4 + child.size);
+    }
+
+    result->bytecode = malloc(result->size);
+
+    if (result->bytecode == NULL) {
+      free(child.bytecode);
+      return CREX_E_NOMEM;
+    }
+
+    unsigned char *bytecode = result->bytecode;
+
+    for (size_t i = 0; i < lower_bound; i++) {
+      memcpy(bytecode + i * child.size, child.bytecode, child.size);
+    }
+
+    if (upper_bound == REPETITION_INFINITY) {
+      /*
+       * ...
+       * VM_SPLIT_{PASSIVE,EAGER} end
+       * child:
+       * <child bytecode>
+       * VM_SPLIT_{EAGER,PASSIVE} child
+       * end:
+       */
+
+      unsigned char forward_split_opcode, backward_split_opcode;
+
+      if (tree->type == PT_GREEDY_REPETITION) {
+        forward_split_opcode = VM_SPLIT_PASSIVE;
+        backward_split_opcode = VM_SPLIT_EAGER;
+      } else {
+        forward_split_opcode = VM_SPLIT_EAGER;
+        backward_split_opcode = VM_SPLIT_PASSIVE;
+      }
+
+      const size_t offset = lower_bound * child.size;
+
+      const size_t forward_split_origin = offset + 1 + 4;
+      const long forward_split_delta = (long)result->size - (long)forward_split_origin;
+
+      const size_t backward_split_location = offset + 1 + 4 + child.size;
+      const size_t backward_split_origin = backward_split_location + 1 + 4;
+      const long backward_split_delta = (long)forward_split_origin - (long)backward_split_origin;
+
+      bytecode[offset] = forward_split_opcode;
+      serialize_long(bytecode + offset + 1, forward_split_delta, 4);
+
+      memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
+
+      bytecode[backward_split_location] = backward_split_opcode;
+      serialize_long(bytecode + backward_split_location + 1, backward_split_delta, 4);
+    } else {
+      /*
+       * ...
+       * VM_SPLIT_{PASSIVE,EAGER} end
+       * <child bytecode>
+       * VM_SPLIT_{PASSIVE,EAGER} end
+       * <child bytecode>
+       * ...
+       * VM_SPLIT_{PASSIVE,EAGER} end
+       * <child bytecode>
+       * end:
+       */
+
+      const unsigned char split_opcode =
+          (tree->type == PT_GREEDY_REPETITION) ? VM_SPLIT_PASSIVE : VM_SPLIT_EAGER;
+
+      for (size_t i = 0; i < upper_bound - lower_bound; i++) {
+        const size_t offset = lower_bound * child.size + i * (1 + 4 + child.size);
+
+        const size_t split_origin = offset + 1 + 4;
+        const long split_delta = (long)result->size - (long)split_origin;
+
+        bytecode[offset] = split_opcode;
+        serialize_long(bytecode + offset + 1, split_delta, 4);
+
+        memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
+      }
+    }
+
     break;
+  }
+
+  case PT_GROUP: {
+    crex_status_t status = compile(result, tree->data.child);
+
+    if (status != CREX_OK) {
+      return status;
+    }
+
+    break;
+  }
 
   default:
     assert(0);
@@ -758,14 +935,14 @@ const char *crex_vm_code_to_str(unsigned char code) {
   case VM_ANCHOR_EOF:
     return "VM_ANCHOR_EOF";
 
+  case VM_ANCHOR_EOL:
+    return "VM_ANCHOR_EOL";
+
   case VM_ANCHOR_WORD_BOUNDARY:
     return "VM_ANCHOR_WORD_BOUNDARY";
 
   case VM_ANCHOR_NOT_WORD_BOUNDARY:
     return "VM_ANCHOR_NOT_WORD_BOUNDARY";
-
-  case VM_ANCHOR_EOL:
-    return "VM_ANCHOR_EOL";
 
   case VM_JUMP:
     return "VM_JUMP";
@@ -916,30 +1093,45 @@ void crex_debug_parse(const char *str, size_t length) {
 
 void crex_debug_compile(const char *str, size_t length) {
   parsetree_t *tree;
-  const crex_status_t status = parse(&tree, str, length);
+  crex_status_t status = parse(&tree, str, length);
 
-  if (status == CREX_OK) {
-    regex_t regex;
-    compile(&regex, tree);
-
-    for (size_t i = 0; i < regex.size; i++) {
-      const unsigned char code = regex.bytecode[i];
-
-      fprintf(stderr, "%04zx %s ", i, crex_vm_code_to_str(code));
-
-      if (code == VM_JUMP || code == VM_SPLIT_PASSIVE || code == VM_SPLIT_EAGER) {
-        fprintf(stderr, "%04lx\n", *(long *)(regex.bytecode + i + 1));
-        i += sizeof(size_t);
-      } else if (code == VM_CHARACTER) {
-        fprintf(stderr, "%c\n", regex.bytecode[i + 1]);
-        i++;
-      } else {
-        fputc('\n', stderr);
-      }
-    }
-  } else {
+  if (status != CREX_OK) {
     fprintf(stderr, "Parse failed with status %s\n", crex_status_to_str(status));
+    return;
   }
+
+  regex_t regex;
+  status = compile(&regex, tree);
+
+  if (status != CREX_OK) {
+    fprintf(stderr, "Compilation failed with status %s\n", crex_status_to_str(status));
+    return;
+  }
+
+  /* for(size_t i = 0; i < regex.size; i++) {
+   fprintf(stderr, "0x%02x\n", regex.bytecode[i]);
+  } */
+
+  for (size_t i = 0; i < regex.size; i++) {
+    const unsigned char code = regex.bytecode[i];
+
+    fprintf(stderr, "%05zd %s ", i, crex_vm_code_to_str(code));
+
+    if (code == VM_JUMP || code == VM_SPLIT_PASSIVE || code == VM_SPLIT_EAGER) {
+      const size_t origin = i + 1 + 4;
+      const long delta = deserialize_long(regex.bytecode + i + 1, 4);
+      const size_t destination = origin + delta;
+      fprintf(stderr, "%ld (=> %zu)\n", delta, destination);
+      i += 4;
+    } else if (code == VM_CHARACTER) {
+      fprintf(stderr, "%c\n", regex.bytecode[i + 1]);
+      i++;
+    } else {
+      fputc('\n', stderr);
+    }
+  }
+
+  fprintf(stderr, "%05zd\n ", regex.size);
 }
 
 #endif
