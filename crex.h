@@ -9,12 +9,4 @@ typedef enum {
   CREX_E_UNMATCHED_CLOSE_PAREN
 } crex_status_t;
 
-#ifdef CREX_DEBUG
-
-void crex_debug_lex(const char *str, size_t length);
-void crex_debug_parse(const char *str, size_t length);
-void crex_debug_compile(const char *str, size_t length);
-
-#endif
-
 #endif

@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <stdio.h> // FIXME
+
 #include "crex.h"
 
 #ifdef __GNUC__
@@ -870,106 +872,94 @@ typedef struct {
   size_t instruction_pointer;
 } thread_state_t;
 
-typedef struct {
-  size_t size;
-  thread_state_t *states;
-  unsigned char *enqueued;
-} thread_state_set_t;
-
-static int bitmap_test(const unsigned char *bitmap, size_t i) {
-  return (bitmap[i / CHAR_BIT] >> (i % CHAR_BIT)) & 1u;
-}
-
-static void bitmap_set(unsigned char *bitmap, size_t i) {
-  bitmap[i / CHAR_BIT] |= 1u << (i % CHAR_BIT);
-}
-
-static void bitmap_toggle(unsigned char *bitmap, size_t i) {
-  bitmap[i / CHAR_BIT] ^= 1u << (i % CHAR_BIT);
-}
-
-static void clear_set(thread_state_set_t *set, size_t capacity) {
-  const size_t bitmap_size = (capacity + CHAR_BIT - 1) / CHAR_BIT;
-
-  set->size = 0;
-  memset(set->enqueued, 0, bitmap_size);
-}
-
-WARN_UNUSED_RESULT static int initialize_set(thread_state_set_t *set, size_t capacity) {
-  const size_t bitmap_size = (capacity + CHAR_BIT - 1) / CHAR_BIT;
-
-  set->states = malloc(sizeof(thread_state_t) * capacity);
-
-  if (set->states == NULL) {
-    return 0;
-  }
-
-  set->enqueued = malloc(bitmap_size);
-
-  if (set->enqueued == NULL) {
-    free(set->states);
-    return 0;
-  }
-
-  clear_set(set, capacity);
-
-  return 1;
-}
-
-static void push_state(thread_state_set_t *set, const thread_state_t *state) {
-  if (bitmap_test(set->enqueued, state->instruction_pointer)) {
-    return;
-  }
-
-  bitmap_toggle(set->enqueued, state->instruction_pointer);
-  set->states[set->size++] = (*state);
-}
+typedef struct thread_list {
+  thread_state_t state;
+  struct thread_list *next;
+} thread_list_t;
 
 crex_status_t
 execute(match_result_t *match_result, const regex_t *regex, const char *str, size_t length) {
-  thread_state_set_t sets[2];
-
-  assert(initialize_set(&sets[0], regex->size) && "FIXME");
-  assert(initialize_set(&sets[1], regex->size) && "FIXME");
-
-  thread_state_set_t *set = &sets[0];
-  thread_state_set_t *next_set = &sets[1];
-
   const size_t bitmap_size = (regex->size + CHAR_BIT - 1) / CHAR_BIT;
 
   unsigned char *visited = malloc(bitmap_size);
-  assert(visited != NULL && "FIXME");
+
+  if (visited == NULL) {
+    return CREX_E_NOMEM;
+  }
+
+  // FIXME: justify (tighten?) this bound
+  const size_t thread_list_capacity = 2 * regex->size;
+  thread_list_t *thread_list_buffer = malloc(sizeof(thread_list_t) * thread_list_capacity);
+
+  if (thread_list_buffer == NULL) {
+    free(visited);
+    return CREX_E_NOMEM;
+  }
+
+  for (size_t i = 0; i < thread_list_capacity; i++) {
+    thread_list_buffer[i].next =
+        (i == thread_list_capacity - 1) ? NULL : &thread_list_buffer[i + 1];
+  }
+
+  thread_list_t *thread_freelist = &thread_list_buffer[0];
+  thread_list_t *thread_list_head = NULL;
+
+#define PUSH(pointer, new_state)                                                                   \
+  do {                                                                                             \
+    assert(thread_freelist != NULL);                                                               \
+    thread_list_t *node = thread_freelist;                                                         \
+    thread_freelist = thread_freelist->next;                                                       \
+    node->state = *(new_state);                                                                    \
+    node->next = *(pointer);                                                                       \
+    *(pointer) = node;                                                                             \
+  } while (0)
+
+#define POP(pointer, node)                                                                         \
+  do {                                                                                             \
+    assert((node) == *(pointer));                                                                  \
+    *(pointer) = (node)->next;                                                                     \
+    (node)->next = thread_freelist;                                                                \
+    thread_freelist = (node);                                                                      \
+  } while (0)
 
   const thread_state_t initial_state = {0};
 
   const char *eof = str + length;
   int prev_character = -1;
 
+  match_result->matched = 0;
+
   for (;;) {
-    int character = (str == eof) ? -1 : (unsigned char)(*(str++));
+    const int character = (str == eof) ? -1 : (unsigned char)(*(str++));
 
     memset(visited, 0, bitmap_size);
 
-    push_state(set, &initial_state);
+    PUSH(&thread_list_head, &initial_state);
 
-    for (size_t i = 0; i < set->size; i++) {
-      size_t instruction_pointer = set->states[i].instruction_pointer;
-      assert(bitmap_test(set->enqueued, instruction_pointer));
+    thread_list_t *iter = thread_list_head;
+    thread_list_t **pointer = &thread_list_head;
+
+    for (;;) {
+      thread_state_t *state = &iter->state;
+      size_t instruction_pointer = state->instruction_pointer;
 
       int keep = 1;
 
       for (;;) {
         if (instruction_pointer == regex->size) {
           match_result->matched = 1;
-          return CREX_OK; /* FIXME!! */
+          break;
         }
 
-        if (bitmap_test(visited, instruction_pointer)) {
+        const size_t byte_index = instruction_pointer / CHAR_BIT;
+        const size_t bit_index = instruction_pointer % CHAR_BIT;
+
+        if (visited[byte_index] & (1u << bit_index)) {
           keep = 0;
           break;
         }
 
-        bitmap_set(visited, instruction_pointer);
+        visited[byte_index] |= 1u << bit_index;
 
         const unsigned char code = regex->bytecode[instruction_pointer++];
 
@@ -1029,34 +1019,28 @@ execute(match_result_t *match_result, const regex_t *regex, const char *str, siz
           break;
         }
 
-        case VM_SPLIT_PASSIVE: {
-          assert(instruction_pointer <= regex->size - 4);
-
-          const long delta = deserialize_long(regex->bytecode + instruction_pointer, 4);
-          instruction_pointer += 4;
-
-          thread_state_t target_state;
-          target_state.instruction_pointer = instruction_pointer + delta;
-          // FIXME: copy actual state here
-
-          push_state(set, &target_state);
-
-          break;
-        }
-
+        case VM_SPLIT_PASSIVE:
         case VM_SPLIT_EAGER: {
           assert(instruction_pointer <= regex->size - 4);
 
           const long delta = deserialize_long(regex->bytecode + instruction_pointer, 4);
           instruction_pointer += 4;
 
-          thread_state_t target_state;
-          target_state.instruction_pointer = instruction_pointer;
-          // FIXME: copy actual state here
+          thread_state_t split_state;
+          // FIXME: copy state
 
-          push_state(set, &target_state);
+          if (code == VM_SPLIT_PASSIVE) {
+            split_state.instruction_pointer = instruction_pointer + delta;
+          } else {
+            split_state.instruction_pointer = instruction_pointer;
+            instruction_pointer += delta;
+          }
 
-          instruction_pointer += delta;
+          if (!((visited[split_state.instruction_pointer / CHAR_BIT] >>
+                 (split_state.instruction_pointer % CHAR_BIT)) &
+                1u)) {
+            PUSH(&iter->next, &split_state);
+          }
 
           break;
         }
@@ -1071,28 +1055,26 @@ execute(match_result_t *match_result, const regex_t *regex, const char *str, siz
       }
 
       if (keep) {
-        thread_state_t next_state = set->states[i];
-        next_state.instruction_pointer = instruction_pointer; // FIXME;
+        state->instruction_pointer = instruction_pointer;
+        pointer = &iter->next;
+        iter = iter->next;
+      } else {
+        POP(pointer, iter);
+        iter = *pointer;
+      }
 
-        push_state(next_set, &next_state);
+      if (iter == NULL || match_result->matched) {
+        break;
       }
     }
 
-    if (character == -1) {
+    if (character == -1 || match_result->matched) {
       break;
     }
-
-    prev_character = character;
-
-    thread_state_set_t *swap = next_set;
-    next_set = set;
-    set = swap;
-    clear_set(next_set, regex->size);
   }
 
-  match_result->matched = 0;
-
-  /* FIXME: free */
+  free(visited);
+  free(thread_list_buffer);
 
   return CREX_OK;
 }
