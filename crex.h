@@ -1,6 +1,12 @@
 #ifndef CREX_H
 #define CREX_H
 
+#if defined(__GNUC__) || defined(__clang__)
+#define CREX_WARN_UNUSED_RESULT __attribute__((warn_unused_result))
+#else
+#define CREX_WARN_UNUSED_RESULT
+#endif
+
 typedef enum {
   CREX_OK,
   CREX_E_NOMEM,
@@ -18,15 +24,21 @@ typedef struct {
   int matched;
 } crex_match_result_t;
 
-crex_status_t crex_compile(crex_regex_t *regex, const char *pattern, size_t length);
-crex_status_t crex_compile_str(crex_regex_t *regex, const char *pattern);
+CREX_WARN_UNUSED_RESULT crex_status_t crex_compile(crex_regex_t *regex,
+                                                   const char *pattern,
+                                                   size_t length);
+
+CREX_WARN_UNUSED_RESULT crex_status_t crex_compile_str(crex_regex_t *regex, const char *pattern);
+
 void crex_free_regex(crex_regex_t *regex);
 
-crex_status_t crex_match(crex_match_result_t *result,
-                         const crex_regex_t *regex,
-                         const char *buffer,
-                         size_t length);
-crex_status_t
-crex_match_str(crex_match_result_t *result, const crex_regex_t *regex, const char *str);
+CREX_WARN_UNUSED_RESULT crex_status_t crex_match(crex_match_result_t *result,
+                                                 const crex_regex_t *regex,
+                                                 const char *buffer,
+                                                 size_t length);
+
+CREX_WARN_UNUSED_RESULT crex_status_t crex_match_str(crex_match_result_t *result,
+                                                     const crex_regex_t *regex,
+                                                     const char *str);
 
 #endif

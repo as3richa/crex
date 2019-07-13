@@ -32,7 +32,12 @@ int main(void) {
 
   for (size_t i = 0; i < n_cases; i++) {
     crex_match_result_t match_result;
-    crex_match_str(&match_result, &regex, cases[i]);
+    status = crex_match_str(&match_result, &regex, cases[i]);
+
+    if (status != CREX_OK) {
+      crex_free_regex(&regex);
+      return 1;
+    }
 
     printf("\"%s\" => %d\n", cases[i], match_result.matched);
   }

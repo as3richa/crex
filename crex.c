@@ -7,11 +7,9 @@
 
 #include "crex.h"
 
-#ifdef __GNUC__
-#define WARN_UNUSED_RESULT __attribute__((warn_unused_result))
-#else
-#define WARN_UNUSED_RESULT
-#endif
+typedef crex_status_t status_t;
+typedef crex_regex_t regex_t;
+#define WARN_UNUSED_RESULT CREX_WARN_UNUSED_RESULT
 
 #define REPETITION_INFINITY (~(size_t)0)
 
@@ -60,7 +58,7 @@ typedef struct {
   } data;
 } token_t;
 
-WARN_UNUSED_RESULT static crex_status_t lex(token_t *result, const char **str, const char *eof) {
+WARN_UNUSED_RESULT static status_t lex(token_t *result, const char **str, const char *eof) {
   assert((*str) < eof);
 
   const char byte = *((*str)++);
@@ -301,7 +299,7 @@ WARN_UNUSED_RESULT static int
 push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator);
 WARN_UNUSED_RESULT static int pop_operator(tree_stack_t *trees, operator_stack_t *operators);
 
-WARN_UNUSED_RESULT crex_status_t parse(parsetree_t **result, const char *str, size_t length) {
+WARN_UNUSED_RESULT status_t parse(parsetree_t **result, const char *str, size_t length) {
   const char *eof = str + length;
 
   tree_stack_t trees = {0, 0, NULL};
@@ -321,7 +319,7 @@ WARN_UNUSED_RESULT crex_status_t parse(parsetree_t **result, const char *str, si
   token_t token;
 
   while (str != eof) {
-    const crex_status_t lex_status = lex(&token, &str, eof);
+    const status_t lex_status = lex(&token, &str, eof);
     CHECK_ERRORS(lex_status == CREX_OK, lex_status);
 
     switch (token.type) {
@@ -579,8 +577,6 @@ static int pop_operator(tree_stack_t *trees, operator_stack_t *operators) {
 
 /** Compiler **/
 
-typedef crex_regex_t regex_t;
-
 enum {
   VM_CHARACTER,
   VM_ANCHOR_BOF,
@@ -647,7 +643,7 @@ static long deserialize_long(unsigned char *source, size_t size) {
   }
 }
 
-crex_status_t compile(regex_t *result, parsetree_t *tree) {
+status_t compile(regex_t *result, parsetree_t *tree) {
   switch (tree->type) {
   case PT_EMPTY:
     result->size = 0;
@@ -683,7 +679,7 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
   case PT_ALTERNATION: {
     regex_t left, right;
 
-    crex_status_t status = compile(&left, tree->data.children[0]);
+    status_t status = compile(&left, tree->data.children[0]);
 
     if (status != CREX_OK) {
       return status;
@@ -748,7 +744,7 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
   case PT_LAZY_REPETITION: {
     regex_t child;
 
-    crex_status_t status = compile(&child, tree->data.repetition.child);
+    status_t status = compile(&child, tree->data.repetition.child);
 
     if (status != CREX_OK) {
       return status;
@@ -851,7 +847,7 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
   }
 
   case PT_GROUP: {
-    crex_status_t status = compile(result, tree->data.child);
+    status_t status = compile(result, tree->data.child);
 
     if (status != CREX_OK) {
       return status;
@@ -878,7 +874,7 @@ typedef struct thread_list {
   struct thread_list *next;
 } thread_list_t;
 
-crex_status_t
+status_t
 execute(crex_match_result_t *match_result, const regex_t *regex, const char *str, size_t length) {
   const size_t bitmap_size = (regex->size + CHAR_BIT - 1) / CHAR_BIT;
 
@@ -1082,9 +1078,9 @@ execute(crex_match_result_t *match_result, const regex_t *regex, const char *str
 
 /** Public API **/
 
-crex_status_t crex_compile(crex_regex_t *regex, const char *pattern, size_t length) {
+status_t crex_compile(crex_regex_t *regex, const char *pattern, size_t length) {
   parsetree_t *tree;
-  crex_status_t status = parse(&tree, pattern, length);
+  status_t status = parse(&tree, pattern, length);
 
   if (status != CREX_OK) {
     return status;
@@ -1097,21 +1093,20 @@ crex_status_t crex_compile(crex_regex_t *regex, const char *pattern, size_t leng
   return status;
 }
 
-crex_status_t crex_compile_str(crex_regex_t *regex, const char *pattern) {
+status_t crex_compile_str(crex_regex_t *regex, const char *pattern) {
   return crex_compile(regex, pattern, strlen(pattern));
 }
 
 void crex_free_regex(crex_regex_t *regex) { free(regex->bytecode); }
 
-crex_status_t crex_match(crex_match_result_t *result,
-                         const crex_regex_t *regex,
-                         const char *buffer,
-                         size_t length) {
+status_t crex_match(crex_match_result_t *result,
+                    const crex_regex_t *regex,
+                    const char *buffer,
+                    size_t length) {
   return execute(result, regex, buffer, length);
 }
 
-crex_status_t
-crex_match_str(crex_match_result_t *result, const crex_regex_t *regex, const char *str) {
+status_t crex_match_str(crex_match_result_t *result, const crex_regex_t *regex, const char *str) {
   return crex_match(result, regex, str, strlen(str));
 }
 
@@ -1146,7 +1141,7 @@ const char *anchor_type_to_str(anchor_type_t type) {
   }
 }
 
-const char *crex_status_to_str(crex_status_t status) {
+const char *status_to_str(status_t status) {
   switch (status) {
   case CREX_OK:
     return "CREX_OK";
@@ -1329,22 +1324,22 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth) {
 
 void crex_debug_parse(const char *str, size_t length) {
   parsetree_t *tree;
-  const crex_status_t status = parse(&tree, str, length);
+  const status_t status = parse(&tree, str, length);
 
   if (status == CREX_OK) {
     crex_print_parsetree(tree, 0);
     fputc('\n', stderr);
   } else {
-    fprintf(stderr, "Parse failed with status %s\n", crex_status_to_str(status));
+    fprintf(stderr, "Parse failed with status %s\n", status_to_str(status));
   }
 }
 
 void crex_debug_compile(const char *str, size_t length) {
   parsetree_t *tree;
-  crex_status_t status = parse(&tree, str, length);
+  status_t status = parse(&tree, str, length);
 
   if (status != CREX_OK) {
-    fprintf(stderr, "Parse failed with status %s\n", crex_status_to_str(status));
+    fprintf(stderr, "Parse failed with status %s\n", status_to_str(status));
     return;
   }
 
@@ -1352,7 +1347,7 @@ void crex_debug_compile(const char *str, size_t length) {
   status = compile(&regex, tree);
 
   if (status != CREX_OK) {
-    fprintf(stderr, "Compilation failed with status %s\n", crex_status_to_str(status));
+    fprintf(stderr, "Compilation failed with status %s\n", status_to_str(status));
     return;
   }
 
