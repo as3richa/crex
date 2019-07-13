@@ -5,8 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <stdio.h> // FIXME
-
 #include "crex.h"
 
 #ifdef __GNUC__
@@ -17,7 +15,15 @@
 
 #define REPETITION_INFINITY (~(size_t)0)
 
-/** Anchor type (common to lexer and parser) **/
+// FIXME: put these somewhere
+
+void my_memcpy(void *destination, const void *source, size_t size) {
+  assert(destination != NULL || size == 0);
+
+  if (size != 0) {
+    memcpy(destination, source, size);
+  }
+}
 
 typedef enum {
   AT_BOF,
@@ -573,6 +579,8 @@ static int pop_operator(tree_stack_t *trees, operator_stack_t *operators) {
 
 /** Compiler **/
 
+typedef crex_regex_t regex_t;
+
 enum {
   VM_CHARACTER,
   VM_ANCHOR_BOF,
@@ -586,30 +594,25 @@ enum {
   VM_SPLIT_EAGER
 };
 
-typedef struct {
-  size_t size;
-  unsigned char *bytecode;
-} regex_t;
-
 static void serialize_long(unsigned char *destination, long value, size_t size) {
   assert(-2147483647 <= value && value <= 2147483647);
 
   switch (size) {
   case 1: {
     const int8_t i8_value = value;
-    memcpy(destination, &i8_value, 1);
+    my_memcpy(destination, &i8_value, 1);
     break;
   }
 
   case 2: {
     const int16_t i16_value = value;
-    memcpy(destination, &i16_value, 2);
+    my_memcpy(destination, &i16_value, 2);
     break;
   }
 
   case 4: {
     const int32_t i32_value = value;
-    memcpy(destination, &i32_value, 4);
+    my_memcpy(destination, &i32_value, 4);
     break;
   }
 
@@ -622,19 +625,19 @@ static long deserialize_long(unsigned char *source, size_t size) {
   switch (size) {
   case 1: {
     int8_t i8_value;
-    memcpy(&i8_value, source, 1);
+    my_memcpy(&i8_value, source, 1);
     return i8_value;
   }
 
   case 2: {
     int16_t i16_value;
-    memcpy(&i16_value, source, 2);
+    my_memcpy(&i16_value, source, 2);
     return i16_value;
   }
 
   case 4: {
     int32_t i32_value;
-    memcpy(&i32_value, source, 4);
+    my_memcpy(&i32_value, source, 4);
     return i32_value;
   }
 
@@ -708,8 +711,8 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
     }
 
     if (tree->type == PT_CONCATENATION) {
-      memcpy(result->bytecode, left.bytecode, left.size);
-      memcpy(result->bytecode + left.size, right.bytecode, right.size);
+      my_memcpy(result->bytecode, left.bytecode, left.size);
+      my_memcpy(result->bytecode + left.size, right.bytecode, right.size);
     } else {
       const size_t split_location = 0;
       const size_t left_location = 1 + 4;
@@ -727,12 +730,12 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
       bytecode[split_location] = VM_SPLIT_PASSIVE;
       serialize_long(bytecode + split_location + 1, split_delta, 4);
 
-      memcpy(bytecode + left_location, left.bytecode, left.size);
+      my_memcpy(bytecode + left_location, left.bytecode, left.size);
 
       bytecode[jump_location] = VM_JUMP;
       serialize_long(bytecode + jump_location + 1, jump_delta, 4);
 
-      memcpy(bytecode + right_location, right.bytecode, right.size);
+      my_memcpy(bytecode + right_location, right.bytecode, right.size);
     }
 
     free(left.bytecode);
@@ -774,7 +777,7 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
     unsigned char *bytecode = result->bytecode;
 
     for (size_t i = 0; i < lower_bound; i++) {
-      memcpy(bytecode + i * child.size, child.bytecode, child.size);
+      my_memcpy(bytecode + i * child.size, child.bytecode, child.size);
     }
 
     if (upper_bound == REPETITION_INFINITY) {
@@ -809,7 +812,7 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
       bytecode[offset] = forward_split_opcode;
       serialize_long(bytecode + offset + 1, forward_split_delta, 4);
 
-      memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
+      my_memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
 
       bytecode[backward_split_location] = backward_split_opcode;
       serialize_long(bytecode + backward_split_location + 1, backward_split_delta, 4);
@@ -838,9 +841,11 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
         bytecode[offset] = split_opcode;
         serialize_long(bytecode + offset + 1, split_delta, 4);
 
-        memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
+        my_memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
       }
     }
+
+    free(child.bytecode);
 
     break;
   }
@@ -865,10 +870,6 @@ crex_status_t compile(regex_t *result, parsetree_t *tree) {
 /** Executor **/
 
 typedef struct {
-  int matched;
-} match_result_t;
-
-typedef struct {
   size_t instruction_pointer;
 } thread_state_t;
 
@@ -878,7 +879,7 @@ typedef struct thread_list {
 } thread_list_t;
 
 crex_status_t
-execute(match_result_t *match_result, const regex_t *regex, const char *str, size_t length) {
+execute(crex_match_result_t *match_result, const regex_t *regex, const char *str, size_t length) {
   const size_t bitmap_size = (regex->size + CHAR_BIT - 1) / CHAR_BIT;
 
   unsigned char *visited = malloc(bitmap_size);
@@ -1077,6 +1078,41 @@ execute(match_result_t *match_result, const regex_t *regex, const char *str, siz
   free(thread_list_buffer);
 
   return CREX_OK;
+}
+
+/** Public API **/
+
+crex_status_t crex_compile(crex_regex_t *regex, const char *pattern, size_t length) {
+  parsetree_t *tree;
+  crex_status_t status = parse(&tree, pattern, length);
+
+  if (status != CREX_OK) {
+    return status;
+  }
+
+  status = compile(regex, tree);
+
+  free_parsetree(tree);
+
+  return status;
+}
+
+crex_status_t crex_compile_str(crex_regex_t *regex, const char *pattern) {
+  return crex_compile(regex, pattern, strlen(pattern));
+}
+
+void crex_free_regex(crex_regex_t *regex) { free(regex->bytecode); }
+
+crex_status_t crex_match(crex_match_result_t *result,
+                         const crex_regex_t *regex,
+                         const char *buffer,
+                         size_t length) {
+  return execute(result, regex, buffer, length);
+}
+
+crex_status_t
+crex_match_str(crex_match_result_t *result, const crex_regex_t *regex, const char *str) {
+  return crex_match(result, regex, str, strlen(str));
 }
 
 #ifdef CREX_DEBUG
@@ -1344,47 +1380,6 @@ void crex_debug_compile(const char *str, size_t length) {
   }
 
   fprintf(stderr, "%05zd\n ", regex.size);
-}
-
-int main(void) {
-  const char *expression = "^(a+b*c?)+$";
-
-  parsetree_t *tree;
-  crex_status_t status = parse(&tree, expression, strlen(expression));
-
-  fprintf(stderr, "/%s/\n", expression);
-
-  if (status != CREX_OK) {
-    fprintf(stderr, "Parse failed with status %s\n", crex_status_to_str(status));
-    return 1;
-  }
-
-  regex_t regex;
-  status = compile(&regex, tree);
-
-  if (status != CREX_OK) {
-    fprintf(stderr, "Compilation failed with status %s\n", crex_status_to_str(status));
-    return 1;
-  }
-
-  const char *strings[] = {"",     "a",       "aa",       "aaa",       "b",      "ab",    "abb",
-                           "aabb", "aabbbbb", "aaaabbbc", "ac",        "acc",    "abcc",  "abc",
-                           "abca", "abcac",   "abcab",    "abcabcabc", "acacac", "bcabc", "acbc"};
-
-  for (size_t i = 0; i < sizeof(strings) / sizeof(*strings); i++) {
-    match_result_t result;
-
-    status = execute(&result, &regex, strings[i], strlen(strings[i]));
-
-    if (status != CREX_OK) {
-      fprintf(stderr, "Execution failed with status %s\n", crex_status_to_str(status));
-      return 1;
-    }
-
-    fprintf(stderr, "\"%s\": %d\n", strings[i], result.matched);
-  }
-
-  return 0;
 }
 
 #endif
