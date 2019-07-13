@@ -268,15 +268,23 @@ typedef struct parsetree {
       struct parsetree *child;
     } repetition;
 
-    struct parsetree *child;
+    struct {
+      size_t index;
+      struct parsetree *child;
+    } group;
   } data;
 } parsetree_t;
 
 typedef struct {
   parsetree_type_t type;
-  struct {
-    size_t lower_bound, upper_bound;
-  } repetition;
+
+  union {
+    struct {
+      size_t lower_bound, upper_bound;
+    } repetition;
+
+    size_t group_index;
+  } data;
 } operator_t;
 
 typedef struct {
@@ -314,12 +322,21 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result, const char *str, size_t 
     }                                                                                              \
   } while (0)
 
-  CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
+  {
+    operator_t outer_group;
+    outer_group.type = PT_GROUP;
+    outer_group.data.group_index = 0;
 
-  token_t token;
+    CHECK_ERRORS(push_operator(&trees, &operators, &outer_group), CREX_E_NOMEM);
+    CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
+  }
+
+  size_t n_groups = 1;
 
   while (str != eof) {
+    token_t token;
     const status_t lex_status = lex(&token, &str, eof);
+
     CHECK_ERRORS(lex_status == CREX_OK, lex_status);
 
     switch (token.type) {
@@ -356,10 +373,9 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result, const char *str, size_t 
     case TT_GREEDY_REPETITION:
     case TT_LAZY_REPETITION: {
       operator_t operator;
-      operator.type =(token.type == TT_GREEDY_REPETITION) ? PT_GREEDY_REPETITION
-                                                          : PT_LAZY_REPETITION;
-      operator.repetition.lower_bound = token.data.repetition.lower_bound;
-      operator.repetition.upper_bound = token.data.repetition.upper_bound;
+      operator.type = (token.type == TT_GREEDY_REPETITION) ? PT_GREEDY_REPETITION : PT_LAZY_REPETITION;
+      operator.data.repetition.lower_bound = token.data.repetition.lower_bound;
+      operator.data.repetition.upper_bound = token.data.repetition.upper_bound;
       CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
       break;
     }
@@ -371,6 +387,7 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result, const char *str, size_t 
       CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
 
       operator.type = PT_GROUP;
+      operator.data.group_index = n_groups ++;
       CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
 
       CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
@@ -400,7 +417,10 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result, const char *str, size_t 
   }
 
   while (operators.size > 0) {
-    CHECK_ERRORS(operators.data[operators.size - 1].type != PT_GROUP, CREX_E_UNMATCHED_OPEN_PAREN);
+    if(operators.data[operators.size - 1].type == PT_GROUP) {
+      CHECK_ERRORS(operators.size == 1, CREX_E_UNMATCHED_OPEN_PAREN);
+    }
+
     CHECK_ERRORS(pop_operator(&trees, &operators), CREX_E_NOMEM);
   }
 
@@ -433,7 +453,7 @@ static void free_parsetree(parsetree_t *tree) {
     break;
 
   case PT_GROUP:
-    free_parsetree(tree->data.child);
+    free_parsetree(tree->data.group.child);
     break;
 
   default:
@@ -556,14 +576,15 @@ static int pop_operator(tree_stack_t *trees, operator_stack_t *operators) {
   case PT_GREEDY_REPETITION:
   case PT_LAZY_REPETITION:
     assert(trees->size >= 1);
+    tree->data.repetition.lower_bound = operator->data.repetition.lower_bound;
+    tree->data.repetition.upper_bound = operator->data.repetition.upper_bound;
     tree->data.repetition.child = trees->data[trees->size - 1];
-    tree->data.repetition.lower_bound = operator->repetition.lower_bound;
-    tree->data.repetition.upper_bound = operator->repetition.upper_bound;
     break;
 
   case PT_GROUP:
     assert(trees->size >= 1);
-    tree->data.child = trees->data[trees->size - 1];
+    tree->data.group.index = operator->data.group_index;
+    tree->data.group.child = trees->data[trees->size - 1];
     break;
 
   default:
@@ -587,7 +608,8 @@ enum {
   VM_ANCHOR_NOT_WORD_BOUNDARY,
   VM_JUMP,
   VM_SPLIT_PASSIVE,
-  VM_SPLIT_EAGER
+  VM_SPLIT_EAGER,
+  VM_WRITE_POINTER
 };
 
 static void serialize_long(unsigned char *destination, long value, size_t size) {
@@ -847,11 +869,34 @@ status_t compile(regex_t *result, parsetree_t *tree) {
   }
 
   case PT_GROUP: {
-    status_t status = compile(result, tree->data.child);
+    regex_t child;
+    status_t status = compile(&child, tree->data.group.child);
 
     if (status != CREX_OK) {
       return status;
     }
+
+    result->size = 1 + 4 + child.size + 1 + 4;
+
+    result->bytecode = malloc(result->size);
+
+    if(result->bytecode == NULL) {
+      free(child.bytecode);
+      return CREX_E_NOMEM;
+    }
+
+    unsigned char* bytecode = result->bytecode;
+
+    bytecode[0] = VM_WRITE_POINTER;
+    serialize_long(bytecode + 1, (long)tree->data.group.index, 4); // FIXME: signedness
+
+    my_memcpy(bytecode + 1 + 4, child.bytecode, child.size);
+
+    const size_t offset = 1 + 4 + child.size;
+    bytecode[offset] = VM_WRITE_POINTER;
+    serialize_long(bytecode + offset + 1, (long)tree->data.group.index, 4); // FIXME: signedness
+
+    free(child.bytecode);
 
     break;
   }
@@ -1042,6 +1087,11 @@ execute(crex_match_result_t *match_result, const regex_t *regex, const char *str
           break;
         }
 
+        case VM_WRITE_POINTER: {
+          // FIXME
+          break;
+        }
+
         default:
           assert(0);
         }
@@ -1196,13 +1246,16 @@ const char *crex_vm_code_to_str(unsigned char code) {
   case VM_SPLIT_EAGER:
     return "VM_SPLIT_EAGER";
 
+  case VM_WRITE_POINTER:
+    return "VM_WRITE_POINTER";
+
   default:
     assert(0);
   }
 }
 
-void crex_debug_lex(const char *str, size_t length) {
-  const char *eof = str + length;
+void crex_debug_lex(const char *str, FILE* file) {
+  const char *eof = str + strlen(str);
 
   token_t token;
 
@@ -1210,18 +1263,18 @@ void crex_debug_lex(const char *str, size_t length) {
     switch (token.type) {
     case TT_CHARACTER:
       if (isprint(token.data.character)) {
-        fprintf(stderr, "TT_CHARACTER %c\n", token.data.character);
+        fprintf(file, "TT_CHARACTER %c\n", token.data.character);
       } else {
-        fprintf(stderr, "TT_CHARACTER 0x%02x\n", 0xff & (int)token.data.character);
+        fprintf(file, "TT_CHARACTER 0x%02x\n", 0xff & (int)token.data.character);
       }
       break;
 
     case TT_ANCHOR:
-      fprintf(stderr, "TT_ANCHOR %s\n", anchor_type_to_str(token.data.anchor_type));
+      fprintf(file, "TT_ANCHOR %s\n", anchor_type_to_str(token.data.anchor_type));
       break;
 
     case TT_PIPE:
-      fputs("TT_PIPE\n", stderr);
+      fputs("TT_PIPE\n", file);
       break;
 
     case TT_GREEDY_REPETITION:
@@ -1229,23 +1282,23 @@ void crex_debug_lex(const char *str, size_t length) {
       const char *str =
           (token.type == TT_GREEDY_REPETITION) ? "TT_GREEDY_REPETITION" : "TT_LAZY_REPETITION";
 
-      fprintf(stderr, "%s %zu ... ", str, token.data.repetition.lower_bound);
+      fprintf(file, "%s %zu ... ", str, token.data.repetition.lower_bound);
 
       if (token.data.repetition.upper_bound == REPETITION_INFINITY) {
-        fputs("inf\n", stderr);
+        fputs("inf\n", file);
       } else {
-        fprintf(stderr, "%zu\n", token.data.repetition.upper_bound);
+        fprintf(file, "%zu\n", token.data.repetition.upper_bound);
       }
 
       break;
     }
 
     case TT_OPEN_PAREN:
-      fputs("TT_OPEN_PAREN\n", stderr);
+      fputs("TT_OPEN_PAREN\n", file);
       break;
 
     case TT_CLOSE_PAREN:
-      fputs("TT_CLOSE_PAREN\n", stderr);
+      fputs("TT_CLOSE_PAREN\n", file);
       break;
 
     default:
@@ -1254,42 +1307,42 @@ void crex_debug_lex(const char *str, size_t length) {
   }
 }
 
-static void crex_print_parsetree(const parsetree_t *tree, size_t depth) {
+static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE* file) {
   for (size_t i = 0; i < depth; i++) {
-    fputc(' ', stderr);
+    fputc(' ', file);
   }
 
   switch (tree->type) {
   case PT_EMPTY:
-    fputs("(PT_EMPTY)", stderr);
+    fputs("(PT_EMPTY)", file);
     break;
 
   case PT_CHARACTER:
     if (isprint(tree->data.character)) {
-      fprintf(stderr, "(PT_CHARACTER %c)", tree->data.character);
+      fprintf(file, "(PT_CHARACTER %c)", tree->data.character);
     } else {
-      fprintf(stderr, "(PT_CHARACTER 0x%02x)", 0xff & (int)tree->data.character);
+      fprintf(file, "(PT_CHARACTER 0x%02x)", 0xff & (int)tree->data.character);
     }
     break;
 
   case PT_ANCHOR:
-    fprintf(stderr, "(PT_ANCHOR %s)", anchor_type_to_str(tree->data.anchor_type));
+    fprintf(file, "(PT_ANCHOR %s)", anchor_type_to_str(tree->data.anchor_type));
     break;
 
   case PT_CONCATENATION:
-    fputs("(PT_CONCATENATION\n", stderr);
-    crex_print_parsetree(tree->data.children[0], depth + 1);
-    fputc('\n', stderr);
-    crex_print_parsetree(tree->data.children[1], depth + 1);
-    fputc(')', stderr);
+    fputs("(PT_CONCATENATION\n", file);
+    crex_print_parsetree(tree->data.children[0], depth + 1, file);
+    fputc('\n', file);
+    crex_print_parsetree(tree->data.children[1], depth + 1, file);
+    fputc(')', file);
     break;
 
   case PT_ALTERNATION:
-    fputs("(PT_ALTERNATION\n", stderr);
-    crex_print_parsetree(tree->data.children[0], depth + 1);
-    fputc('\n', stderr);
-    crex_print_parsetree(tree->data.children[1], depth + 1);
-    fputc(')', stderr);
+    fputs("(PT_ALTERNATION\n", file);
+    crex_print_parsetree(tree->data.children[0], depth + 1, file);
+    fputc('\n', file);
+    crex_print_parsetree(tree->data.children[1], depth + 1, file);
+    fputc(')', file);
     break;
 
   case PT_GREEDY_REPETITION:
@@ -1297,24 +1350,24 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth) {
     const char *str =
         (tree->type == PT_GREEDY_REPETITION) ? "PT_GREEDY_REPETITION" : "PT_LAZY_REPETITION";
 
-    fprintf(stderr, "(%s %zu ", str, tree->data.repetition.lower_bound);
+    fprintf(file, "(%s %zu ", str, tree->data.repetition.lower_bound);
 
     if (tree->data.repetition.upper_bound == REPETITION_INFINITY) {
-      fputs("inf\n", stderr);
+      fputs("inf\n", file);
     } else {
-      fprintf(stderr, "%zu\n", tree->data.repetition.upper_bound);
+      fprintf(file, "%zu\n", tree->data.repetition.upper_bound);
     }
 
-    crex_print_parsetree(tree->data.repetition.child, depth + 1);
-    fputc(')', stderr);
+    crex_print_parsetree(tree->data.repetition.child, depth + 1, file);
+    fputc(')', file);
 
     break;
   }
 
   case PT_GROUP:
-    fputs("(PT_GROUP\n", stderr);
-    crex_print_parsetree(tree->data.child, depth + 1);
-    fputc(')', stderr);
+    fprintf(file, "(PT_GROUP %zu\n", tree->data.group.index);
+    crex_print_parsetree(tree->data.group.child, depth + 1, file);
+    fputc(')', file);
     break;
 
   default:
@@ -1322,32 +1375,36 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth) {
   }
 }
 
-void crex_debug_parse(const char *str, size_t length) {
+void crex_debug_parse(const char *str, FILE* file) {
   parsetree_t *tree;
-  const status_t status = parse(&tree, str, length);
+  const status_t status = parse(&tree, str, strlen(str));
 
   if (status == CREX_OK) {
-    crex_print_parsetree(tree, 0);
-    fputc('\n', stderr);
+    crex_print_parsetree(tree, 0, file);
+    fputc('\n', file);
   } else {
-    fprintf(stderr, "Parse failed with status %s\n", status_to_str(status));
+    fprintf(file, "Parse failed with status %s\n", status_to_str(status));
   }
+
+  free_parsetree(tree);
 }
 
-void crex_debug_compile(const char *str, size_t length) {
+void crex_debug_compile(const char *str, FILE* file) {
   parsetree_t *tree;
-  status_t status = parse(&tree, str, length);
+  status_t status = parse(&tree, str, strlen(str));
 
   if (status != CREX_OK) {
-    fprintf(stderr, "Parse failed with status %s\n", status_to_str(status));
+    fprintf(file, "Parse failed with status %s\n", status_to_str(status));
     return;
   }
 
   regex_t regex;
   status = compile(&regex, tree);
 
+  free_parsetree(tree);
+
   if (status != CREX_OK) {
-    fprintf(stderr, "Compilation failed with status %s\n", status_to_str(status));
+    fprintf(file, "Compilation failed with status %s\n", status_to_str(status));
     return;
   }
 
@@ -1358,23 +1415,28 @@ void crex_debug_compile(const char *str, size_t length) {
   for (size_t i = 0; i < regex.size; i++) {
     const unsigned char code = regex.bytecode[i];
 
-    fprintf(stderr, "%05zd %s ", i, crex_vm_code_to_str(code));
+    fprintf(file, "%05zd %s ", i, crex_vm_code_to_str(code));
 
     if (code == VM_JUMP || code == VM_SPLIT_PASSIVE || code == VM_SPLIT_EAGER) {
       const size_t origin = i + 1 + 4;
       const long delta = deserialize_long(regex.bytecode + i + 1, 4);
       const size_t destination = origin + delta;
-      fprintf(stderr, "%ld (=> %zu)\n", delta, destination);
+      fprintf(file, "%ld (=> %zu)\n", delta, destination);
       i += 4;
     } else if (code == VM_CHARACTER) {
-      fprintf(stderr, "%c\n", regex.bytecode[i + 1]);
+      fprintf(file, "%c\n", regex.bytecode[i + 1]);
       i++;
+    } else if (code == VM_WRITE_POINTER) {
+      fprintf(file, "%ld\n", deserialize_long(regex.bytecode + i + 1, 4)); // FIXME: signedness
+      i += 4;
     } else {
-      fputc('\n', stderr);
+      fputc('\n', file);
     }
   }
 
-  fprintf(stderr, "%05zd\n ", regex.size);
+  fprintf(file, "%05zd\n ", regex.size);
+
+  crex_free_regex(&regex);
 }
 
 #endif

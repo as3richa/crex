@@ -2,6 +2,10 @@
 
 #include "crex.h"
 
+void crex_debug_lex(const char*, FILE*);
+void crex_debug_parse(const char*, FILE*);
+void crex_debug_compile(const char*, FILE*);
+
 const char *pattern = "(alpha)+|(b(e+)ta)+";
 
 const char *cases[] = {"alpha",
@@ -19,10 +23,16 @@ const char *cases[] = {"alpha",
 const size_t n_cases = sizeof(cases) / sizeof(const char *);
 
 int main(void) {
+  printf("/%s/\n\n", pattern);
+  crex_debug_lex(pattern, stdout);
+  putchar('\n');
+  crex_debug_parse(pattern, stdout);
+  putchar('\n');
+  crex_debug_compile(pattern, stdout);
+  putchar('\n');
+
   crex_regex_t regex;
   crex_status_t status;
-
-  printf("/%s/\n", pattern);
 
   status = crex_compile_str(&regex, pattern);
 
