@@ -5,8 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <stdio.h> // FIXME
-
 #include "crex.h"
 
 typedef crex_status_t status_t;
@@ -18,8 +16,8 @@ typedef crex_context_t context_t;
 
 // FIXME: put these somewhere
 
-void my_memcpy(void *destination, const void *source, size_t size) {
-  assert(destination != NULL || size == 0);
+static void safe_memcpy(void *destination, const void *source, size_t size) {
+  assert((destination != NULL && source != NULL) || size == 0);
 
   if (size != 0) {
     memcpy(destination, source, size);
@@ -630,19 +628,19 @@ static void serialize_long(unsigned char *destination, long value, size_t size) 
   switch (size) {
   case 1: {
     const int8_t i8_value = value;
-    my_memcpy(destination, &i8_value, 1);
+    safe_memcpy(destination, &i8_value, 1);
     break;
   }
 
   case 2: {
     const int16_t i16_value = value;
-    my_memcpy(destination, &i16_value, 2);
+    safe_memcpy(destination, &i16_value, 2);
     break;
   }
 
   case 4: {
     const int32_t i32_value = value;
-    my_memcpy(destination, &i32_value, 4);
+    safe_memcpy(destination, &i32_value, 4);
     break;
   }
 
@@ -655,19 +653,19 @@ static long deserialize_long(unsigned char *source, size_t size) {
   switch (size) {
   case 1: {
     int8_t i8_value;
-    my_memcpy(&i8_value, source, 1);
+    safe_memcpy(&i8_value, source, 1);
     return i8_value;
   }
 
   case 2: {
     int16_t i16_value;
-    my_memcpy(&i16_value, source, 2);
+    safe_memcpy(&i16_value, source, 2);
     return i16_value;
   }
 
   case 4: {
     int32_t i32_value;
-    my_memcpy(&i32_value, source, 4);
+    safe_memcpy(&i32_value, source, 4);
     return i32_value;
   }
 
@@ -741,8 +739,8 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
     }
 
     if (tree->type == PT_CONCATENATION) {
-      my_memcpy(result->bytecode, left.bytecode, left.size);
-      my_memcpy(result->bytecode + left.size, right.bytecode, right.size);
+      safe_memcpy(result->bytecode, left.bytecode, left.size);
+      safe_memcpy(result->bytecode + left.size, right.bytecode, right.size);
     } else {
       const size_t split_location = 0;
       const size_t left_location = 1 + 4;
@@ -760,12 +758,12 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
       bytecode[split_location] = VM_SPLIT_PASSIVE;
       serialize_long(bytecode + split_location + 1, split_delta, 4);
 
-      my_memcpy(bytecode + left_location, left.bytecode, left.size);
+      safe_memcpy(bytecode + left_location, left.bytecode, left.size);
 
       bytecode[jump_location] = VM_JUMP;
       serialize_long(bytecode + jump_location + 1, jump_delta, 4);
 
-      my_memcpy(bytecode + right_location, right.bytecode, right.size);
+      safe_memcpy(bytecode + right_location, right.bytecode, right.size);
     }
 
     free(left.bytecode);
@@ -807,7 +805,7 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
     unsigned char *bytecode = result->bytecode;
 
     for (size_t i = 0; i < lower_bound; i++) {
-      my_memcpy(bytecode + i * child.size, child.bytecode, child.size);
+      safe_memcpy(bytecode + i * child.size, child.bytecode, child.size);
     }
 
     if (upper_bound == REPETITION_INFINITY) {
@@ -842,7 +840,7 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
       bytecode[offset] = forward_split_opcode;
       serialize_long(bytecode + offset + 1, forward_split_delta, 4);
 
-      my_memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
+      safe_memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
 
       bytecode[backward_split_location] = backward_split_opcode;
       serialize_long(bytecode + backward_split_location + 1, backward_split_delta, 4);
@@ -871,7 +869,7 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
         bytecode[offset] = split_opcode;
         serialize_long(bytecode + offset + 1, split_delta, 4);
 
-        my_memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
+        safe_memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
       }
     }
 
@@ -899,15 +897,16 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
 
     unsigned char *bytecode = result->bytecode;
 
-    bytecode[0] = VM_WRITE_POINTER;
-    serialize_long(bytecode + 1, (long)(2 * tree->data.group.index), 4); // FIXME: signedness
+    // FIXME: signedness
 
-    my_memcpy(bytecode + 1 + 4, child.bytecode, child.size);
+    bytecode[0] = VM_WRITE_POINTER;
+    serialize_long(bytecode + 1, (long)(2 * tree->data.group.index), 4);
+
+    safe_memcpy(bytecode + 1 + 4, child.bytecode, child.size);
 
     const size_t offset = 1 + 4 + child.size;
     bytecode[offset] = VM_WRITE_POINTER;
-    serialize_long(
-        bytecode + offset + 1, (long)(2 * tree->data.group.index + 1), 4); // FIXME: signedness
+    serialize_long(bytecode + offset + 1, (long)(2 * tree->data.group.index + 1), 4);
 
     free(child.bytecode);
 
@@ -953,7 +952,7 @@ static int ip_list_push(context_t *context,
       list_buffer_size = max_size;
     }
 
-    crex_ip_list_t *list_buffer = malloc(list_buffer_size);
+    crex_ip_list_t *list_buffer = malloc(sizeof(crex_ip_list_t) * list_buffer_size);
 
     if (list_buffer == NULL) {
       return 0;
@@ -989,7 +988,92 @@ static void ip_list_pop(context_t *context, size_t *pred_pointer, size_t *freeli
   (*freelist) = node;
 }
 
+static void pointer_block_allocator_initialize(context_t *context,
+                                               size_t *freelist,
+                                               size_t max_blocks,
+                                               size_t block_size) {
+  if (context->pointer_block_buffer_size < block_size + 1) {
+    (*freelist) = IP_LIST_END;
+    return;
+  }
+
+  (*freelist) = 0;
+
+  for (size_t i = 0;; i++) {
+    const size_t block = (block_size + 1) * i;
+    const size_t next = block + block_size + 1;
+
+    if (i == max_blocks - 1 || next >= context->pointer_block_buffer_size) {
+      context->pointer_block_buffer[block + block_size].next = IP_LIST_END;
+      break;
+    }
+
+    context->pointer_block_buffer[block + block_size].next = next;
+  }
+}
+
+static size_t pointer_block_allocator_alloc(context_t *context,
+                                            size_t *freelist,
+                                            size_t max_blocks,
+                                            size_t block_size) {
+  if ((*freelist) == IP_LIST_END) {
+    size_t prev_n_blocks = context->pointer_block_buffer_size / block_size;
+    size_t n_blocks = 2 * prev_n_blocks + 4;
+
+    if (n_blocks > max_blocks) {
+      n_blocks = max_blocks;
+    }
+
+    const size_t pointer_block_buffer_size = n_blocks * (1 + block_size);
+
+    pointer_block_t *pointer_block_buffer =
+        malloc(sizeof(pointer_block_t) * pointer_block_buffer_size);
+
+    if (pointer_block_buffer == NULL) {
+      return IP_LIST_END;
+    }
+
+    (*freelist) = (block_size + 1) * prev_n_blocks;
+
+    for (size_t i = prev_n_blocks;; i++) {
+      const size_t block = (block_size + 1) * i;
+      const size_t next = block + block_size + 1;
+
+      if (i == max_blocks - 1 || next >= pointer_block_buffer_size) {
+        pointer_block_buffer[block + block_size].next = IP_LIST_END;
+        break;
+      }
+
+      pointer_block_buffer[block + block_size].next = next;
+    }
+
+    free(context->pointer_block_buffer);
+    context->pointer_block_buffer = pointer_block_buffer;
+
+    context->pointer_block_buffer_size = pointer_block_buffer_size;
+  }
+
+  size_t block = *freelist;
+  (*freelist) = context->pointer_block_buffer[block + block_size].next;
+
+  return block;
+}
+
+static void pointer_block_allocator_free(context_t *context,
+                                         size_t *freelist,
+                                         size_t block_size,
+                                         size_t block) {
+  context->pointer_block_buffer[block + block_size].next = *freelist;
+  (*freelist) = block;
+}
+
 #define MATCH_BOOLEAN
+#include "executor.h"
+
+#define MATCH_LOCATION
+#include "executor.h"
+
+#define MATCH_GROUPS
 #include "executor.h"
 
 /** Public API **/
@@ -1022,11 +1106,11 @@ void crex_create_context(crex_context_t *context) {
   context->visited_size = 0;
   context->visited = NULL;
 
-  context->pointer_offsets_size = 0;
-  context->pointer_offsets = NULL;
+  context->pointer_block_offsets_size = 0;
+  context->pointer_block_offsets = NULL;
 
-  context->pointer_buffer_size = 0;
-  context->pointer_buffer = NULL;
+  context->pointer_block_buffer_size = 0;
+  context->pointer_block_buffer = NULL;
 
   context->list_buffer_size = 0;
   context->list_buffer = NULL;
@@ -1036,8 +1120,8 @@ void crex_free_regex(crex_regex_t *regex) { free(regex->bytecode); }
 
 void crex_free_context(crex_context_t *context) {
   free(context->visited);
-  free(context->pointer_offsets);
-  free(context->pointer_buffer);
+  free(context->pointer_block_offsets);
+  free(context->pointer_block_buffer);
   free(context->list_buffer);
 }
 
@@ -1049,6 +1133,18 @@ void crex_free_context(crex_context_t *context) {
 status_t
 crex_is_match_str(int *is_match, context_t *context, const regex_t *regex, const char *str) {
   return crex_is_match(is_match, context, regex, str, strlen(str));
+}
+
+status_t
+crex_find_str(crex_slice_t *match, context_t *context, const regex_t *regex, const char *str) {
+  return crex_find(match, context, regex, str, strlen(str));
+}
+
+status_t crex_match_groups_str(crex_slice_t *matches,
+                               context_t *context,
+                               const regex_t *regex,
+                               const char *str) {
+  return crex_match_groups(matches, context, regex, str, strlen(str));
 }
 
 #ifdef CREX_DEBUG

@@ -28,20 +28,25 @@ typedef struct {
   const char *start;
 } crex_slice_t;
 
-typedef struct ip_list {
+typedef struct {
   size_t instruction_pointer;
   size_t next;
 } crex_ip_list_t;
+
+typedef union {
+  char *pointer;
+  size_t next;
+} pointer_block_t;
 
 typedef struct {
   size_t visited_size;
   unsigned char *visited;
 
-  size_t pointer_offsets_size;
-  size_t *pointer_offsets;
+  size_t pointer_block_offsets_size;
+  size_t *pointer_block_offsets;
 
-  size_t pointer_buffer_size;
-  unsigned char **pointer_buffer;
+  size_t pointer_block_buffer_size;
+  pointer_block_t *pointer_block_buffer;
 
   size_t list_buffer_size;
   crex_ip_list_t *list_buffer;
@@ -70,25 +75,26 @@ CREX_WARN_UNUSED_RESULT crex_status_t crex_is_match_str(int *is_match,
                                                         const crex_regex_t *regex,
                                                         const char *str);
 
-/*
 CREX_WARN_UNUSED_RESULT crex_status_t crex_find(crex_slice_t *match,
+                                                crex_context_t *context,
                                                 const crex_regex_t *regex,
                                                 const char *buffer,
                                                 size_t length);
 
 CREX_WARN_UNUSED_RESULT crex_status_t crex_find_str(crex_slice_t *match,
+                                                    crex_context_t *context,
                                                     const crex_regex_t *regex,
                                                     const char *str);
 
 CREX_WARN_UNUSED_RESULT crex_status_t crex_match_groups(crex_slice_t *matches,
+                                                        crex_context_t *context,
                                                         const crex_regex_t *regex,
                                                         const char *buffer,
                                                         size_t length);
 
 CREX_WARN_UNUSED_RESULT crex_status_t crex_match_groups_str(crex_slice_t *matches,
+                                                            crex_context_t *context,
                                                             const crex_regex_t *regex,
-                                                            const char *buffer,
-                                                            size_t length);
-*/
+                                                            const char *str);
 
 #endif
