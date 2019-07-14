@@ -2,9 +2,9 @@
 
 #include "crex.h"
 
-void crex_debug_lex(const char*, FILE*);
-void crex_debug_parse(const char*, FILE*);
-void crex_debug_compile(const char*, FILE*);
+void crex_debug_lex(const char *, FILE *);
+void crex_debug_parse(const char *, FILE *);
+void crex_debug_compile(const char *, FILE *);
 
 const char *pattern = "(alpha)+|(b(e+)ta)+";
 
@@ -40,16 +40,20 @@ int main(void) {
     return 1;
   }
 
+  crex_context_t context;
+
+  crex_create_context(&context);
+
   for (size_t i = 0; i < n_cases; i++) {
-    crex_match_result_t match_result;
-    status = crex_match_str(&match_result, &regex, cases[i]);
+    int is_match;
+    status = crex_is_match_str(&is_match, &context, &regex, cases[i]);
 
     if (status != CREX_OK) {
       crex_free_regex(&regex);
       return 1;
     }
 
-    printf("\"%s\" => %d\n", cases[i], match_result.matched);
+    printf("\"%s\" => %d\n", cases[i], is_match);
   }
 
   crex_free_regex(&regex);

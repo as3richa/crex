@@ -5,10 +5,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <stdio.h> // FIXME
+
 #include "crex.h"
 
 typedef crex_status_t status_t;
 typedef crex_regex_t regex_t;
+typedef crex_context_t context_t;
 #define WARN_UNUSED_RESULT CREX_WARN_UNUSED_RESULT
 
 #define REPETITION_INFINITY (~(size_t)0)
@@ -307,7 +310,10 @@ WARN_UNUSED_RESULT static int
 push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator);
 WARN_UNUSED_RESULT static int pop_operator(tree_stack_t *trees, operator_stack_t *operators);
 
-WARN_UNUSED_RESULT status_t parse(parsetree_t **result, const char *str, size_t length) {
+WARN_UNUSED_RESULT status_t parse(parsetree_t **result,
+                                  size_t *n_groups,
+                                  const char *str,
+                                  size_t length) {
   const char *eof = str + length;
 
   tree_stack_t trees = {0, 0, NULL};
@@ -331,7 +337,7 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result, const char *str, size_t 
     CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
   }
 
-  size_t n_groups = 1;
+  (*n_groups) = 1;
 
   while (str != eof) {
     token_t token;
@@ -373,7 +379,8 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result, const char *str, size_t 
     case TT_GREEDY_REPETITION:
     case TT_LAZY_REPETITION: {
       operator_t operator;
-      operator.type = (token.type == TT_GREEDY_REPETITION) ? PT_GREEDY_REPETITION : PT_LAZY_REPETITION;
+      operator.type =(token.type == TT_GREEDY_REPETITION) ? PT_GREEDY_REPETITION
+                                                          : PT_LAZY_REPETITION;
       operator.data.repetition.lower_bound = token.data.repetition.lower_bound;
       operator.data.repetition.upper_bound = token.data.repetition.upper_bound;
       CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
@@ -387,7 +394,7 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result, const char *str, size_t 
       CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
 
       operator.type = PT_GROUP;
-      operator.data.group_index = n_groups ++;
+      operator.data.group_index =(*n_groups)++;
       CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
 
       CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
@@ -417,7 +424,7 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result, const char *str, size_t 
   }
 
   while (operators.size > 0) {
-    if(operators.data[operators.size - 1].type == PT_GROUP) {
+    if (operators.data[operators.size - 1].type == PT_GROUP) {
       CHECK_ERRORS(operators.size == 1, CREX_E_UNMATCHED_OPEN_PAREN);
     }
 
@@ -612,6 +619,11 @@ enum {
   VM_WRITE_POINTER
 };
 
+typedef struct {
+  size_t size;
+  unsigned char *bytecode;
+} compilation_result_t;
+
 static void serialize_long(unsigned char *destination, long value, size_t size) {
   assert(-2147483647 <= value && value <= 2147483647);
 
@@ -665,7 +677,7 @@ static long deserialize_long(unsigned char *source, size_t size) {
   }
 }
 
-status_t compile(regex_t *result, parsetree_t *tree) {
+status_t compile(compilation_result_t *result, parsetree_t *tree) {
   switch (tree->type) {
   case PT_EMPTY:
     result->size = 0;
@@ -699,7 +711,7 @@ status_t compile(regex_t *result, parsetree_t *tree) {
 
   case PT_CONCATENATION:
   case PT_ALTERNATION: {
-    regex_t left, right;
+    compilation_result_t left, right;
 
     status_t status = compile(&left, tree->data.children[0]);
 
@@ -764,7 +776,7 @@ status_t compile(regex_t *result, parsetree_t *tree) {
 
   case PT_GREEDY_REPETITION:
   case PT_LAZY_REPETITION: {
-    regex_t child;
+    compilation_result_t child;
 
     status_t status = compile(&child, tree->data.repetition.child);
 
@@ -869,7 +881,7 @@ status_t compile(regex_t *result, parsetree_t *tree) {
   }
 
   case PT_GROUP: {
-    regex_t child;
+    compilation_result_t child;
     status_t status = compile(&child, tree->data.group.child);
 
     if (status != CREX_OK) {
@@ -880,21 +892,22 @@ status_t compile(regex_t *result, parsetree_t *tree) {
 
     result->bytecode = malloc(result->size);
 
-    if(result->bytecode == NULL) {
+    if (result->bytecode == NULL) {
       free(child.bytecode);
       return CREX_E_NOMEM;
     }
 
-    unsigned char* bytecode = result->bytecode;
+    unsigned char *bytecode = result->bytecode;
 
     bytecode[0] = VM_WRITE_POINTER;
-    serialize_long(bytecode + 1, (long)tree->data.group.index, 4); // FIXME: signedness
+    serialize_long(bytecode + 1, (long)(2 * tree->data.group.index), 4); // FIXME: signedness
 
     my_memcpy(bytecode + 1 + 4, child.bytecode, child.size);
 
     const size_t offset = 1 + 4 + child.size;
     bytecode[offset] = VM_WRITE_POINTER;
-    serialize_long(bytecode + offset + 1, (long)tree->data.group.index, 4); // FIXME: signedness
+    serialize_long(
+        bytecode + offset + 1, (long)(2 * tree->data.group.index + 1), 4); // FIXME: signedness
 
     free(child.bytecode);
 
@@ -910,233 +923,91 @@ status_t compile(regex_t *result, parsetree_t *tree) {
 
 /** Executor **/
 
-typedef struct {
-  size_t instruction_pointer;
-} thread_state_t;
+#define IP_LIST_END (~(size_t)0)
 
-typedef struct thread_list {
-  thread_state_t state;
-  struct thread_list *next;
-} thread_list_t;
+static void
+ip_list_initialize(context_t *context, size_t *head, size_t *freelist, size_t max_size) {
+  *head = IP_LIST_END;
+  *freelist = (context->list_buffer_size > 0) ? 0 : IP_LIST_END;
 
-status_t
-execute(crex_match_result_t *match_result, const regex_t *regex, const char *str, size_t length) {
-  const size_t bitmap_size = (regex->size + CHAR_BIT - 1) / CHAR_BIT;
+  size_t freelist_size = context->list_buffer_size;
 
-  unsigned char *visited = malloc(bitmap_size);
-
-  if (visited == NULL) {
-    return CREX_E_NOMEM;
+  if (freelist_size > max_size) {
+    freelist_size = max_size;
   }
 
-  // FIXME: justify (tighten?) this bound
-  const size_t thread_list_capacity = 2 * regex->size;
-  thread_list_t *thread_list_buffer = malloc(sizeof(thread_list_t) * thread_list_capacity);
-
-  if (thread_list_buffer == NULL) {
-    free(visited);
-    return CREX_E_NOMEM;
+  for (size_t i = 0; i < freelist_size; i++) {
+    context->list_buffer[i].next = (i == freelist_size - 1) ? IP_LIST_END : (i + 1);
   }
-
-  for (size_t i = 0; i < thread_list_capacity; i++) {
-    thread_list_buffer[i].next =
-        (i == thread_list_capacity - 1) ? NULL : &thread_list_buffer[i + 1];
-  }
-
-  thread_list_t *thread_freelist = &thread_list_buffer[0];
-  thread_list_t *thread_list_head = NULL;
-
-#define PUSH(pointer, new_state)                                                                   \
-  do {                                                                                             \
-    assert(thread_freelist != NULL);                                                               \
-    thread_list_t *node = thread_freelist;                                                         \
-    thread_freelist = thread_freelist->next;                                                       \
-    node->state = *(new_state);                                                                    \
-    node->next = *(pointer);                                                                       \
-    *(pointer) = node;                                                                             \
-  } while (0)
-
-#define POP(pointer, node)                                                                         \
-  do {                                                                                             \
-    assert((node) == *(pointer));                                                                  \
-    *(pointer) = (node)->next;                                                                     \
-    (node)->next = thread_freelist;                                                                \
-    thread_freelist = (node);                                                                      \
-  } while (0)
-
-  const thread_state_t initial_state = {0};
-
-  const char *eof = str + length;
-  int prev_character = -1;
-
-  match_result->matched = 0;
-
-  for (;;) {
-    const int character = (str == eof) ? -1 : (unsigned char)(*(str++));
-
-    memset(visited, 0, bitmap_size);
-
-    PUSH(&thread_list_head, &initial_state);
-
-    thread_list_t *iter = thread_list_head;
-    thread_list_t **pointer = &thread_list_head;
-
-    for (;;) {
-      thread_state_t *state = &iter->state;
-      size_t instruction_pointer = state->instruction_pointer;
-
-      int keep = 1;
-
-      for (;;) {
-        if (instruction_pointer == regex->size) {
-          match_result->matched = 1;
-          break;
-        }
-
-        const size_t byte_index = instruction_pointer / CHAR_BIT;
-        const size_t bit_index = instruction_pointer % CHAR_BIT;
-
-        if (visited[byte_index] & (1u << bit_index)) {
-          keep = 0;
-          break;
-        }
-
-        visited[byte_index] |= 1u << bit_index;
-
-        const unsigned char code = regex->bytecode[instruction_pointer++];
-
-        if (code == VM_CHARACTER) {
-          assert(instruction_pointer <= regex->size - 1);
-
-          const unsigned char expected_character = regex->bytecode[instruction_pointer++];
-
-          if (character != expected_character) {
-            keep = 0;
-          }
-
-          break;
-        }
-
-        switch (code) {
-        case VM_ANCHOR_BOF:
-          if (prev_character != -1) {
-            keep = 0;
-          }
-          break;
-
-        case VM_ANCHOR_BOL:
-          if (prev_character != -1 && prev_character != '\n') {
-            keep = 0;
-          }
-          break;
-
-        case VM_ANCHOR_EOF:
-          if (character != -1) {
-            keep = 0;
-          }
-          break;
-
-        case VM_ANCHOR_EOL:
-          if (character != -1 && character != '\n') {
-            keep = 0;
-          }
-          break;
-
-        case VM_ANCHOR_WORD_BOUNDARY:
-          assert(0 && "FIXME");
-          break;
-
-        case VM_ANCHOR_NOT_WORD_BOUNDARY:
-          assert(0 && "FIXME");
-          break;
-
-        case VM_JUMP: {
-          assert(instruction_pointer <= regex->size - 4);
-
-          const long delta = deserialize_long(regex->bytecode + instruction_pointer, 4);
-          instruction_pointer += 4;
-
-          instruction_pointer += delta;
-
-          break;
-        }
-
-        case VM_SPLIT_PASSIVE:
-        case VM_SPLIT_EAGER: {
-          assert(instruction_pointer <= regex->size - 4);
-
-          const long delta = deserialize_long(regex->bytecode + instruction_pointer, 4);
-          instruction_pointer += 4;
-
-          thread_state_t split_state;
-          // FIXME: copy state
-
-          if (code == VM_SPLIT_PASSIVE) {
-            split_state.instruction_pointer = instruction_pointer + delta;
-          } else {
-            split_state.instruction_pointer = instruction_pointer;
-            instruction_pointer += delta;
-          }
-
-          if (!((visited[split_state.instruction_pointer / CHAR_BIT] >>
-                 (split_state.instruction_pointer % CHAR_BIT)) &
-                1u)) {
-            PUSH(&iter->next, &split_state);
-          }
-
-          break;
-        }
-
-        case VM_WRITE_POINTER: {
-          // FIXME
-          break;
-        }
-
-        default:
-          assert(0);
-        }
-
-        if (!keep) {
-          break;
-        }
-      }
-
-      if (keep) {
-        state->instruction_pointer = instruction_pointer;
-        pointer = &iter->next;
-        iter = iter->next;
-      } else {
-        POP(pointer, iter);
-        iter = *pointer;
-      }
-
-      if (iter == NULL || match_result->matched) {
-        break;
-      }
-    }
-
-    if (character == -1 || match_result->matched) {
-      break;
-    }
-  }
-
-  free(visited);
-  free(thread_list_buffer);
-
-  return CREX_OK;
 }
+
+static int ip_list_push(context_t *context,
+                        size_t *pred_pointer,
+                        size_t *freelist,
+                        size_t max_size,
+                        size_t instruction_pointer) {
+  if ((*freelist) == IP_LIST_END) {
+    size_t list_buffer_size = 2 * context->list_buffer_size + 16; // FIXME: think harder about this?
+
+    if (list_buffer_size > max_size) {
+      list_buffer_size = max_size;
+    }
+
+    crex_ip_list_t *list_buffer = malloc(list_buffer_size);
+
+    if (list_buffer == NULL) {
+      return 0;
+    }
+
+    (*freelist) = context->list_buffer_size;
+
+    for (size_t i = *freelist; i < list_buffer_size; i++) {
+      list_buffer[i].next = (i == list_buffer_size - 1) ? IP_LIST_END : (i + 1);
+    }
+
+    free(context->list_buffer);
+    context->list_buffer = list_buffer;
+
+    context->list_buffer_size = list_buffer_size;
+  }
+
+  const size_t node = *freelist;
+  (*freelist) = context->list_buffer[*freelist].next;
+
+  context->list_buffer[node].instruction_pointer = instruction_pointer;
+  context->list_buffer[node].next = *pred_pointer;
+  (*pred_pointer) = node;
+
+  return 1;
+}
+
+static void ip_list_pop(context_t *context, size_t *pred_pointer, size_t *freelist, size_t node) {
+  assert(*pred_pointer == node);
+
+  (*pred_pointer) = context->list_buffer[node].next;
+  context->list_buffer[node].next = *freelist;
+  (*freelist) = node;
+}
+
+#define MATCH_BOOLEAN
+#include "executor.h"
 
 /** Public API **/
 
 status_t crex_compile(crex_regex_t *regex, const char *pattern, size_t length) {
   parsetree_t *tree;
-  status_t status = parse(&tree, pattern, length);
+  status_t status = parse(&tree, &regex->n_groups, pattern, length);
 
   if (status != CREX_OK) {
     return status;
   }
 
-  status = compile(regex, tree);
+  // compilation_result_t is a prefix of regex
+  compilation_result_t *result = (compilation_result_t *)regex;
+
+  status = compile(result, tree);
+
+  assert(regex->size == result->size && regex->bytecode == result->bytecode);
 
   free_parsetree(tree);
 
@@ -1147,17 +1018,37 @@ status_t crex_compile_str(crex_regex_t *regex, const char *pattern) {
   return crex_compile(regex, pattern, strlen(pattern));
 }
 
-void crex_free_regex(crex_regex_t *regex) { free(regex->bytecode); }
+void crex_create_context(crex_context_t *context) {
+  context->visited_size = 0;
+  context->visited = NULL;
 
-status_t crex_match(crex_match_result_t *result,
-                    const crex_regex_t *regex,
-                    const char *buffer,
-                    size_t length) {
-  return execute(result, regex, buffer, length);
+  context->pointer_offsets_size = 0;
+  context->pointer_offsets = NULL;
+
+  context->pointer_buffer_size = 0;
+  context->pointer_buffer = NULL;
+
+  context->list_buffer_size = 0;
+  context->list_buffer = NULL;
 }
 
-status_t crex_match_str(crex_match_result_t *result, const crex_regex_t *regex, const char *str) {
-  return crex_match(result, regex, str, strlen(str));
+void crex_free_regex(crex_regex_t *regex) { free(regex->bytecode); }
+
+void crex_free_context(crex_context_t *context) {
+  free(context->visited);
+  free(context->pointer_offsets);
+  free(context->pointer_buffer);
+  free(context->list_buffer);
+}
+
+/* status_t crex_is_match(
+    int *is_match, context_t *context, const regex_t *regex, const char *buffer, size_t length) {
+  return execute(is_match, context, regex, buffer, length);
+} */
+
+status_t
+crex_is_match_str(int *is_match, context_t *context, const regex_t *regex, const char *str) {
+  return crex_is_match(is_match, context, regex, str, strlen(str));
 }
 
 #ifdef CREX_DEBUG
@@ -1254,7 +1145,7 @@ const char *crex_vm_code_to_str(unsigned char code) {
   }
 }
 
-void crex_debug_lex(const char *str, FILE* file) {
+void crex_debug_lex(const char *str, FILE *file) {
   const char *eof = str + strlen(str);
 
   token_t token;
@@ -1307,7 +1198,7 @@ void crex_debug_lex(const char *str, FILE* file) {
   }
 }
 
-static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE* file) {
+static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *file) {
   for (size_t i = 0; i < depth; i++) {
     fputc(' ', file);
   }
@@ -1375,9 +1266,10 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE* fi
   }
 }
 
-void crex_debug_parse(const char *str, FILE* file) {
+void crex_debug_parse(const char *str, FILE *file) {
   parsetree_t *tree;
-  const status_t status = parse(&tree, str, strlen(str));
+  size_t n_groups;
+  const status_t status = parse(&tree, &n_groups, str, strlen(str));
 
   if (status == CREX_OK) {
     crex_print_parsetree(tree, 0, file);
@@ -1389,17 +1281,18 @@ void crex_debug_parse(const char *str, FILE* file) {
   free_parsetree(tree);
 }
 
-void crex_debug_compile(const char *str, FILE* file) {
+void crex_debug_compile(const char *str, FILE *file) {
   parsetree_t *tree;
-  status_t status = parse(&tree, str, strlen(str));
+  size_t n_groups;
+  status_t status = parse(&tree, &n_groups, str, strlen(str));
 
   if (status != CREX_OK) {
     fprintf(file, "Parse failed with status %s\n", status_to_str(status));
     return;
   }
 
-  regex_t regex;
-  status = compile(&regex, tree);
+  compilation_result_t result;
+  status = compile(&result, tree);
 
   free_parsetree(tree);
 
@@ -1412,31 +1305,31 @@ void crex_debug_compile(const char *str, FILE* file) {
    fprintf(stderr, "0x%02x\n", regex.bytecode[i]);
   } */
 
-  for (size_t i = 0; i < regex.size; i++) {
-    const unsigned char code = regex.bytecode[i];
+  for (size_t i = 0; i < result.size; i++) {
+    const unsigned char code = result.bytecode[i];
 
     fprintf(file, "%05zd %s ", i, crex_vm_code_to_str(code));
 
     if (code == VM_JUMP || code == VM_SPLIT_PASSIVE || code == VM_SPLIT_EAGER) {
       const size_t origin = i + 1 + 4;
-      const long delta = deserialize_long(regex.bytecode + i + 1, 4);
+      const long delta = deserialize_long(result.bytecode + i + 1, 4);
       const size_t destination = origin + delta;
       fprintf(file, "%ld (=> %zu)\n", delta, destination);
       i += 4;
     } else if (code == VM_CHARACTER) {
-      fprintf(file, "%c\n", regex.bytecode[i + 1]);
+      fprintf(file, "%c\n", result.bytecode[i + 1]);
       i++;
     } else if (code == VM_WRITE_POINTER) {
-      fprintf(file, "%ld\n", deserialize_long(regex.bytecode + i + 1, 4)); // FIXME: signedness
+      fprintf(file, "%ld\n", deserialize_long(result.bytecode + i + 1, 4)); // FIXME: signedness
       i += 4;
     } else {
       fputc('\n', file);
     }
   }
 
-  fprintf(file, "%05zd\n ", regex.size);
+  fprintf(file, "%05zd\n ", result.size);
 
-  crex_free_regex(&regex);
+  free(result.bytecode);
 }
 
 #endif

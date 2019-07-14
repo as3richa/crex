@@ -15,14 +15,37 @@ typedef enum {
   CREX_E_UNMATCHED_CLOSE_PAREN
 } crex_status_t;
 
+/* FIXME: make these opaque */
+
 typedef struct {
   size_t size;
   unsigned char *bytecode;
+  size_t n_groups;
 } crex_regex_t;
 
 typedef struct {
-  int matched;
-} crex_match_result_t;
+  size_t size;
+  const char *start;
+} crex_slice_t;
+
+typedef struct ip_list {
+  size_t instruction_pointer;
+  size_t next;
+} crex_ip_list_t;
+
+typedef struct {
+  size_t visited_size;
+  unsigned char *visited;
+
+  size_t pointer_offsets_size;
+  size_t *pointer_offsets;
+
+  size_t pointer_buffer_size;
+  unsigned char **pointer_buffer;
+
+  size_t list_buffer_size;
+  crex_ip_list_t *list_buffer;
+} crex_context_t;
 
 CREX_WARN_UNUSED_RESULT crex_status_t crex_compile(crex_regex_t *regex,
                                                    const char *pattern,
@@ -30,15 +53,42 @@ CREX_WARN_UNUSED_RESULT crex_status_t crex_compile(crex_regex_t *regex,
 
 CREX_WARN_UNUSED_RESULT crex_status_t crex_compile_str(crex_regex_t *regex, const char *pattern);
 
+void crex_create_context(crex_context_t *context);
+
 void crex_free_regex(crex_regex_t *regex);
 
-CREX_WARN_UNUSED_RESULT crex_status_t crex_match(crex_match_result_t *result,
-                                                 const crex_regex_t *regex,
-                                                 const char *buffer,
-                                                 size_t length);
+void crex_free_context(crex_context_t *context);
 
-CREX_WARN_UNUSED_RESULT crex_status_t crex_match_str(crex_match_result_t *result,
-                                                     const crex_regex_t *regex,
-                                                     const char *str);
+CREX_WARN_UNUSED_RESULT crex_status_t crex_is_match(int *is_match,
+                                                    crex_context_t *context,
+                                                    const crex_regex_t *regex,
+                                                    const char *buffer,
+                                                    size_t length);
+
+CREX_WARN_UNUSED_RESULT crex_status_t crex_is_match_str(int *is_match,
+                                                        crex_context_t *context,
+                                                        const crex_regex_t *regex,
+                                                        const char *str);
+
+/*
+CREX_WARN_UNUSED_RESULT crex_status_t crex_find(crex_slice_t *match,
+                                                const crex_regex_t *regex,
+                                                const char *buffer,
+                                                size_t length);
+
+CREX_WARN_UNUSED_RESULT crex_status_t crex_find_str(crex_slice_t *match,
+                                                    const crex_regex_t *regex,
+                                                    const char *str);
+
+CREX_WARN_UNUSED_RESULT crex_status_t crex_match_groups(crex_slice_t *matches,
+                                                        const crex_regex_t *regex,
+                                                        const char *buffer,
+                                                        size_t length);
+
+CREX_WARN_UNUSED_RESULT crex_status_t crex_match_groups_str(crex_slice_t *matches,
+                                                            const crex_regex_t *regex,
+                                                            const char *buffer,
+                                                            size_t length);
+*/
 
 #endif
