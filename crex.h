@@ -29,7 +29,7 @@ typedef struct {
 } crex_slice_t;
 
 typedef struct {
-  size_t instruction_pointer;
+  size_t instr_pointer;
   size_t next;
 } crex_ip_list_t;
 

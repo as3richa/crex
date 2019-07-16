@@ -920,75 +920,134 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
   return CREX_OK;
 }
 
-/** Executor **/
+/** Instruction pointer (i.e. size_t) list with custom allocator **/
 
 #define IP_LIST_END (~(size_t)0)
 
+typedef size_t *ip_list_iterator_t;
+
+/* typedef struct {
+  size_t instr_pointer;
+  size_t next;
+} ip_list_node_t; */
+
+typedef crex_ip_list_t ip_list_node_t; // FIXME
+
+typedef struct {
+  size_t freelist;
+  size_t head;
+
+  size_t capacity;
+  ip_list_node_t *buffer;
+
+  size_t max_size;
+} ip_list_t;
+
 static void
-ip_list_initialize(context_t *context, size_t *head, size_t *freelist, size_t max_size) {
-  *head = IP_LIST_END;
-  *freelist = (context->list_buffer_size > 0) ? 0 : IP_LIST_END;
+ip_list_create(ip_list_t *list, size_t capacity, ip_list_node_t *buffer, size_t max_size) {
+  list->head = IP_LIST_END;
 
-  size_t freelist_size = context->list_buffer_size;
+  list->capacity = capacity;
+  list->buffer = buffer;
+  list->max_size = max_size;
 
-  if (freelist_size > max_size) {
-    freelist_size = max_size;
-  }
+  if (capacity > 0) {
+    const size_t freelist_size = (capacity <= max_size) ? capacity : max_size;
 
-  for (size_t i = 0; i < freelist_size; i++) {
-    context->list_buffer[i].next = (i == freelist_size - 1) ? IP_LIST_END : (i + 1);
+    for (size_t i = 0; i < freelist_size; i++) {
+#ifndef NDEBUG
+      buffer[i].instr_pointer = ~(size_t)0;
+#endif
+
+      buffer[i].next = (i == freelist_size - 1) ? IP_LIST_END : (i + 1);
+    }
+
+    list->freelist = 0;
+  } else {
+    list->freelist = IP_LIST_END;
   }
 }
 
-static int ip_list_push(context_t *context,
-                        size_t *pred_pointer,
-                        size_t *freelist,
-                        size_t max_size,
-                        size_t instruction_pointer) {
-  if ((*freelist) == IP_LIST_END) {
-    size_t list_buffer_size = 2 * context->list_buffer_size + 16; // FIXME: think harder about this?
+static int ip_list_push(ip_list_t *list, ip_list_iterator_t iter, size_t instr_pointer) {
+  if (list->freelist == IP_LIST_END) {
+    assert(list->capacity < list->max_size);
 
-    if (list_buffer_size > max_size) {
-      list_buffer_size = max_size;
+    size_t capacity = 2 * list->capacity + 4;
+
+    if (capacity > list->max_size) {
+      capacity = list->max_size;
     }
 
-    crex_ip_list_t *list_buffer = malloc(sizeof(crex_ip_list_t) * list_buffer_size);
+    assert(capacity > list->capacity);
 
-    if (list_buffer == NULL) {
+    ip_list_node_t *buffer = malloc(sizeof(ip_list_node_t) * capacity);
+
+    if (buffer == NULL) {
       return 0;
     }
 
-    (*freelist) = context->list_buffer_size;
+    for (size_t i = list->capacity; i < capacity; i++) {
+#ifndef NDEBUG
+      buffer[i].instr_pointer = ~(size_t)0;
+#endif
 
-    for (size_t i = *freelist; i < list_buffer_size; i++) {
-      list_buffer[i].next = (i == list_buffer_size - 1) ? IP_LIST_END : (i + 1);
+      buffer[i].next = (i == capacity - 1) ? IP_LIST_END : i + 1;
     }
 
-    free(context->list_buffer);
-    context->list_buffer = list_buffer;
+    list->freelist = list->capacity;
 
-    context->list_buffer_size = list_buffer_size;
+    list->capacity = capacity;
+    list->buffer = buffer;
   }
 
-  const size_t node = *freelist;
-  (*freelist) = context->list_buffer[*freelist].next;
+  const size_t node = list->freelist;
+  assert(node < list->capacity);
 
-  context->list_buffer[node].instruction_pointer = instruction_pointer;
-  context->list_buffer[node].next = *pred_pointer;
-  (*pred_pointer) = node;
+  list->freelist = list->buffer[node].next;
+
+  list->buffer[node].instr_pointer = instr_pointer;
+  list->buffer[node].next = *iter;
+
+  *iter = node;
 
   return 1;
 }
 
-static void ip_list_pop(context_t *context, size_t *pred_pointer, size_t *freelist, size_t node) {
-  assert(*pred_pointer == node);
+static void ip_list_pop(ip_list_t *list, ip_list_iterator_t iter) {
+  const size_t node = *iter;
+  assert(node < list->capacity);
 
-  (*pred_pointer) = context->list_buffer[node].next;
-  context->list_buffer[node].next = *freelist;
-  (*freelist) = node;
+#ifndef NDEBUG
+  list->buffer[node].instr_pointer = ~(size_t)0;
+#endif
+
+  *iter = list->buffer[node].next;
+
+  list->buffer[node].next = list->freelist;
+  list->freelist = node;
 }
 
-static void pointer_block_allocator_initialize(context_t *context,
+static size_t *ip_list_ref(ip_list_t *list, ip_list_iterator_t iter) {
+  assert(*iter < list->capacity);
+  return &list->buffer[*iter].instr_pointer;
+}
+
+static ip_list_iterator_t ip_list_begin(ip_list_t *list) { return &list->head; }
+
+static ip_list_iterator_t ip_list_next(ip_list_t *list, ip_list_iterator_t iter) {
+  assert(*iter < list->capacity);
+  return &list->buffer[*iter].next;
+}
+
+static int ip_list_is_end(ip_list_t *list, ip_list_iterator_t iter) {
+  (void)list;
+  assert(*iter < list->capacity || *iter == IP_LIST_END);
+  return *iter == IP_LIST_END;
+}
+
+/** Pointer block allocator **/
+
+static void pointer_block_allocator_create(context_t *context,
                                                size_t *freelist,
                                                size_t max_blocks,
                                                size_t block_size) {
