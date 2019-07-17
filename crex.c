@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <stdio.h> // FIXME
+
 #include "crex.h"
 
 typedef crex_status_t status_t;
@@ -623,7 +625,7 @@ typedef struct {
 } compilation_result_t;
 
 static void serialize_long(unsigned char *destination, long value, size_t size) {
-  assert(-2147483647 <= value && value <= 2147483647);
+  assert(-2147483647 <= value && value <= 2147483647); // FIXME
 
   switch (size) {
   case 1: {
@@ -922,208 +924,162 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
 
 /** Instruction pointer (i.e. size_t) list with custom allocator **/
 
-#define IP_LIST_END (~(size_t)0)
+typedef size_t state_list_handle_t;
+typedef state_list_handle_t *state_list_iter_t;
 
-typedef size_t *ip_list_iterator_t;
+#define STATE_LIST_EMPTY (~(state_list_handle_t)0)
 
-/* typedef struct {
-  size_t instr_pointer;
-  size_t next;
-} ip_list_node_t; */
-
-typedef crex_ip_list_t ip_list_node_t; // FIXME
+/* typedef union {
+  size_t size;
+  char *pointer;
+} slot_t; */ // FIXME
 
 typedef struct {
-  size_t freelist;
-  size_t head;
-
   size_t capacity;
-  ip_list_node_t *buffer;
+  slot_t *buffer;
 
-  size_t max_size;
-} ip_list_t;
+  size_t n_pointers;
+  size_t element_size;
+  size_t max_capacity;
 
-static void
-ip_list_create(ip_list_t *list, size_t capacity, ip_list_node_t *buffer, size_t max_size) {
-  list->head = IP_LIST_END;
+  size_t bump_allocator;
+  state_list_handle_t freelist;
 
+  state_list_handle_t head;
+} state_list_t;
+
+#define LIST_NEXT(list, handle) (*(size_t *)((list)->buffer + (handle)))
+#define LIST_INSTR_POINTER(list, handle) (*(size_t *)((list)->buffer + (handle) + 1))
+#define LIST_POINTER_BUFFER(list, handle) ((char **)((list)->buffer + (handle) + 2))
+
+static void state_list_create(
+    state_list_t *list, size_t capacity, slot_t *buffer, size_t n_pointers, size_t max_elements) {
   list->capacity = capacity;
   list->buffer = buffer;
-  list->max_size = max_size;
 
-  if (capacity > 0) {
-    const size_t freelist_size = (capacity <= max_size) ? capacity : max_size;
+  list->n_pointers = n_pointers;
+  list->element_size = 2 + n_pointers;
+  list->max_capacity = max_elements * list->element_size;
 
-    for (size_t i = 0; i < freelist_size; i++) {
-#ifndef NDEBUG
-      buffer[i].instr_pointer = ~(size_t)0;
-#endif
+  list->bump_allocator = 0;
+  list->freelist = STATE_LIST_EMPTY;
 
-      buffer[i].next = (i == freelist_size - 1) ? IP_LIST_END : (i + 1);
-    }
-
-    list->freelist = 0;
-  } else {
-    list->freelist = IP_LIST_END;
-  }
+  list->head = STATE_LIST_EMPTY;
 }
 
-static int ip_list_push(ip_list_t *list, ip_list_iterator_t iter, size_t instr_pointer) {
-  if (list->freelist == IP_LIST_END) {
-    assert(list->capacity < list->max_size);
+static state_list_handle_t state_list_alloc(state_list_t *list) {
+  state_list_handle_t state;
 
-    size_t capacity = 2 * list->capacity + 4;
-
-    if (capacity > list->max_size) {
-      capacity = list->max_size;
-    }
-
-    assert(capacity > list->capacity);
-
-    ip_list_node_t *buffer = malloc(sizeof(ip_list_node_t) * capacity);
-
-    if (buffer == NULL) {
-      return 0;
-    }
-
-    for (size_t i = list->capacity; i < capacity; i++) {
 #ifndef NDEBUG
-      buffer[i].instr_pointer = ~(size_t)0;
+  state = STATE_LIST_EMPTY;
 #endif
 
-      buffer[i].next = (i == capacity - 1) ? IP_LIST_END : i + 1;
+  if (list->bump_allocator + list->element_size <= list->capacity) {
+    state = list->bump_allocator;
+    list->bump_allocator += list->element_size;
+  } else if (list->freelist != STATE_LIST_EMPTY) {
+    state = list->freelist;
+    list->freelist = LIST_NEXT(list, state);
+  } else {
+    // FIXME: think about a better resize strategy?
+    size_t capacity = 2 * list->capacity + list->element_size;
+
+    if (capacity > list->max_capacity) {
+      capacity = list->max_capacity;
     }
 
-    list->freelist = list->capacity;
+    slot_t *buffer = malloc(sizeof(slot_t) * capacity);
 
-    list->capacity = capacity;
+    if (buffer == NULL) {
+      return STATE_LIST_EMPTY;
+    }
+
+    safe_memcpy(buffer, list->buffer, sizeof(slot_t) * list->capacity);
+    free(list->buffer);
+
     list->buffer = buffer;
+    list->capacity = capacity;
+
+    assert(list->bump_allocator + list->element_size <= capacity);
+
+    state = list->bump_allocator;
+    list->bump_allocator += list->element_size;
   }
 
-  const size_t node = list->freelist;
-  assert(node < list->capacity);
+  assert(state + list->element_size <= list->capacity && state % list->element_size == 0);
 
-  list->freelist = list->buffer[node].next;
+  return state;
+}
 
-  list->buffer[node].instr_pointer = instr_pointer;
-  list->buffer[node].next = *iter;
+static int state_list_push_initial_state(state_list_t *list, state_list_handle_t predecessor) {
+  assert(predecessor < list->capacity || predecessor == STATE_LIST_EMPTY);
 
-  *iter = node;
+  const state_list_handle_t state = state_list_alloc(list);
+
+  if (state == STATE_LIST_EMPTY) {
+    return 0;
+  }
+
+  LIST_INSTR_POINTER(list, state) = 0;
+
+  char **pointer_buffer = LIST_POINTER_BUFFER(list, state);
+
+  for (size_t i = 0; i < list->n_pointers; i++) {
+    pointer_buffer[i] = NULL;
+  }
+
+  if (predecessor == STATE_LIST_EMPTY) {
+    LIST_NEXT(list, state) = list->head;
+    list->head = state;
+  } else {
+    LIST_NEXT(list, state) = LIST_NEXT(list, predecessor);
+    LIST_NEXT(list, predecessor) = state;
+  }
 
   return 1;
 }
 
-static void ip_list_pop(ip_list_t *list, ip_list_iterator_t iter) {
-  const size_t node = *iter;
-  assert(node < list->capacity);
+static int
+state_list_push_copy(state_list_t *list, state_list_handle_t predecessor, size_t instr_pointer) {
+  assert(predecessor < list->capacity);
 
-#ifndef NDEBUG
-  list->buffer[node].instr_pointer = ~(size_t)0;
-#endif
+  const state_list_handle_t state = state_list_alloc(list);
 
-  *iter = list->buffer[node].next;
-
-  list->buffer[node].next = list->freelist;
-  list->freelist = node;
-}
-
-static size_t *ip_list_ref(ip_list_t *list, ip_list_iterator_t iter) {
-  assert(*iter < list->capacity);
-  return &list->buffer[*iter].instr_pointer;
-}
-
-static ip_list_iterator_t ip_list_begin(ip_list_t *list) { return &list->head; }
-
-static ip_list_iterator_t ip_list_next(ip_list_t *list, ip_list_iterator_t iter) {
-  assert(*iter < list->capacity);
-  return &list->buffer[*iter].next;
-}
-
-static int ip_list_is_end(ip_list_t *list, ip_list_iterator_t iter) {
-  (void)list;
-  assert(*iter < list->capacity || *iter == IP_LIST_END);
-  return *iter == IP_LIST_END;
-}
-
-/** Pointer block allocator **/
-
-static void pointer_block_allocator_create(context_t *context,
-                                               size_t *freelist,
-                                               size_t max_blocks,
-                                               size_t block_size) {
-  if (context->pointer_block_buffer_size < block_size + 1) {
-    (*freelist) = IP_LIST_END;
-    return;
+  if (state == STATE_LIST_EMPTY) {
+    return 0;
   }
 
-  (*freelist) = 0;
+  LIST_INSTR_POINTER(list, state) = instr_pointer;
 
-  for (size_t i = 0;; i++) {
-    const size_t block = (block_size + 1) * i;
-    const size_t next = block + block_size + 1;
+  char **dest_pointer_buffer = LIST_POINTER_BUFFER(list, state);
+  char **source_pointer_buffer = LIST_POINTER_BUFFER(list, predecessor);
+  safe_memcpy(dest_pointer_buffer, source_pointer_buffer, sizeof(char *) * list->n_pointers);
 
-    if (i == max_blocks - 1 || next >= context->pointer_block_buffer_size) {
-      context->pointer_block_buffer[block + block_size].next = IP_LIST_END;
-      break;
-    }
+  LIST_NEXT(list, state) = LIST_NEXT(list, predecessor);
+  LIST_NEXT(list, predecessor) = state;
 
-    context->pointer_block_buffer[block + block_size].next = next;
-  }
+  return 1;
 }
 
-static size_t pointer_block_allocator_alloc(context_t *context,
-                                            size_t *freelist,
-                                            size_t max_blocks,
-                                            size_t block_size) {
-  if ((*freelist) == IP_LIST_END) {
-    size_t prev_n_blocks = context->pointer_block_buffer_size / block_size;
-    size_t n_blocks = 2 * prev_n_blocks + 4;
+static state_list_handle_t state_list_pop(state_list_t *list, state_list_handle_t predecessor) {
+  assert(predecessor < list->capacity || predecessor == STATE_LIST_EMPTY);
 
-    if (n_blocks > max_blocks) {
-      n_blocks = max_blocks;
-    }
+  const state_list_handle_t state =
+      (predecessor == STATE_LIST_EMPTY) ? list->head : LIST_NEXT(list, predecessor);
+  assert(state < list->capacity);
 
-    const size_t pointer_block_buffer_size = n_blocks * (1 + block_size);
+  const state_list_handle_t successor = LIST_NEXT(list, state);
 
-    pointer_block_t *pointer_block_buffer =
-        malloc(sizeof(pointer_block_t) * pointer_block_buffer_size);
-
-    if (pointer_block_buffer == NULL) {
-      return IP_LIST_END;
-    }
-
-    (*freelist) = (block_size + 1) * prev_n_blocks;
-
-    for (size_t i = prev_n_blocks;; i++) {
-      const size_t block = (block_size + 1) * i;
-      const size_t next = block + block_size + 1;
-
-      if (i == max_blocks - 1 || next >= pointer_block_buffer_size) {
-        pointer_block_buffer[block + block_size].next = IP_LIST_END;
-        break;
-      }
-
-      pointer_block_buffer[block + block_size].next = next;
-    }
-
-    free(context->pointer_block_buffer);
-    context->pointer_block_buffer = pointer_block_buffer;
-
-    context->pointer_block_buffer_size = pointer_block_buffer_size;
+  if (predecessor == STATE_LIST_EMPTY) {
+    list->head = successor;
+  } else {
+    LIST_NEXT(list, predecessor) = successor;
   }
 
-  size_t block = *freelist;
-  (*freelist) = context->pointer_block_buffer[block + block_size].next;
+  LIST_NEXT(list, state) = list->freelist;
+  list->freelist = state;
 
-  return block;
-}
-
-static void pointer_block_allocator_free(context_t *context,
-                                         size_t *freelist,
-                                         size_t block_size,
-                                         size_t block) {
-  context->pointer_block_buffer[block + block_size].next = *freelist;
-  (*freelist) = block;
+  return successor;
 }
 
 #define MATCH_BOOLEAN
@@ -1165,12 +1121,6 @@ void crex_create_context(crex_context_t *context) {
   context->visited_size = 0;
   context->visited = NULL;
 
-  context->pointer_block_offsets_size = 0;
-  context->pointer_block_offsets = NULL;
-
-  context->pointer_block_buffer_size = 0;
-  context->pointer_block_buffer = NULL;
-
   context->list_buffer_size = 0;
   context->list_buffer = NULL;
 }
@@ -1179,8 +1129,6 @@ void crex_free_regex(crex_regex_t *regex) { free(regex->bytecode); }
 
 void crex_free_context(crex_context_t *context) {
   free(context->visited);
-  free(context->pointer_block_offsets);
-  free(context->pointer_block_buffer);
   free(context->list_buffer);
 }
 

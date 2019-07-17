@@ -34,22 +34,16 @@ typedef struct {
 } crex_ip_list_t;
 
 typedef union {
+  size_t size;
   char *pointer;
-  size_t next;
-} pointer_block_t;
+} slot_t;
 
 typedef struct {
   size_t visited_size;
   unsigned char *visited;
 
-  size_t pointer_block_offsets_size;
-  size_t *pointer_block_offsets;
-
-  size_t pointer_block_buffer_size;
-  pointer_block_t *pointer_block_buffer;
-
   size_t list_buffer_size;
-  crex_ip_list_t *list_buffer;
+  slot_t *list_buffer;
 } crex_context_t;
 
 CREX_WARN_UNUSED_RESULT crex_status_t crex_compile(crex_regex_t *regex,

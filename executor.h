@@ -7,13 +7,11 @@
 
 #define NAME crex_find
 #define RESULT_DECLARATION crex_slice_t *match
-#define N_GROUPS 1
 
 #elif defined(MATCH_GROUPS)
 
 #define NAME crex_match_groups
 #define RESULT_DECLARATION crex_slice_t *matches
-#define N_GROUPS regex->n_groups
 
 #endif
 
@@ -41,60 +39,34 @@ status_t NAME(RESULT_DECLARATION,
     visited = context->visited;
   }
 
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-  const size_t max_blocks = regex->size;
-
-#ifdef MATCH_LOCATION
-  const size_t block_size = 2;
-#else
-  const size_t block_size = 2 * regex->n_groups;
-#endif
-
-  size_t pointer_block_freelist;
-  pointer_block_allocator_create(context, &pointer_block_freelist, max_blocks, block_size);
-
-  size_t *pointer_block_offsets;
-
-  if (context->pointer_block_offsets_size < regex->size) {
-    pointer_block_offsets = malloc(sizeof(size_t) * regex->size);
-
-    if (pointer_block_offsets == NULL) {
-      return CREX_E_NOMEM;
-    }
-
-    free(context->pointer_block_offsets);
-    context->pointer_block_offsets = pointer_block_offsets;
-
-    context->pointer_block_offsets_size = regex->size;
-  } else {
-    pointer_block_offsets = context->pointer_block_offsets;
-  }
-
-  for (size_t i = 0; i < regex->size; i++) {
-    pointer_block_offsets[i] = IP_LIST_END;
-  }
-
-  int match_found = 0;
-
+#ifdef MATCH_BOOLEAN
+  const size_t n_pointers = 0;
+#elif defined(MATCH_LOCATION)
+  const size_t n_pointers = 2;
+#elif defined(MATCH_GROUPS)
+  const size_t n_pointers = 2 * regex->n_groups;
 #endif
 
 #ifdef MATCH_BOOLEAN
-  (*is_match) = 0;
-#elif defined(MATCH_LOCATION)
-  match->size = 0;
-  match->start = NULL;
-#elif defined(MATCH_GROUPS)
-  for (size_t i = 0; i < N_GROUPS; i++) {
-    matches[i].size = 0;
-    matches[i].start = NULL;
-  }
+  *is_match = 0;
 #endif
 
-  // FIXME: justify this bound
+#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
+  int match_found = 0;
+#endif
+
+  // FIXME: tighten and justify this bound
   const size_t max_list_size = 2 * regex->size;
 
-  ip_list_t list;
-  ip_list_create(&list, context->list_buffer_size, context->list_buffer, max_list_size);
+  state_list_t list;
+  state_list_create(
+      &list, context->list_buffer_size, context->list_buffer, n_pointers, max_list_size);
+
+#define CLEANUP()                                                                                  \
+  do {                                                                                             \
+    context->list_buffer_size = list.capacity;                                                     \
+    context->list_buffer = list.buffer;                                                            \
+  } while (0)
 
   const char *eof = buffer + buffer_size;
   int prev_character = -1;
@@ -104,12 +76,20 @@ status_t NAME(RESULT_DECLARATION,
 
     memset(visited, 0, min_visited_size);
 
-    ip_list_iterator_t iter = ip_list_begin(&list);
+#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
+    if (list.head == STATE_LIST_EMPTY && match_found) {
+      CLEANUP();
+      return CREX_OK;
+    }
+#endif
 
     int initial_state_pushed = 0;
 
+    state_list_handle_t state = list.head;
+    state_list_handle_t predecessor = STATE_LIST_EMPTY;
+
     for (;;) {
-      if (ip_list_is_end(&list, iter)) {
+      if (state == STATE_LIST_EMPTY) {
         if (initial_state_pushed) {
           break;
         }
@@ -120,63 +100,69 @@ status_t NAME(RESULT_DECLARATION,
         }
 #endif
 
+        if (!state_list_push_initial_state(&list, predecessor)) {
+          CLEANUP();
+          return CREX_E_NOMEM;
+        }
+
+        // FIXME: this is nonsense
+        if (predecessor == STATE_LIST_EMPTY) {
+          state = list.head;
+        } else {
+          state = LIST_NEXT(&list, predecessor);
+        }
+
         initial_state_pushed = 1;
-
-        if (!ip_list_push(&list, iter, 0)) {
-          return CREX_E_NOMEM;
-        }
-
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-        assert(context->pointer_block_offsets[0] == IP_LIST_END);
-        context->pointer_block_offsets[0] =
-            pointer_block_allocator_alloc(context, &pointer_block_freelist, max_blocks, block_size);
-
-        if (context->pointer_block_offsets[0] == IP_LIST_END) {
-          return CREX_E_NOMEM;
-        }
-
-        for (size_t i = 0; i < block_size; i++) {
-          context->pointer_block_buffer[context->pointer_block_offsets[0] + i].pointer = NULL;
-        }
-#endif
       }
 
-      size_t instr_pointer = *ip_list_ref(&list, iter);
-      ip_list_iterator_t next = ip_list_next(&list, iter);
-
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-      const size_t block = pointer_block_offsets[instr_pointer];
-      assert(block != IP_LIST_END);
-      pointer_block_offsets[instr_pointer] = IP_LIST_END;
-#endif
+      size_t instr_pointer = LIST_INSTR_POINTER(&list, state);
 
       int keep = 1;
 
       for (;;) {
         if (instr_pointer == regex->size) {
+
 #ifdef MATCH_BOOLEAN
-          (*is_match) = 1;
+          *is_match = 1;
+          CLEANUP();
           return CREX_OK;
-#else
+#elif defined(MATCH_LOCATION)
+          match_found = 1;
 
-#ifdef MATCH_LOCATION
-          crex_slice_t *matches = match;
-#endif
-          const pointer_block_t *pointer_block_buffer = context->pointer_block_buffer;
+          char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
 
-          for (size_t i = 0; i < N_GROUPS; i++) {
-            if (pointer_block_buffer[block + 2 * i].pointer == NULL ||
-                pointer_block_buffer[block + 2 * i + 1].pointer == NULL) {
+          if (pointer_buffer[0] == NULL || pointer_buffer[1] == NULL) {
+            match->size = 0;
+            match->start = NULL;
+          } else {
+            match->size = pointer_buffer[1] - pointer_buffer[0];
+            match->start = pointer_buffer[0];
+          }
+#elif defined(MATCH_GROUPS)
+          match_found = 1;
+
+          char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
+
+          for (size_t i = 0; i < regex->n_groups; i++) {
+            if (pointer_buffer[2 * i] == NULL || pointer_buffer[2 * i + 1] == NULL) {
               matches[i].size = 0;
               matches[i].start = NULL;
             } else {
-              matches[i].size = pointer_block_buffer[block + 2 * i + 1].pointer -
-                                pointer_block_buffer[block + 2 * i].pointer;
-              matches[i].start = pointer_block_buffer[block + 2 * i].pointer;
+              matches[i].size = pointer_buffer[2 * i + 1] - pointer_buffer[2 * i];
+              matches[i].start = pointer_buffer[2 * i];
             }
           }
+#endif
 
-          match_found = 1;
+#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
+          keep = 0;
+
+          state_list_handle_t tail = LIST_NEXT(&list, state);
+
+          while (tail != STATE_LIST_EMPTY) {
+            tail = state_list_pop(&list, state);
+          }
+
           break;
 #endif
         }
@@ -266,47 +252,35 @@ status_t NAME(RESULT_DECLARATION,
           }
 
           if (!((visited[split_pointer / CHAR_BIT] >> (split_pointer % CHAR_BIT)) & 1u)) {
-            if (!ip_list_push(&list, next, split_pointer)) {
+            if (!state_list_push_copy(&list, state, split_pointer)) {
+              CLEANUP();
               return CREX_E_NOMEM;
             }
-
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-            if (context->pointer_block_offsets[split_pointer] == IP_LIST_END) {
-              context->pointer_block_offsets[split_pointer] = pointer_block_allocator_alloc(
-                  context, &pointer_block_freelist, max_blocks, block_size);
-            }
-
-            assert(context->pointer_block_offsets[split_pointer] != IP_LIST_END);
-
-            const size_t split_block = context->pointer_block_offsets[split_pointer];
-
-            for (size_t i = 0; i < block_size; i++) {
-              context->pointer_block_buffer[split_block + i] =
-                  context->pointer_block_buffer[block + i];
-            }
-#endif
           }
 
           break;
         }
 
         case VM_WRITE_POINTER: {
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
           // FIXME: signedness
-          size_t index = (size_t)deserialize_long(regex->bytecode + instr_pointer, 4);
-
-          // FIXME: discarding constness
-#if defined(MATCH_LOCATION)
-          if (index == 0 || index == 1) {
-            context->pointer_block_buffer[block + index].pointer = buffer;
-          }
-#else
-          context->pointer_block_buffer[block + index].pointer = buffer;
-#endif
-
-#endif
-
+          const size_t index = (size_t)deserialize_long(regex->bytecode + instr_pointer, 4);
           instr_pointer += 4;
+
+#ifdef MATCH_BOOLEAN
+          (void)index;
+#elif defined(MATCH_LOCATION)
+          char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
+
+          if (index <= 1) {
+            pointer_buffer[index] = buffer;
+          }
+#elif defined(MATCH_GROUPS)
+          char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
+
+          assert(index < n_pointers);
+          pointer_buffer[index] = buffer;
+#endif
+
           break;
         }
 
@@ -320,31 +294,13 @@ status_t NAME(RESULT_DECLARATION,
       }
 
       if (keep) {
-        *ip_list_ref(&list, iter) = instr_pointer;
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-        context->pointer_block_offsets[instr_pointer] = block;
-#endif
-        iter = ip_list_next(&list, iter);
+        LIST_INSTR_POINTER(&list, state) = instr_pointer;
+        predecessor = state;
+        state = LIST_NEXT(&list, state);
       } else {
-        ip_list_pop(&list, iter);
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-        pointer_block_allocator_free(context, &pointer_block_freelist, block_size, block);
-#endif
+        state = state_list_pop(&list, predecessor);
       }
     }
-
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-    if (!ip_list_is_end(&list, iter)) {
-      assert(match_found);
-
-      while (!ip_list_is_end(&list, iter)) {
-        const size_t instr_pointer = *ip_list_ref(&list, iter);
-        const size_t block = context->pointer_block_offsets[instr_pointer];
-        ip_list_pop(&list, iter);
-        pointer_block_allocator_free(context, &pointer_block_freelist, block_size, block);
-      }
-    }
-#endif
 
     if (character == -1) {
       break;
@@ -353,6 +309,23 @@ status_t NAME(RESULT_DECLARATION,
     buffer++;
   }
 
+#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
+
+  if(!match_found) {
+#if defined(MATCH_LOCATION)
+    match->size = 0;
+    match->start = NULL;
+#else
+    for (size_t i = 0; i < regex->n_groups; i++) {
+      matches[i].size = 0;
+      matches[i].start = NULL;
+    }
+#endif
+  }
+
+#endif
+
+  CLEANUP();
   return CREX_OK;
 }
 
