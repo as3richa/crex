@@ -129,28 +129,30 @@ status_t NAME(RESULT_DECLARATION,
 #elif defined(MATCH_LOCATION)
           match_found = 1;
 
-          char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
+          const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
 
           if (pointer_buffer[0] == NULL || pointer_buffer[1] == NULL) {
-            match->size = 0;
-            match->start = NULL;
+            match->begin = NULL;
+            match->end = NULL;
           } else {
-            match->size = pointer_buffer[1] - pointer_buffer[0];
-            match->start = pointer_buffer[0];
+            match->begin = pointer_buffer[0];
+            match->end = pointer_buffer[1];
           }
 #elif defined(MATCH_GROUPS)
           match_found = 1;
 
-          char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
+          const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
 
           for (size_t i = 0; i < regex->n_groups; i++) {
-            if (pointer_buffer[2 * i] == NULL || pointer_buffer[2 * i + 1] == NULL) {
-              matches[i].size = 0;
-              matches[i].start = NULL;
+            if (pointer_buffer[0] == NULL || pointer_buffer[1] == NULL) {
+              matches[i].begin = NULL;
+              matches[i].end = NULL;
             } else {
-              matches[i].size = pointer_buffer[2 * i + 1] - pointer_buffer[2 * i];
-              matches[i].start = pointer_buffer[2 * i];
+              matches[i].begin = pointer_buffer[0];
+              matches[i].end = pointer_buffer[1];
             }
+
+            pointer_buffer += 2;
           }
 #endif
 
@@ -273,13 +275,13 @@ status_t NAME(RESULT_DECLARATION,
 #ifdef MATCH_BOOLEAN
           (void)index;
 #elif defined(MATCH_LOCATION)
-          char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
+          const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
 
           if (index <= 1) {
             pointer_buffer[index] = buffer;
           }
 #elif defined(MATCH_GROUPS)
-          char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
+          const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
 
           assert(index < n_pointers);
           pointer_buffer[index] = buffer;
@@ -318,12 +320,12 @@ status_t NAME(RESULT_DECLARATION,
 
   if (!match_found) {
 #if defined(MATCH_LOCATION)
-    match->size = 0;
-    match->start = NULL;
+    match->begin = NULL;
+    match->end = NULL;
 #else
     for (size_t i = 0; i < regex->n_groups; i++) {
-      matches[i].size = 0;
-      matches[i].start = NULL;
+      matches[i].begin = NULL;
+      matches[i].end = NULL;
     }
 #endif
   }
@@ -339,4 +341,3 @@ status_t NAME(RESULT_DECLARATION,
 #undef MATCH_GROUPS
 #undef NAME
 #undef RESULT_DECLARATION
-#undef N_GROUPS

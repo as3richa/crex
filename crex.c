@@ -82,6 +82,25 @@ static struct {
 #define BCC_TEST(index, character)                                                                 \
   ((builtin_char_classes[index].bitmap[(character) >> 3u] >> (character & 7u)) & 1)
 
+struct crex_regex {
+  size_t size;
+  unsigned char *bytecode;
+  size_t n_groups;
+};
+
+typedef union {
+  size_t size;
+  char *pointer;
+} allocator_slot_t;
+
+struct crex_context {
+  size_t visited_size;
+  unsigned char *visited;
+
+  size_t list_buffer_size;
+  allocator_slot_t *list_buffer;
+};
+
 // FIXME: put these somewhere
 
 static void safe_memcpy(void *destination, const void *source, size_t size) {
@@ -170,7 +189,7 @@ WARN_UNUSED_RESULT static status_t lex(token_t *token, const char **str, const c
       break;
     }
 
-    if ((*str) < eof && *(*str) == '?') {
+    if (*str < eof && **str == '?') {
       (*str)++;
       token->type = TT_LAZY_REPETITION;
     } else {
@@ -190,7 +209,7 @@ WARN_UNUSED_RESULT static status_t lex(token_t *token, const char **str, const c
   case '\\':
     token->type = TT_CHARACTER;
 
-    if ((*str) == eof) {
+    if (*str == eof) {
       return CREX_E_BAD_ESCAPE;
     }
 
@@ -243,7 +262,7 @@ WARN_UNUSED_RESULT static status_t lex(token_t *token, const char **str, const c
       int value = 0;
 
       for (int i = 2; i--;) {
-        if ((*str) == eof) {
+        if (*str == eof) {
           return CREX_E_BAD_ESCAPE;
         }
 
@@ -403,10 +422,8 @@ WARN_UNUSED_RESULT static int
 push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator);
 WARN_UNUSED_RESULT static int pop_operator(tree_stack_t *trees, operator_stack_t *operators);
 
-WARN_UNUSED_RESULT status_t parse(parsetree_t **result,
-                                  size_t *n_groups,
-                                  const char *str,
-                                  size_t length) {
+WARN_UNUSED_RESULT parsetree_t *
+parse(status_t *status, size_t *n_groups, const char *str, size_t length) {
   const char *eof = str + length;
 
   tree_stack_t trees = {0, 0, NULL};
@@ -417,7 +434,8 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result,
     if (!(condition)) {                                                                            \
       free_tree_stack(&trees);                                                                     \
       free(operators.data);                                                                        \
-      return code;                                                                                 \
+      *status = code;                                                                              \
+      return NULL;                                                                                 \
     }                                                                                              \
   } while (0)
 
@@ -430,7 +448,7 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result,
     CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
   }
 
-  (*n_groups) = 1;
+  *n_groups = 1;
 
   while (str != eof) {
     token_t token;
@@ -539,12 +557,14 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result,
 
   assert(trees.size == 1);
 
-  (*result) = trees.data[0];
+  parsetree_t *tree = trees.data[0];
 
   free(trees.data);
   free(operators.data);
 
-  return CREX_OK;
+  *status = CREX_OK;
+
+  return tree;
 }
 
 static void free_parsetree(parsetree_t *tree) {
@@ -1053,11 +1073,11 @@ typedef state_list_handle_t *state_list_iter_t;
 /* typedef union {
   size_t size;
   char *pointer;
-} slot_t; */ // FIXME
+} allocator_slot_t; */ // FIXME
 
 typedef struct {
   size_t capacity;
-  slot_t *buffer;
+  allocator_slot_t *buffer;
 
   size_t n_pointers;
   size_t element_size;
@@ -1071,10 +1091,13 @@ typedef struct {
 
 #define LIST_NEXT(list, handle) (*(size_t *)((list)->buffer + (handle)))
 #define LIST_INSTR_POINTER(list, handle) (*(size_t *)((list)->buffer + (handle) + 1))
-#define LIST_POINTER_BUFFER(list, handle) ((char **)((list)->buffer + (handle) + 2))
+#define LIST_POINTER_BUFFER(list, handle) ((const char **)((list)->buffer + (handle) + 2))
 
-static void state_list_create(
-    state_list_t *list, size_t capacity, slot_t *buffer, size_t n_pointers, size_t max_elements) {
+static void state_list_create(state_list_t *list,
+                              size_t capacity,
+                              allocator_slot_t *buffer,
+                              size_t n_pointers,
+                              size_t max_elements) {
   list->capacity = capacity;
   list->buffer = buffer;
 
@@ -1109,13 +1132,13 @@ static state_list_handle_t state_list_alloc(state_list_t *list) {
       capacity = list->max_capacity;
     }
 
-    slot_t *buffer = malloc(sizeof(slot_t) * capacity);
+    allocator_slot_t *buffer = malloc(sizeof(allocator_slot_t) * capacity);
 
     if (buffer == NULL) {
       return STATE_LIST_EMPTY;
     }
 
-    safe_memcpy(buffer, list->buffer, sizeof(slot_t) * list->capacity);
+    safe_memcpy(buffer, list->buffer, sizeof(allocator_slot_t) * list->capacity);
     free(list->buffer);
 
     list->buffer = buffer;
@@ -1143,7 +1166,7 @@ static int state_list_push_initial_state(state_list_t *list, state_list_handle_t
 
   LIST_INSTR_POINTER(list, state) = 0;
 
-  char **pointer_buffer = LIST_POINTER_BUFFER(list, state);
+  const char **pointer_buffer = LIST_POINTER_BUFFER(list, state);
 
   for (size_t i = 0; i < list->n_pointers; i++) {
     pointer_buffer[i] = NULL;
@@ -1172,8 +1195,8 @@ state_list_push_copy(state_list_t *list, state_list_handle_t predecessor, size_t
 
   LIST_INSTR_POINTER(list, state) = instr_pointer;
 
-  char **dest_pointer_buffer = LIST_POINTER_BUFFER(list, state);
-  char **source_pointer_buffer = LIST_POINTER_BUFFER(list, predecessor);
+  const char **dest_pointer_buffer = LIST_POINTER_BUFFER(list, state);
+  const char **source_pointer_buffer = LIST_POINTER_BUFFER(list, predecessor);
   safe_memcpy(dest_pointer_buffer, source_pointer_buffer, sizeof(char *) * list->n_pointers);
 
   LIST_NEXT(list, state) = LIST_NEXT(list, predecessor);
@@ -1214,49 +1237,69 @@ static state_list_handle_t state_list_pop(state_list_t *list, state_list_handle_
 
 /** Public API **/
 
-status_t crex_compile(crex_regex_t *regex, const char *pattern, size_t length) {
-  parsetree_t *tree;
-  status_t status = parse(&tree, &regex->n_groups, pattern, length);
+regex_t *crex_compile(status_t *status, const char *pattern, size_t size) {
+  regex_t *regex = malloc(sizeof(regex_t));
 
-  if (status != CREX_OK) {
-    return status;
+  if (regex == NULL) {
+    *status = CREX_E_NOMEM;
+    return NULL;
   }
 
-  // compilation_result_t is a prefix of regex
-  compilation_result_t *result = (compilation_result_t *)regex;
+  parsetree_t *tree = parse(status, &regex->n_groups, pattern, size);
 
-  status = compile(result, tree);
+  if (*status != CREX_OK) {
+    free(regex);
+    return NULL;
+  }
 
-  assert(regex->size == result->size && regex->bytecode == result->bytecode);
+  // compilation_result_t is structurally a prefix of regex_t
+  *status = compile((compilation_result_t *)regex, tree);
 
   free_parsetree(tree);
 
-  return status;
+  if (*status != CREX_OK) {
+    free(regex);
+    return NULL;
+  }
+
+  return regex;
 }
 
-status_t crex_compile_str(crex_regex_t *regex, const char *pattern) {
-  return crex_compile(regex, pattern, strlen(pattern));
+regex_t *crex_compile_str(status_t *status, const char *pattern) {
+  return crex_compile(status, pattern, strlen(pattern));
 }
 
-void crex_create_context(crex_context_t *context) {
+context_t *crex_create_context(status_t *status) {
+  context_t *context = malloc(sizeof(context_t));
+
+  if (context == NULL) {
+    *status = CREX_E_NOMEM;
+    return NULL;
+  }
+
   context->visited_size = 0;
   context->visited = NULL;
 
   context->list_buffer_size = 0;
   context->list_buffer = NULL;
+
+  return context;
 }
 
-void crex_free_regex(crex_regex_t *regex) { free(regex->bytecode); }
+void crex_destroy_regex(crex_regex_t *regex) {
+  free(regex->bytecode);
+  free(regex);
+}
 
-void crex_free_context(crex_context_t *context) {
+void crex_destroy_context(crex_context_t *context) {
   free(context->visited);
   free(context->list_buffer);
+  free(context);
 }
 
-/* status_t crex_is_match(
-    int *is_match, context_t *context, const regex_t *regex, const char *buffer, size_t length) {
-  return execute(is_match, context, regex, buffer, length);
-} */
+CREX_WARN_UNUSED_RESULT size_t crex_regex_n_groups(const crex_regex_t *regex) {
+  return regex->n_groups;
+}
 
 status_t
 crex_is_match_str(int *is_match, context_t *context, const regex_t *regex, const char *str) {
