@@ -750,7 +750,7 @@ enum {
 typedef struct {
   size_t size;
   unsigned char *bytecode;
-} compilation_result_t;
+} bytecode_t;
 
 static void serialize_long(unsigned char *destination, long value, size_t size) {
   assert(-2147483647 <= value && value <= 2147483647); // FIXME
@@ -805,7 +805,7 @@ static long deserialize_long(unsigned char *source, size_t size) {
   }
 }
 
-status_t compile(compilation_result_t *result, parsetree_t *tree) {
+status_t compile(bytecode_t *result, parsetree_t *tree) {
   switch (tree->type) {
   case PT_EMPTY:
     result->size = 0;
@@ -852,7 +852,7 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
 
   case PT_CONCATENATION:
   case PT_ALTERNATION: {
-    compilation_result_t left, right;
+    bytecode_t left, right;
 
     status_t status = compile(&left, tree->data.children[0]);
 
@@ -917,7 +917,7 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
 
   case PT_GREEDY_REPETITION:
   case PT_LAZY_REPETITION: {
-    compilation_result_t child;
+    bytecode_t child;
 
     status_t status = compile(&child, tree->data.repetition.child);
 
@@ -1022,7 +1022,7 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
   }
 
   case PT_GROUP: {
-    compilation_result_t child;
+    bytecode_t child;
     status_t status = compile(&child, tree->data.group.child);
 
     if (status != CREX_OK) {
@@ -1252,8 +1252,8 @@ regex_t *crex_compile(status_t *status, const char *pattern, size_t size) {
     return NULL;
   }
 
-  // compilation_result_t is structurally a prefix of regex_t
-  *status = compile((compilation_result_t *)regex, tree);
+  // bytecode_t is structurally a prefix of regex_t
+  *status = compile((bytecode_t *)regex, tree);
 
   free_parsetree(tree);
 
@@ -1580,31 +1580,34 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *fi
 }
 
 void crex_debug_parse(const char *str, FILE *file) {
-  parsetree_t *tree;
+  status_t status;
+
   size_t n_groups;
-  const status_t status = parse(&tree, &n_groups, str, strlen(str));
-
-  if (status == CREX_OK) {
-    crex_print_parsetree(tree, 0, file);
-    fputc('\n', file);
-  } else {
-    fprintf(file, "Parse failed with status %s\n", status_to_str(status));
-  }
-
-  free_parsetree(tree);
-}
-
-void crex_debug_compile(const char *str, FILE *file) {
-  parsetree_t *tree;
-  size_t n_groups;
-  status_t status = parse(&tree, &n_groups, str, strlen(str));
+  parsetree_t *tree = parse(&status, &n_groups, str, strlen(str));
 
   if (status != CREX_OK) {
     fprintf(file, "Parse failed with status %s\n", status_to_str(status));
     return;
   }
 
-  compilation_result_t result;
+  crex_print_parsetree(tree, 0, file);
+  fputc('\n', file);
+
+  free_parsetree(tree);
+}
+
+void crex_debug_compile(const char *str, FILE *file) {
+  status_t status;
+
+  size_t n_groups;
+  parsetree_t *tree = parse(&status, &n_groups, str, strlen(str));
+
+  if (status != CREX_OK) {
+    fprintf(file, "Parse failed with status %s\n", status_to_str(status));
+    return;
+  }
+
+  bytecode_t result;
   status = compile(&result, tree);
 
   free_parsetree(tree);
@@ -1613,10 +1616,6 @@ void crex_debug_compile(const char *str, FILE *file) {
     fprintf(file, "Compilation failed with status %s\n", status_to_str(status));
     return;
   }
-
-  /* for(size_t i = 0; i < regex.size; i++) {
-   fprintf(stderr, "0x%02x\n", regex.bytecode[i]);
-  } */
 
   for (size_t i = 0; i < result.size; i++) {
     const unsigned char code = result.bytecode[i];

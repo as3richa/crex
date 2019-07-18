@@ -15,14 +15,14 @@ const size_t n_cases = sizeof(cases) / sizeof(const char *);
 int main(void) {
   printf("/%s/\n\n", pattern);
 
-  /*
   crex_debug_lex(pattern, stdout);
   putchar('\n');
+
   crex_debug_parse(pattern, stdout);
   putchar('\n');
+
   crex_debug_compile(pattern, stdout);
   putchar('\n');
-  */
 
   crex_status_t status;
 
@@ -66,7 +66,7 @@ int main(void) {
       for (size_t i = 0; i < n_groups; i++) {
         printf("$%zu = \"", i);
 
-        for(const char* iter = matches[i].begin; iter != matches[i].end; iter ++) {
+        for (const char *iter = matches[i].begin; iter != matches[i].end; iter++) {
           putchar(*iter);
         }
 
