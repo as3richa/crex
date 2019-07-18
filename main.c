@@ -6,20 +6,20 @@ void crex_debug_lex(const char *, FILE *);
 void crex_debug_parse(const char *, FILE *);
 void crex_debug_compile(const char *, FILE *);
 
-const char *pattern = "(alpha)+|(b(e+)ta)+";
+const char *pattern = "\\A((\\d.\\d)|(\\d+))\\z";
 
-const char *cases[] = {"alphaalphaalpha", "betabeeeeeeeeeeeeeeeeeeeeeta"};
+const char *cases[] = {"1e-5", "1.0", "1.23666e999", "1337", "asdf"};
 
 const size_t n_cases = sizeof(cases) / sizeof(const char *);
 
 int main(void) {
   printf("/%s/\n\n", pattern);
-  /*crex_debug_lex(pattern, stdout);
+  crex_debug_lex(pattern, stdout);
   putchar('\n');
   crex_debug_parse(pattern, stdout);
   putchar('\n');
   crex_debug_compile(pattern, stdout);
-  putchar('\n');*/
+  putchar('\n');
 
   crex_regex_t regex;
   crex_status_t status;
@@ -47,7 +47,7 @@ int main(void) {
     printf("\"%s\" => %d\n", cases[i], is_match);
 
     if (is_match) {
-      crex_slice_t matches[4];
+      crex_slice_t matches[1000];
       status = crex_match_groups_str(matches, &context, &regex, cases[i]);
 
       if (status != CREX_OK) {
@@ -56,7 +56,7 @@ int main(void) {
         return 1;
       }
 
-      for (size_t i = 0; i < 4; i++) {
+      for (size_t i = 0; i < regex.n_groups; i++) {
         printf("$%zu = \"", i);
 
         for (size_t j = 0; j < matches[i].size; j++) {

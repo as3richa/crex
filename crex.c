@@ -16,6 +16,69 @@ typedef crex_context_t context_t;
 
 #define REPETITION_INFINITY (~(size_t)0)
 
+static struct {
+  const char *name;
+  unsigned char bitmap[32];
+} builtin_char_classes[] = {
+    {"alnum", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0xfe, 0xff, 0xff,
+               0x07, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"alpha", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff,
+               0x07, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"ascii", {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+               0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"blank", {0x00, 0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"cntrl", {0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"digit", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"graph", {0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+               0xff, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"lower", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"print", {0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+               0xff, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"punct", {0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0x00, 0xfc, 0x01, 0x00, 0x00,
+               0xf8, 0x01, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"space", {0x00, 0x3e, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"upper", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff,
+               0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"word", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0xfe, 0xff, 0xff,
+              0x87, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"xdigit", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0x7e, 0x00, 0x00,
+                0x00, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {NULL /* Non-digits */, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0xfc, 0xff, 0xff, 0xff,
+                             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
+    {NULL /* Non-whitespace */, {0xff, 0xc1, 0xff, 0xff, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
+    {NULL /* Non-word */, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0xfc, 0x01, 0x00, 0x00,
+                           0x78, 0x01, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                           0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}}};
+
+#define BCC_DIGIT 5
+#define BCC_WHITESPACE 10
+#define BCC_WORD 12
+#define BCC_NOT_DIGIT 14
+#define BCC_NOT_WHITESPACE 15
+#define BCC_NOT_WORD 16
+
 // FIXME: put these somewhere
 
 static void safe_memcpy(void *destination, const void *source, size_t size) {
@@ -39,6 +102,7 @@ typedef enum {
 
 typedef enum {
   TT_CHARACTER,
+  TT_BUILTIN_CHAR_CLASS,
   TT_ANCHOR,
   TT_PIPE,
   TT_GREEDY_REPETITION,
@@ -53,6 +117,8 @@ typedef struct {
   union {
     unsigned char character;
 
+    size_t char_class_index;
+
     anchor_type_t anchor_type;
 
     struct {
@@ -61,24 +127,24 @@ typedef struct {
   } data;
 } token_t;
 
-WARN_UNUSED_RESULT static status_t lex(token_t *result, const char **str, const char *eof) {
+WARN_UNUSED_RESULT static status_t lex(token_t *token, const char **str, const char *eof) {
   assert((*str) < eof);
 
   const char byte = *((*str)++);
 
   switch (byte) {
   case '^':
-    result->type = TT_ANCHOR;
-    result->data.anchor_type = AT_BOL;
+    token->type = TT_ANCHOR;
+    token->data.anchor_type = AT_BOL;
     break;
 
   case '$':
-    result->type = TT_ANCHOR;
-    result->data.anchor_type = AT_EOL;
+    token->type = TT_ANCHOR;
+    token->data.anchor_type = AT_EOL;
     break;
 
   case '|':
-    result->type = TT_PIPE;
+    token->type = TT_PIPE;
     break;
 
   case '*':
@@ -86,40 +152,40 @@ WARN_UNUSED_RESULT static status_t lex(token_t *result, const char **str, const 
   case '?':
     switch (byte) {
     case '*':
-      result->data.repetition.lower_bound = 0;
-      result->data.repetition.upper_bound = REPETITION_INFINITY;
+      token->data.repetition.lower_bound = 0;
+      token->data.repetition.upper_bound = REPETITION_INFINITY;
       break;
 
     case '+':
-      result->data.repetition.lower_bound = 1;
-      result->data.repetition.upper_bound = REPETITION_INFINITY;
+      token->data.repetition.lower_bound = 1;
+      token->data.repetition.upper_bound = REPETITION_INFINITY;
       break;
 
     case '?':
-      result->data.repetition.lower_bound = 0;
-      result->data.repetition.upper_bound = 1;
+      token->data.repetition.lower_bound = 0;
+      token->data.repetition.upper_bound = 1;
       break;
     }
 
     if ((*str) < eof && *(*str) == '?') {
       (*str)++;
-      result->type = TT_LAZY_REPETITION;
+      token->type = TT_LAZY_REPETITION;
     } else {
-      result->type = TT_GREEDY_REPETITION;
+      token->type = TT_GREEDY_REPETITION;
     }
 
     break;
 
   case '(':
-    result->type = TT_OPEN_PAREN;
+    token->type = TT_OPEN_PAREN;
     break;
 
   case ')':
-    result->type = TT_CLOSE_PAREN;
+    token->type = TT_CLOSE_PAREN;
     break;
 
   case '\\':
-    result->type = TT_CHARACTER;
+    token->type = TT_CHARACTER;
 
     if ((*str) == eof) {
       return CREX_E_BAD_ESCAPE;
@@ -127,47 +193,47 @@ WARN_UNUSED_RESULT static status_t lex(token_t *result, const char **str, const 
 
     switch (*((*str)++)) {
     case 'a':
-      result->data.character = '\a';
+      token->data.character = '\a';
       break;
 
     case 'f':
-      result->data.character = '\f';
+      token->data.character = '\f';
       break;
 
     case 'n':
-      result->data.character = '\n';
+      token->data.character = '\n';
       break;
 
     case 'r':
-      result->data.character = '\r';
+      token->data.character = '\r';
       break;
 
     case 't':
-      result->data.character = '\t';
+      token->data.character = '\t';
       break;
 
     case 'v':
-      result->data.character = '\v';
+      token->data.character = '\v';
       break;
 
     case 'A':
-      result->type = TT_ANCHOR;
-      result->data.anchor_type = AT_BOF;
+      token->type = TT_ANCHOR;
+      token->data.anchor_type = AT_BOF;
       break;
 
     case 'z':
-      result->type = TT_ANCHOR;
-      result->data.anchor_type = AT_EOF;
+      token->type = TT_ANCHOR;
+      token->data.anchor_type = AT_EOF;
       break;
 
     case 'b':
-      result->type = TT_ANCHOR;
-      result->data.anchor_type = AT_WORD_BOUNDARY;
+      token->type = TT_ANCHOR;
+      token->data.anchor_type = AT_WORD_BOUNDARY;
       break;
 
     case 'B':
-      result->type = TT_ANCHOR;
-      result->data.anchor_type = AT_NOT_WORD_BOUNDARY;
+      token->type = TT_ANCHOR;
+      token->data.anchor_type = AT_NOT_WORD_BOUNDARY;
       break;
 
     case 'x': {
@@ -195,7 +261,7 @@ WARN_UNUSED_RESULT static status_t lex(token_t *result, const char **str, const 
         value = 16 * value + digit;
       }
 
-      result->data.character = value;
+      token->data.character = value;
 
       break;
     }
@@ -214,16 +280,37 @@ WARN_UNUSED_RESULT static status_t lex(token_t *result, const char **str, const 
     case '^':
     case '$':
     case '\\':
-      result->data.character = byte;
+      token->data.character = byte;
       break;
 
     case 'd':
+      token->type = TT_BUILTIN_CHAR_CLASS;
+      token->data.char_class_index = BCC_DIGIT;
+      break;
+
     case 'D':
+      token->type = TT_BUILTIN_CHAR_CLASS;
+      token->data.char_class_index = BCC_NOT_DIGIT;
+      break;
+
     case 's':
+      token->type = TT_BUILTIN_CHAR_CLASS;
+      token->data.char_class_index = BCC_WHITESPACE;
+      break;
+
     case 'S':
+      token->type = TT_BUILTIN_CHAR_CLASS;
+      token->data.char_class_index = BCC_NOT_WHITESPACE;
+      break;
+
     case 'w':
+      token->type = TT_BUILTIN_CHAR_CLASS;
+      token->data.char_class_index = BCC_WORD;
+      break;
+
     case 'W':
-      assert(0 && "FIXME");
+      token->type = TT_BUILTIN_CHAR_CLASS;
+      token->data.char_class_index = BCC_NOT_WORD;
       break;
 
     default:
@@ -233,8 +320,8 @@ WARN_UNUSED_RESULT static status_t lex(token_t *result, const char **str, const 
     break;
 
   default:
-    result->type = TT_CHARACTER;
-    result->data.character = byte;
+    token->type = TT_CHARACTER;
+    token->data.character = byte;
   }
 
   return CREX_OK;
@@ -250,6 +337,7 @@ typedef enum {
   PT_GROUP,
   PT_EMPTY,
   PT_CHARACTER,
+  PT_BUILTIN_CHAR_CLASS,
   PT_ANCHOR,
 } parsetree_type_t;
 
@@ -261,6 +349,8 @@ typedef struct parsetree {
 
   union {
     unsigned char character;
+
+    size_t char_class_index;
 
     anchor_type_t anchor_type;
 
@@ -347,6 +437,7 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result,
 
     switch (token.type) {
     case TT_CHARACTER:
+    case TT_BUILTIN_CHAR_CLASS:
     case TT_ANCHOR: {
       operator_t operator;
       operator.type = PT_CONCATENATION;
@@ -355,12 +446,24 @@ WARN_UNUSED_RESULT status_t parse(parsetree_t **result,
       parsetree_t *tree = malloc(sizeof(parsetree_t));
       CHECK_ERRORS(tree != NULL, CREX_E_NOMEM);
 
-      if (token.type == TT_CHARACTER) {
+      switch (token.type) {
+      case TT_CHARACTER:
         tree->type = PT_CHARACTER;
         tree->data.character = token.data.character;
-      } else {
+        break;
+
+      case TT_BUILTIN_CHAR_CLASS:
+        tree->type = PT_BUILTIN_CHAR_CLASS;
+        tree->data.char_class_index = token.data.char_class_index;
+        break;
+
+      case TT_ANCHOR:
         tree->type = PT_ANCHOR;
         tree->data.anchor_type = token.data.anchor_type;
+        break;
+
+      default:
+        assert(0);
       }
 
       CHECK_ERRORS(push_tree(&trees, tree), CREX_E_NOMEM);
@@ -445,6 +548,7 @@ static void free_parsetree(parsetree_t *tree) {
   switch (tree->type) {
   case PT_EMPTY:
   case PT_CHARACTER:
+  case PT_BUILTIN_CHAR_CLASS:
   case PT_ANCHOR:
     break;
 
@@ -607,6 +711,7 @@ static int pop_operator(tree_stack_t *trees, operator_stack_t *operators) {
 
 enum {
   VM_CHARACTER,
+  VM_BUILTIN_CHAR_CLASS,
   VM_ANCHOR_BOF,
   VM_ANCHOR_BOL,
   VM_ANCHOR_EOF,
@@ -694,6 +799,19 @@ status_t compile(compilation_result_t *result, parsetree_t *tree) {
 
     result->bytecode[0] = VM_CHARACTER;
     result->bytecode[1] = tree->data.character;
+
+    break;
+
+  case PT_BUILTIN_CHAR_CLASS:
+    result->size = 5;
+    result->bytecode = malloc(5);
+
+    if (result->bytecode == NULL) {
+      return CREX_E_NOMEM;
+    }
+
+    result->bytecode[0] = VM_BUILTIN_CHAR_CLASS;
+    serialize_long(result->bytecode + 1, (long)tree->data.char_class_index, 4);
 
     break;
 
@@ -1213,6 +1331,9 @@ const char *crex_vm_code_to_str(unsigned char code) {
   case VM_CHARACTER:
     return "VM_CHARACTER";
 
+  case VM_BUILTIN_CHAR_CLASS:
+    return "VM_BUILTIN_CHAR_CLASS";
+
   case VM_ANCHOR_BOF:
     return "VM_ANCHOR_BOF";
 
@@ -1253,15 +1374,41 @@ void crex_debug_lex(const char *str, FILE *file) {
 
   token_t token;
 
-  while (lex(&token, &str, eof)) {
+  while (str != eof) {
+    const status_t status = lex(&token, &str, eof);
+
+    if (status != CREX_OK) {
+      fprintf(file, "Lex failed with status %s\n", status_to_str(status));
+      return;
+    }
+
     switch (token.type) {
     case TT_CHARACTER:
+      fputs("TT_CHARACTER ", file);
+
       if (isprint(token.data.character)) {
-        fprintf(file, "TT_CHARACTER %c\n", token.data.character);
+        fputc(token.data.character, file);
       } else {
-        fprintf(file, "TT_CHARACTER 0x%02x\n", 0xff & (int)token.data.character);
+        fprintf(file, "0x%02x\n", 0xff & (int)token.data.character);
       }
+
+      fputc('\n', file);
+
       break;
+
+    case TT_BUILTIN_CHAR_CLASS: {
+      const char *name = builtin_char_classes[token.data.char_class_index].name;
+
+      fputs("TT_BUILTIN_CHAR_CLASS ", file);
+
+      if (name != NULL) {
+        fprintf(file, "[[:%s:]]\n", name);
+      } else {
+        fprintf(file, "%zu\n", token.data.char_class_index);
+      }
+
+      break;
+    }
 
     case TT_ANCHOR:
       fprintf(file, "TT_ANCHOR %s\n", anchor_type_to_str(token.data.anchor_type));
@@ -1312,12 +1459,29 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *fi
     break;
 
   case PT_CHARACTER:
+    fputs("(PT_CHARACTER ", file);
+
     if (isprint(tree->data.character)) {
-      fprintf(file, "(PT_CHARACTER %c)", tree->data.character);
+      fprintf(file, "%c)", tree->data.character);
     } else {
-      fprintf(file, "(PT_CHARACTER 0x%02x)", 0xff & (int)tree->data.character);
+      fprintf(file, "0x%02x)", 0xff & (int)tree->data.character);
     }
+
     break;
+
+  case PT_BUILTIN_CHAR_CLASS: {
+    const char *name = builtin_char_classes[tree->data.char_class_index].name;
+
+    fputs("(PT_BUILTIN_CHAR_CLASS ", file);
+
+    if (name != NULL) {
+      fprintf(file, "[[:%s:]])", name);
+    } else {
+      fprintf(file, "%zu)", tree->data.char_class_index);
+    }
+
+    break;
+  }
 
   case PT_ANCHOR:
     fprintf(file, "(PT_ANCHOR %s)", anchor_type_to_str(tree->data.anchor_type));
@@ -1422,7 +1586,7 @@ void crex_debug_compile(const char *str, FILE *file) {
     } else if (code == VM_CHARACTER) {
       fprintf(file, "%c\n", result.bytecode[i + 1]);
       i++;
-    } else if (code == VM_WRITE_POINTER) {
+    } else if (code == VM_WRITE_POINTER || code == VM_BUILTIN_CHAR_CLASS) {
       fprintf(file, "%ld\n", deserialize_long(result.bytecode + i + 1, 4)); // FIXME: signedness
       i += 4;
     } else {

@@ -191,6 +191,18 @@ status_t NAME(RESULT_DECLARATION,
           break;
         }
 
+        if (code == VM_BUILTIN_CHAR_CLASS) {
+          assert(instr_pointer <= regex->size - 4);
+
+          // FIXME: signedness
+          const size_t index = (size_t)deserialize_long(regex->bytecode + instr_pointer, 4);
+          instr_pointer += 4;
+
+          keep = (builtin_char_classes[index].bitmap[character >> 3u] >> (character & 7u)) & 1u;
+
+          break;
+        }
+
         switch (code) {
         case VM_ANCHOR_BOF:
           if (prev_character != -1) {
@@ -306,12 +318,13 @@ status_t NAME(RESULT_DECLARATION,
       break;
     }
 
+    prev_character = character;
     buffer++;
   }
 
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
 
-  if(!match_found) {
+  if (!match_found) {
 #if defined(MATCH_LOCATION)
     match->size = 0;
     match->start = NULL;
