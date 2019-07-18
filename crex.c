@@ -79,6 +79,9 @@ static struct {
 #define BCC_NOT_WHITESPACE 15
 #define BCC_NOT_WORD 16
 
+#define BCC_TEST(index, character)                                                                 \
+  ((builtin_char_classes[index].bitmap[(character) >> 3u] >> (character & 7u)) & 1)
+
 // FIXME: put these somewhere
 
 static void safe_memcpy(void *destination, const void *source, size_t size) {

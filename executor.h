@@ -198,43 +198,35 @@ status_t NAME(RESULT_DECLARATION,
           const size_t index = (size_t)deserialize_long(regex->bytecode + instr_pointer, 4);
           instr_pointer += 4;
 
-          keep = (builtin_char_classes[index].bitmap[character >> 3u] >> (character & 7u)) & 1u;
+          keep = BCC_TEST(index, character);
 
           break;
         }
 
         switch (code) {
         case VM_ANCHOR_BOF:
-          if (prev_character != -1) {
-            keep = 0;
-          }
+          keep = prev_character == -1;
           break;
 
         case VM_ANCHOR_BOL:
-          if (prev_character != -1 && prev_character != '\n') {
-            keep = 0;
-          }
+          keep = prev_character == -1 || prev_character == '\n';
           break;
 
         case VM_ANCHOR_EOF:
-          if (character != -1) {
-            keep = 0;
-          }
+          keep = character == -1;
           break;
 
         case VM_ANCHOR_EOL:
-          if (character != -1 && character != '\n') {
-            keep = 0;
-          }
+          keep = character == -1 || character == '\n';
           break;
 
         case VM_ANCHOR_WORD_BOUNDARY:
-          assert(0 && "FIXME");
+        case VM_ANCHOR_NOT_WORD_BOUNDARY: {
+          const int prev_is_word = prev_character != -1 && BCC_TEST(BCC_WORD, prev_character);
+          const int char_is_word = character != -1 && BCC_TEST(BCC_WORD, character);
+          keep = prev_is_word ^ char_is_word ^ (code == VM_ANCHOR_NOT_WORD_BOUNDARY);
           break;
-
-        case VM_ANCHOR_NOT_WORD_BOUNDARY:
-          assert(0 && "FIXME");
-          break;
+        }
 
         case VM_JUMP: {
           assert(instr_pointer <= regex->size - 4);
