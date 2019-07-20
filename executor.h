@@ -193,6 +193,18 @@ status_t NAME(RESULT_DECLARATION,
           break;
         }
 
+        if (code == VM_CHAR_CLASS) {
+          assert(instr_pointer <= regex->size - 4);
+
+          // FIXME: signedness
+          const size_t index = (size_t)deserialize_long(regex->bytecode + instr_pointer, 4);
+          instr_pointer += 4;
+
+          keep = character != -1 && bitmap_test(regex->char_classes + 32 * index, character);
+
+          break;
+        }
+
         if (code == VM_BUILTIN_CHAR_CLASS) {
           assert(instr_pointer <= regex->size - 4);
 
@@ -200,7 +212,7 @@ status_t NAME(RESULT_DECLARATION,
           const size_t index = (size_t)deserialize_long(regex->bytecode + instr_pointer, 4);
           instr_pointer += 4;
 
-          keep = BCC_TEST(index, character);
+          keep = character != -1 && BCC_TEST(index, character);
 
           break;
         }

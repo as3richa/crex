@@ -6,9 +6,9 @@ void crex_debug_lex(const char *, FILE *);
 void crex_debug_parse(const char *, FILE *);
 void crex_debug_compile(const char *, FILE *);
 
-const char *pattern = "\\brat\\b";
+const char *pattern = "[0-9]+";
 
-const char *cases[] = {"rat", "crate", "grated", "big rat friend", "ratty"};
+const char *cases[] = {"1", "12", "123", "a123", "1a23d", "ddddd", "99d"};
 
 const size_t n_cases = sizeof(cases) / sizeof(const char *);
 
@@ -18,11 +18,11 @@ int main(void) {
   crex_debug_lex(pattern, stdout);
   putchar('\n');
 
-  crex_debug_parse(pattern, stdout);
+  /* crex_debug_parse(pattern, stdout);
   putchar('\n');
 
   crex_debug_compile(pattern, stdout);
-  putchar('\n');
+  putchar('\n'); */
 
   crex_status_t status;
 

@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <ctype.h>
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -16,61 +17,67 @@ typedef crex_context_t context_t;
 
 #define REPETITION_INFINITY (~(size_t)0)
 
-static struct {
+typedef struct {
   const char *name;
+  size_t name_size;
   unsigned char bitmap[32];
-} builtin_char_classes[] = {
-    {"alnum", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0xfe, 0xff, 0xff,
-               0x07, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"alpha", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff,
-               0x07, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"ascii", {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-               0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"blank", {0x00, 0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"cntrl", {0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"digit", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"graph", {0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-               0xff, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"lower", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"print", {0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-               0xff, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"punct", {0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0x00, 0xfc, 0x01, 0x00, 0x00,
-               0xf8, 0x01, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"space", {0x00, 0x3e, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"upper", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff,
-               0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"word", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0xfe, 0xff, 0xff,
-              0x87, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {"xdigit", {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0x7e, 0x00, 0x00,
-                0x00, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
-    {NULL /* Non-digits */, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0xfc, 0xff, 0xff, 0xff,
-                             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
-    {NULL /* Non-whitespace */, {0xff, 0xc1, 0xff, 0xff, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                                 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                                 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
-    {NULL /* Non-word */, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0xfc, 0x01, 0x00, 0x00,
-                           0x78, 0x01, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                           0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}}};
+} builtin_char_class_t;
+
+builtin_char_class_t builtin_char_classes[] = {
+    {"alnum", 5, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0xfe, 0xff, 0xff,
+                  0x07, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"alpha", 5, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff,
+                  0x07, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"ascii", 5, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                  0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"blank", 5, {0x00, 0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"cntrl", 5, {0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"digit", 5, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"graph", 5, {0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                  0xff, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"lower", 5, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"print", 5, {0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                  0xff, 0xff, 0xff, 0xff, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"punct", 5, {0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0x00, 0xfc, 0x01, 0x00, 0x00,
+                  0xf8, 0x01, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"space", 5, {0x00, 0x3e, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"upper", 5, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff,
+                  0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"word", 4, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0xfe, 0xff, 0xff,
+                 0x87, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {"xdigit", 6, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0x7e, 0x00, 0x00,
+                   0x00, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+    {NULL /* Non-digits */, 0, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0xfc, 0xff, 0xff, 0xff,
+                                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
+    {NULL /* Non-whitespace */, 0, {0xff, 0xc1, 0xff, 0xff, 0xfe, 0xff, 0xff, 0xff,
+                                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
+    {NULL /* Non-word */, 0, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0xfc, 0x01, 0x00, 0x00,
+                              0x78, 0x01, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                              0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}}};
+
+#define N_BUILTIN_CHAR_CLASSES sizeof(builtin_char_classes) / sizeof(*builtin_char_classes)
 
 #define BCC_DIGIT 5
 #define BCC_WHITESPACE 10
@@ -79,13 +86,29 @@ static struct {
 #define BCC_NOT_WHITESPACE 15
 #define BCC_NOT_WORD 16
 
-#define BCC_TEST(index, character)                                                                 \
-  ((builtin_char_classes[index].bitmap[(character) >> 3u] >> (character & 7u)) & 1)
+#define BCC_TEST(index, character) bitmap_test(builtin_char_classes[index].bitmap, (character))
+
+static void bitmap_set(unsigned char *bitmap, size_t index) {
+  bitmap[index >> 3u] |= 1u << (index & 7u);
+}
+
+static void bitmap_union(unsigned char *bitmap, const unsigned char *other_bitmap, size_t size) {
+  while (size--) {
+    bitmap[size] |= other_bitmap[size];
+  }
+}
+
+static int bitmap_test(unsigned char *bitmap, size_t index) {
+  return (bitmap[index >> 3u] >> (index & 7u)) & 1u;
+}
 
 struct crex_regex {
   size_t size;
   unsigned char *bytecode;
+
   size_t n_groups;
+
+  unsigned char *char_classes;
 };
 
 typedef union {
@@ -124,6 +147,7 @@ typedef enum {
 
 typedef enum {
   TT_CHARACTER,
+  TT_CHAR_CLASS,
   TT_BUILTIN_CHAR_CLASS,
   TT_ANCHOR,
   TT_PIPE,
@@ -149,12 +173,27 @@ typedef struct {
   } data;
 } token_t;
 
-WARN_UNUSED_RESULT static status_t lex(token_t *token, const char **str, const char *eof) {
-  assert((*str) < eof);
+typedef struct {
+  size_t size;
+  size_t capacity;
+  unsigned char *buffer;
+} char_class_buffer_t;
 
-  const char byte = *((*str)++);
+WARN_UNUSED_RESULT static status_t lex_char_class(char_class_buffer_t *char_classes,
+                                                  token_t *token,
+                                                  const char **str,
+                                                  const char *eof);
 
-  switch (byte) {
+WARN_UNUSED_RESULT static int lex_escape_code(token_t *token, const char **str, const char *eof);
+
+WARN_UNUSED_RESULT static status_t
+lex(char_class_buffer_t *char_classes, token_t *token, const char **str, const char *eof) {
+  assert(*str < eof);
+
+  const unsigned char character = **str;
+  (*str)++;
+
+  switch (character) {
   case '^':
     token->type = TT_ANCHOR;
     token->data.anchor_type = AT_BOL;
@@ -172,7 +211,14 @@ WARN_UNUSED_RESULT static status_t lex(token_t *token, const char **str, const c
   case '*':
   case '+':
   case '?':
-    switch (byte) {
+    if (*str < eof && **str == '?') {
+      (*str)++;
+      token->type = TT_LAZY_REPETITION;
+    } else {
+      token->type = TT_GREEDY_REPETITION;
+    }
+
+    switch (character) {
     case '*':
       token->data.repetition.lower_bound = 0;
       token->data.repetition.upper_bound = REPETITION_INFINITY;
@@ -189,13 +235,6 @@ WARN_UNUSED_RESULT static status_t lex(token_t *token, const char **str, const c
       break;
     }
 
-    if (*str < eof && **str == '?') {
-      (*str)++;
-      token->type = TT_LAZY_REPETITION;
-    } else {
-      token->type = TT_GREEDY_REPETITION;
-    }
-
     break;
 
   case '(':
@@ -206,145 +245,356 @@ WARN_UNUSED_RESULT static status_t lex(token_t *token, const char **str, const c
     token->type = TT_CLOSE_PAREN;
     break;
 
+  case '[': {
+    status_t status = lex_char_class(char_classes, token, str, eof);
+
+    if (status != CREX_OK) {
+      return status;
+    }
+
+    break;
+  }
+
   case '\\':
-    token->type = TT_CHARACTER;
-
-    if (*str == eof) {
+    if (!lex_escape_code(token, str, eof)) {
       return CREX_E_BAD_ESCAPE;
     }
-
-    switch (*((*str)++)) {
-    case 'a':
-      token->data.character = '\a';
-      break;
-
-    case 'f':
-      token->data.character = '\f';
-      break;
-
-    case 'n':
-      token->data.character = '\n';
-      break;
-
-    case 'r':
-      token->data.character = '\r';
-      break;
-
-    case 't':
-      token->data.character = '\t';
-      break;
-
-    case 'v':
-      token->data.character = '\v';
-      break;
-
-    case 'A':
-      token->type = TT_ANCHOR;
-      token->data.anchor_type = AT_BOF;
-      break;
-
-    case 'z':
-      token->type = TT_ANCHOR;
-      token->data.anchor_type = AT_EOF;
-      break;
-
-    case 'b':
-      token->type = TT_ANCHOR;
-      token->data.anchor_type = AT_WORD_BOUNDARY;
-      break;
-
-    case 'B':
-      token->type = TT_ANCHOR;
-      token->data.anchor_type = AT_NOT_WORD_BOUNDARY;
-      break;
-
-    case 'x': {
-      int value = 0;
-
-      for (int i = 2; i--;) {
-        if (*str == eof) {
-          return CREX_E_BAD_ESCAPE;
-        }
-
-        const char hex_byte = *((*str)++);
-
-        int digit;
-
-        if ('0' <= hex_byte && hex_byte <= '9') {
-          digit = hex_byte - '0';
-        } else if ('a' <= hex_byte && hex_byte <= 'f') {
-          digit = hex_byte - 'a' + 0xa;
-        } else if ('A' <= hex_byte && hex_byte <= 'F') {
-          digit = hex_byte - 'A' + 0xa;
-        } else {
-          return CREX_E_BAD_ESCAPE;
-        }
-
-        value = 16 * value + digit;
-      }
-
-      token->data.character = value;
-
-      break;
-    }
-
-    case '.':
-    case '|':
-    case '*':
-    case '+':
-    case '?':
-    case '(':
-    case ')':
-    case '[':
-    case ']':
-    case '{':
-    case '}':
-    case '^':
-    case '$':
-    case '\\':
-      token->data.character = byte;
-      break;
-
-    case 'd':
-      token->type = TT_BUILTIN_CHAR_CLASS;
-      token->data.char_class_index = BCC_DIGIT;
-      break;
-
-    case 'D':
-      token->type = TT_BUILTIN_CHAR_CLASS;
-      token->data.char_class_index = BCC_NOT_DIGIT;
-      break;
-
-    case 's':
-      token->type = TT_BUILTIN_CHAR_CLASS;
-      token->data.char_class_index = BCC_WHITESPACE;
-      break;
-
-    case 'S':
-      token->type = TT_BUILTIN_CHAR_CLASS;
-      token->data.char_class_index = BCC_NOT_WHITESPACE;
-      break;
-
-    case 'w':
-      token->type = TT_BUILTIN_CHAR_CLASS;
-      token->data.char_class_index = BCC_WORD;
-      break;
-
-    case 'W':
-      token->type = TT_BUILTIN_CHAR_CLASS;
-      token->data.char_class_index = BCC_NOT_WORD;
-      break;
-
-    default:
-      return CREX_E_BAD_ESCAPE;
-    }
-
     break;
 
   default:
     token->type = TT_CHARACTER;
-    token->data.character = byte;
+    token->data.character = character;
   }
+
+  return CREX_OK;
+}
+
+int lex_escape_code(token_t *token, const char **str, const char *eof) {
+  assert(*str <= eof);
+
+  if (*str == eof) {
+    return 0;
+  }
+
+  unsigned char character = **str;
+  (*str)++;
+
+  token->type = TT_CHARACTER;
+
+  switch (character) {
+  case 'a':
+    token->data.character = '\a';
+    break;
+
+  case 'f':
+    token->data.character = '\f';
+    break;
+
+  case 'n':
+    token->data.character = '\n';
+    break;
+
+  case 'r':
+    token->data.character = '\r';
+    break;
+
+  case 't':
+    token->data.character = '\t';
+    break;
+
+  case 'v':
+    token->data.character = '\v';
+    break;
+
+  case 'A':
+    token->type = TT_ANCHOR;
+    token->data.anchor_type = AT_BOF;
+    break;
+
+  case 'z':
+    token->type = TT_ANCHOR;
+    token->data.anchor_type = AT_EOF;
+    break;
+
+  case 'b':
+    token->type = TT_ANCHOR;
+    token->data.anchor_type = AT_WORD_BOUNDARY;
+    break;
+
+  case 'B':
+    token->type = TT_ANCHOR;
+    token->data.anchor_type = AT_NOT_WORD_BOUNDARY;
+    break;
+
+  case 'x': {
+    int value = 0;
+
+    for (int i = 2; i--;) {
+      if (*str == eof) {
+        return CREX_E_BAD_ESCAPE;
+      }
+
+      const char hex_byte = *((*str)++);
+
+      int digit;
+
+      if ('0' <= hex_byte && hex_byte <= '9') {
+        digit = hex_byte - '0';
+      } else if ('a' <= hex_byte && hex_byte <= 'f') {
+        digit = hex_byte - 'a' + 0xa;
+      } else if ('A' <= hex_byte && hex_byte <= 'F') {
+        digit = hex_byte - 'A' + 0xa;
+      } else {
+        return CREX_E_BAD_ESCAPE;
+      }
+
+      value = 16 * value + digit;
+    }
+
+    token->data.character = value;
+
+    break;
+  }
+
+  case '.':
+  case '|':
+  case '*':
+  case '+':
+  case '?':
+  case '(':
+  case ')':
+  case '[':
+  case ']':
+  case '{':
+  case '}':
+  case '^':
+  case '$':
+  case '\\':
+    token->data.character = character;
+    break;
+
+  case 'd':
+    token->type = TT_BUILTIN_CHAR_CLASS;
+    token->data.char_class_index = BCC_DIGIT;
+    break;
+
+  case 'D':
+    token->type = TT_BUILTIN_CHAR_CLASS;
+    token->data.char_class_index = BCC_NOT_DIGIT;
+    break;
+
+  case 's':
+    token->type = TT_BUILTIN_CHAR_CLASS;
+    token->data.char_class_index = BCC_WHITESPACE;
+    break;
+
+  case 'S':
+    token->type = TT_BUILTIN_CHAR_CLASS;
+    token->data.char_class_index = BCC_NOT_WHITESPACE;
+    break;
+
+  case 'w':
+    token->type = TT_BUILTIN_CHAR_CLASS;
+    token->data.char_class_index = BCC_WORD;
+    break;
+
+  case 'W':
+    token->type = TT_BUILTIN_CHAR_CLASS;
+    token->data.char_class_index = BCC_NOT_WORD;
+    break;
+
+  default:
+    return 0;
+  }
+
+  return 1;
+}
+
+WARN_UNUSED_RESULT static status_t lex_char_class(char_class_buffer_t *char_classes,
+                                                  token_t *token,
+                                                  const char **str,
+                                                  const char *eof) {
+  assert(char_classes->size <= char_classes->capacity);
+
+  if (char_classes->size == char_classes->capacity) {
+    const size_t capacity = 2 * char_classes->capacity + 1;
+    unsigned char *buffer = malloc(32 * capacity);
+
+    if (buffer == NULL) {
+      return CREX_E_NOMEM;
+    }
+
+    safe_memcpy(buffer, char_classes->buffer, 32 * char_classes->size);
+    free(char_classes->buffer);
+
+    char_classes->capacity = capacity;
+    char_classes->buffer = buffer;
+  }
+
+  unsigned char *bitmap = char_classes->buffer + 32 * char_classes->size;
+  memset(bitmap, 0, 32);
+
+  assert(*str <= eof);
+
+  if (*str == eof) {
+    return CREX_E_BAD_CHARACTER_CLASS;
+  }
+
+  int inverted;
+
+  if (**str == '^') {
+    (*str)++;
+    inverted = 1;
+  } else {
+    inverted = 0;
+  }
+
+  int prev_character = -1;
+  int is_range = 0;
+
+#define PUSH_CHAR(character)                                                                       \
+  do {                                                                                             \
+    if (is_range) {                                                                                \
+      assert(prev_character != -1);                                                                \
+      for (unsigned char i = prev_character + 1; i <= character; i++) {                            \
+        bitmap_set(bitmap, i);                                                                     \
+      }                                                                                            \
+      prev_character = -1;                                                                         \
+    } else {                                                                                       \
+      bitmap_set(bitmap, character);                                                               \
+      prev_character = character;                                                                  \
+    }                                                                                              \
+    is_range = 0;                                                                                  \
+  } while (0)
+
+  for (;;) {
+    assert(*str <= eof);
+
+    if (*str == eof) {
+      return CREX_E_BAD_CHARACTER_CLASS;
+    }
+
+    unsigned char character = **str;
+    (*str)++;
+
+    if (character == ']') {
+      break;
+    }
+
+    switch (character) {
+    case '[': {
+      const char *end;
+
+      for (end = *str; end < eof; end++) {
+        if (!isalpha(*end) && *end != ':') {
+          break;
+        }
+      }
+
+      if (end == eof || **str != ':' || *(end - 1) != ':' || *end != ']') {
+        PUSH_CHAR('[');
+        break;
+      }
+
+      if (is_range) {
+        return CREX_E_BAD_CHARACTER_CLASS;
+      }
+
+      const char *name = *str + 1;
+      const size_t size = (end - 1) - name;
+
+      size_t i;
+
+      for (i = 0; i < N_BUILTIN_CHAR_CLASSES; i++) {
+        const builtin_char_class_t *bcc = &builtin_char_classes[i];
+
+        if (size == bcc->name_size && memcmp(name, bcc->name, size) == 0) {
+          break;
+        }
+      }
+
+      if (i == N_BUILTIN_CHAR_CLASSES) {
+        return CREX_E_BAD_CHARACTER_CLASS;
+      }
+
+      bitmap_union(bitmap, builtin_char_classes[i].bitmap, sizeof(bitmap));
+      prev_character = -1;
+      *str = end + 1;
+
+      break;
+    }
+
+    case '\\':
+      if (!lex_escape_code(token, str, eof)) {
+        return CREX_E_BAD_ESCAPE;
+      }
+
+      switch (token->type) {
+      case TT_CHARACTER:
+        PUSH_CHAR(token->data.character);
+        break;
+
+      case TT_ANCHOR:
+        return CREX_E_BAD_CHARACTER_CLASS;
+
+      case TT_BUILTIN_CHAR_CLASS: {
+        if (is_range) {
+          return CREX_E_BAD_CHARACTER_CLASS;
+        }
+
+        const size_t index = token->data.char_class_index;
+        const unsigned char *other_bitmap = builtin_char_classes[index].bitmap;
+        bitmap_union(bitmap, other_bitmap, sizeof(bitmap));
+
+        prev_character = -1;
+
+        break;
+      }
+
+      default:
+        assert(0);
+      }
+
+      break;
+
+    case '-':
+      if (is_range || prev_character == -1) {
+        PUSH_CHAR('-');
+      } else {
+        is_range = 1;
+      }
+      break;
+
+    default:
+      PUSH_CHAR(character);
+      break;
+    }
+  }
+
+  if (inverted) {
+    for (size_t i = 0; i < sizeof(bitmap); i++) {
+      bitmap[i] = ~bitmap[i];
+    }
+  }
+
+  for (size_t i = 0; i < N_BUILTIN_CHAR_CLASSES; i++) {
+    if (memcmp(bitmap, builtin_char_classes[i].bitmap, 32) == 0) {
+      token->type = TT_BUILTIN_CHAR_CLASS;
+      token->data.char_class_index = i;
+      return CREX_OK;
+    }
+  }
+
+  token->type = TT_CHAR_CLASS;
+
+  for (size_t i = 0; i < char_classes->size; i++) {
+    if (memcmp(bitmap, char_classes->buffer + 32 * i, 32) == 0) {
+      token->data.char_class_index = i;
+      return CREX_OK;
+    }
+  }
+
+  token->data.char_class_index = char_classes->size++;
 
   return CREX_OK;
 }
@@ -359,6 +609,7 @@ typedef enum {
   PT_GROUP,
   PT_EMPTY,
   PT_CHARACTER,
+  PT_CHAR_CLASS,
   PT_BUILTIN_CHAR_CLASS,
   PT_ANCHOR,
 } parsetree_type_t;
@@ -422,18 +673,28 @@ WARN_UNUSED_RESULT static int
 push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator);
 WARN_UNUSED_RESULT static int pop_operator(tree_stack_t *trees, operator_stack_t *operators);
 
-WARN_UNUSED_RESULT parsetree_t *
-parse(status_t *status, size_t *n_groups, const char *str, size_t length) {
+WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
+                                      size_t *n_groups,
+                                      unsigned char **char_classes_buffer,
+                                      const char *str,
+                                      size_t length) {
   const char *eof = str + length;
 
   tree_stack_t trees = {0, 0, NULL};
   operator_stack_t operators = {0, 0, NULL};
+
+  // FIXME: figure out a better ownership story for char_classes
+  char_class_buffer_t char_classes;
+  char_classes.size = 0;
+  char_classes.capacity = 0;
+  char_classes.buffer = NULL;
 
 #define CHECK_ERRORS(condition, code)                                                              \
   do {                                                                                             \
     if (!(condition)) {                                                                            \
       free_tree_stack(&trees);                                                                     \
       free(operators.data);                                                                        \
+      free(char_classes.buffer);                                                                   \
       *status = code;                                                                              \
       return NULL;                                                                                 \
     }                                                                                              \
@@ -452,12 +713,13 @@ parse(status_t *status, size_t *n_groups, const char *str, size_t length) {
 
   while (str != eof) {
     token_t token;
-    const status_t lex_status = lex(&token, &str, eof);
+    const status_t lex_status = lex(&char_classes, &token, &str, eof);
 
     CHECK_ERRORS(lex_status == CREX_OK, lex_status);
 
     switch (token.type) {
     case TT_CHARACTER:
+    case TT_CHAR_CLASS:
     case TT_BUILTIN_CHAR_CLASS:
     case TT_ANCHOR: {
       operator_t operator;
@@ -471,6 +733,11 @@ parse(status_t *status, size_t *n_groups, const char *str, size_t length) {
       case TT_CHARACTER:
         tree->type = PT_CHARACTER;
         tree->data.character = token.data.character;
+        break;
+
+      case TT_CHAR_CLASS:
+        tree->type = PT_CHAR_CLASS;
+        tree->data.char_class_index = token.data.char_class_index;
         break;
 
       case TT_BUILTIN_CHAR_CLASS:
@@ -555,6 +822,9 @@ parse(status_t *status, size_t *n_groups, const char *str, size_t length) {
     CHECK_ERRORS(pop_operator(&trees, &operators), CREX_E_NOMEM);
   }
 
+  // FIXME: nomenclature
+  *char_classes_buffer = char_classes.buffer;
+
   assert(trees.size == 1);
 
   parsetree_t *tree = trees.data[0];
@@ -571,6 +841,7 @@ static void free_parsetree(parsetree_t *tree) {
   switch (tree->type) {
   case PT_EMPTY:
   case PT_CHARACTER:
+  case PT_CHAR_CLASS:
   case PT_BUILTIN_CHAR_CLASS:
   case PT_ANCHOR:
     break;
@@ -734,6 +1005,7 @@ static int pop_operator(tree_stack_t *trees, operator_stack_t *operators) {
 
 enum {
   VM_CHARACTER,
+  VM_CHAR_CLASS,
   VM_BUILTIN_CHAR_CLASS,
   VM_ANCHOR_BOF,
   VM_ANCHOR_BOL,
@@ -825,6 +1097,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
 
     break;
 
+  case PT_CHAR_CLASS:
   case PT_BUILTIN_CHAR_CLASS:
     result->size = 5;
     result->bytecode = malloc(5);
@@ -833,7 +1106,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
       return CREX_E_NOMEM;
     }
 
-    result->bytecode[0] = VM_BUILTIN_CHAR_CLASS;
+    result->bytecode[0] = (tree->type == PT_CHAR_CLASS) ? VM_CHAR_CLASS : VM_BUILTIN_CHAR_CLASS;
     serialize_long(result->bytecode + 1, (long)tree->data.char_class_index, 4);
 
     break;
@@ -1070,11 +1343,6 @@ typedef state_list_handle_t *state_list_iter_t;
 
 #define STATE_LIST_EMPTY (~(state_list_handle_t)0)
 
-/* typedef union {
-  size_t size;
-  char *pointer;
-} allocator_slot_t; */ // FIXME
-
 typedef struct {
   size_t capacity;
   allocator_slot_t *buffer;
@@ -1245,7 +1513,7 @@ regex_t *crex_compile(status_t *status, const char *pattern, size_t size) {
     return NULL;
   }
 
-  parsetree_t *tree = parse(status, &regex->n_groups, pattern, size);
+  parsetree_t *tree = parse(status, &regex->n_groups, &regex->char_classes, pattern, size);
 
   if (*status != CREX_OK) {
     free(regex);
@@ -1286,20 +1554,19 @@ context_t *crex_create_context(status_t *status) {
   return context;
 }
 
-void crex_destroy_regex(crex_regex_t *regex) {
+void crex_destroy_regex(regex_t *regex) {
   free(regex->bytecode);
+  free(regex->char_classes);
   free(regex);
 }
 
-void crex_destroy_context(crex_context_t *context) {
+void crex_destroy_context(context_t *context) {
   free(context->visited);
   free(context->list_buffer);
   free(context);
 }
 
-CREX_WARN_UNUSED_RESULT size_t crex_regex_n_groups(const crex_regex_t *regex) {
-  return regex->n_groups;
-}
+CREX_WARN_UNUSED_RESULT size_t crex_regex_n_groups(const regex_t *regex) { return regex->n_groups; }
 
 status_t
 crex_is_match_str(int *is_match, context_t *context, const regex_t *regex, const char *str) {
@@ -1418,10 +1685,15 @@ const char *crex_vm_code_to_str(unsigned char code) {
 void crex_debug_lex(const char *str, FILE *file) {
   const char *eof = str + strlen(str);
 
+  char_class_buffer_t char_classes;
+  char_classes.size = 0;
+  char_classes.capacity = 0;
+  char_classes.buffer = NULL;
+
   token_t token;
 
   while (str != eof) {
-    const status_t status = lex(&token, &str, eof);
+    const status_t status = lex(&char_classes, &token, &str, eof);
 
     if (status != CREX_OK) {
       fprintf(file, "Lex failed with status %s\n", status_to_str(status));
@@ -1435,11 +1707,15 @@ void crex_debug_lex(const char *str, FILE *file) {
       if (isprint(token.data.character)) {
         fputc(token.data.character, file);
       } else {
-        fprintf(file, "0x%02x\n", 0xff & (int)token.data.character);
+        fprintf(file, "0x%02x", 0xff & (int)token.data.character);
       }
 
       fputc('\n', file);
 
+      break;
+
+    case TT_CHAR_CLASS:
+      fprintf(file, "TT_CHAR_CLASS %zu\n", token.data.char_class_index);
       break;
 
     case TT_BUILTIN_CHAR_CLASS: {
@@ -1492,6 +1768,8 @@ void crex_debug_lex(const char *str, FILE *file) {
       assert(0);
     }
   }
+
+  free(char_classes.buffer);
 }
 
 static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *file) {
@@ -1583,7 +1861,12 @@ void crex_debug_parse(const char *str, FILE *file) {
   status_t status;
 
   size_t n_groups;
-  parsetree_t *tree = parse(&status, &n_groups, str, strlen(str));
+
+  unsigned char *char_classes;
+
+  parsetree_t *tree = parse(&status, &n_groups, &char_classes, str, strlen(str));
+
+  free(char_classes);
 
   if (status != CREX_OK) {
     fprintf(file, "Parse failed with status %s\n", status_to_str(status));
@@ -1600,7 +1883,11 @@ void crex_debug_compile(const char *str, FILE *file) {
   status_t status;
 
   size_t n_groups;
-  parsetree_t *tree = parse(&status, &n_groups, str, strlen(str));
+  unsigned char *char_classes;
+
+  parsetree_t *tree = parse(&status, &n_groups, &char_classes, str, strlen(str));
+
+  free(char_classes);
 
   if (status != CREX_OK) {
     fprintf(file, "Parse failed with status %s\n", status_to_str(status));
