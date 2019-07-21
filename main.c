@@ -6,7 +6,7 @@ void crex_debug_lex(const char *, FILE *);
 void crex_debug_parse(const char *, FILE *);
 void crex_debug_compile(const char *, FILE *);
 
-const char *pattern = "a{13,37}?";
+const char *pattern = "a{100}{100}{10}";
 
 const char *cases[] = {"", "a", "aaa", "aaaaa", "aaaaaa"};
 

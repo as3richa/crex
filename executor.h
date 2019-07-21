@@ -22,10 +22,10 @@ status_t NAME(RESULT_DECLARATION,
               size_t buffer_size) {
   unsigned char *visited;
 
-  const size_t min_visited_size = (regex->size + CHAR_BIT - 1) / CHAR_BIT;
+  const size_t visited_size = bitmap_size_for_bits(regex->size);
 
-  if (context->visited_size < min_visited_size) {
-    visited = malloc(min_visited_size);
+  if (context->visited_size < visited_size) {
+    visited = malloc(visited_size);
 
     if (visited == NULL) {
       return CREX_E_NOMEM;
@@ -33,8 +33,7 @@ status_t NAME(RESULT_DECLARATION,
 
     free(context->visited);
     context->visited = visited;
-
-    context->visited_size = min_visited_size;
+    context->visited_size = visited_size;
   } else {
     visited = context->visited;
   }
@@ -74,7 +73,7 @@ status_t NAME(RESULT_DECLARATION,
   for (;;) {
     const int character = (buffer == eof) ? -1 : (unsigned char)(*buffer);
 
-    memset(visited, 0, min_visited_size);
+    bitmap_clear(visited, visited_size);
 
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
     if (list.head == STATE_LIST_EMPTY && match_found) {
@@ -169,15 +168,11 @@ status_t NAME(RESULT_DECLARATION,
 #endif
         }
 
-        const size_t byte_index = instr_pointer / CHAR_BIT;
-        const size_t bit_index = instr_pointer % CHAR_BIT;
-
-        if (visited[byte_index] & (1u << bit_index)) {
+        if (bitmap_test(visited, instr_pointer)) {
           keep = 0;
-          break;
         }
 
-        visited[byte_index] |= 1u << bit_index;
+        bitmap_set(visited, instr_pointer);
 
         const unsigned char code = regex->bytecode[instr_pointer++];
 
@@ -269,7 +264,7 @@ status_t NAME(RESULT_DECLARATION,
             instr_pointer += delta;
           }
 
-          if (!((visited[split_pointer / CHAR_BIT] >> (split_pointer % CHAR_BIT)) & 1u)) {
+          if (!bitmap_test(visited, split_pointer)) {
             if (!state_list_push_copy(&list, state, split_pointer)) {
               CLEANUP();
               return CREX_E_NOMEM;

@@ -102,6 +102,10 @@ static int bitmap_test(unsigned char *bitmap, size_t index) {
   return (bitmap[index >> 3u] >> (index & 7u)) & 1u;
 }
 
+static void bitmap_clear(unsigned char *bitmap, size_t size) { memset(bitmap, 0, size); }
+
+static int bitmap_size_for_bits(size_t bits) { return (bits + 7) / 8; }
+
 struct crex_regex {
   size_t size;
   unsigned char *bytecode;
@@ -1298,7 +1302,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
     const size_t lower_bound = tree->data.repetition.lower_bound;
     const size_t upper_bound = tree->data.repetition.upper_bound;
 
-    assert(lower_bound <= upper_bound && "FIXME");
+    assert(lower_bound <= upper_bound && lower_bound != REPETITION_INFINITY);
 
     result->size = lower_bound * child.size;
 
@@ -1663,7 +1667,7 @@ void crex_destroy_context(context_t *context) {
   free(context);
 }
 
-CREX_WARN_UNUSED_RESULT size_t crex_regex_n_groups(const regex_t *regex) { return regex->n_groups; }
+size_t crex_regex_n_groups(const regex_t *regex) { return regex->n_groups; }
 
 status_t
 crex_is_match_str(int *is_match, context_t *context, const regex_t *regex, const char *str) {
