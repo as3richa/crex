@@ -1,0 +1,23 @@
+---
+- pattern: '\Ahello world!\z'
+  testcases:
+  - str: "hello world!"
+    groups: null
+    - [0, "hello world!"]
+  - str: "goodbye world!"
+    groups: null
+
+- pattern: '\A(hello|goodbye) world!\z'
+  testcases:
+  - str: "hello world!"
+    groups:
+    - [0, "hello world!"]
+    - [0, "hello"]
+  - str: "goodbye world!"
+    groups:
+    - [0, "goodbye world!"]
+    - [0, "goodbye"]
+  - str: "oh, hello world!"
+    groups: null
+  - str: "goodbye world! see ya!"
+    groups: null
