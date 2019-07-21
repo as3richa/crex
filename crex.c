@@ -15,7 +15,7 @@ typedef crex_regex_t regex_t;
 typedef crex_context_t context_t;
 #define WARN_UNUSED_RESULT CREX_WARN_UNUSED_RESULT
 
-#define REPETITION_INFINITY (~(size_t)0)
+#define REPETITION_INFINITY SIZE_MAX
 
 typedef struct {
   const char *name;
@@ -179,6 +179,25 @@ typedef struct {
   unsigned char *buffer;
 } char_class_buffer_t;
 
+size_t slice_to_size(const char *begin, const char *end) {
+  size_t result = 0;
+
+  for (const char *it = begin; it != end; it++) {
+    assert(isdigit(*it));
+
+    // FIXME: can't assume ASCII compiler
+    const unsigned int digit = *it - '0';
+
+    if (result > (REPETITION_INFINITY - digit) / 10u) {
+      return REPETITION_INFINITY;
+    }
+
+    result = 10 * result + digit;
+  }
+
+  return result;
+}
+
 WARN_UNUSED_RESULT static status_t lex_char_class(char_class_buffer_t *char_classes,
                                                   token_t *token,
                                                   const char **str,
@@ -250,6 +269,84 @@ lex(char_class_buffer_t *char_classes, token_t *token, const char **str, const c
 
     if (status != CREX_OK) {
       return status;
+    }
+
+    break;
+  }
+
+  case '{': {
+    const char *lb_begin = *str;
+    const char *lb_end;
+
+    for (lb_end = lb_begin; lb_end != eof && isdigit(*lb_end); lb_end++) {
+    }
+
+    if (lb_end == lb_begin || lb_end == eof || (*lb_end != ',' && *lb_end != '}')) {
+      token->type = TT_CHARACTER;
+      token->data.character = '{';
+      break;
+    }
+
+    if (*lb_end == '}') {
+      (*str) = lb_end + 1;
+
+      if (*str < eof && **str == '?') {
+        (*str)++;
+        token->type = TT_LAZY_REPETITION;
+      } else {
+        token->type = TT_GREEDY_REPETITION;
+      }
+
+      token->data.repetition.lower_bound = slice_to_size(lb_begin, lb_end);
+
+      if (token->data.repetition.lower_bound == REPETITION_INFINITY) {
+        return CREX_E_BAD_REPETITION;
+      }
+
+      token->data.repetition.upper_bound = token->data.repetition.lower_bound;
+
+      break;
+    }
+
+    const char *ub_begin = lb_end + 1;
+    const char *ub_end;
+
+    for (ub_end = ub_begin; ub_end != eof && isdigit(*ub_end); ub_end++) {
+    }
+
+    if (ub_end == eof || *ub_end != '}') {
+      token->type = TT_CHARACTER;
+      token->data.character = '{';
+      break;
+    }
+
+    (*str) = ub_end + 1;
+
+    if (*str < eof && **str == '?') {
+      (*str)++;
+      token->type = TT_LAZY_REPETITION;
+    } else {
+      token->type = TT_GREEDY_REPETITION;
+    }
+
+    token->data.repetition.lower_bound = slice_to_size(lb_begin, lb_end);
+
+    if (token->data.repetition.lower_bound == REPETITION_INFINITY) {
+      return CREX_E_BAD_REPETITION;
+    }
+
+    if (ub_begin == ub_end) {
+      token->data.repetition.upper_bound = REPETITION_INFINITY;
+    } else {
+      token->data.repetition.upper_bound = slice_to_size(ub_begin, ub_end);
+
+      if (token->data.repetition.upper_bound == REPETITION_INFINITY) {
+        return CREX_E_BAD_REPETITION;
+      }
+
+      if (token->data.repetition.lower_bound > token->data.repetition.upper_bound) {
+        return CREX_E_BAD_REPETITION;
+      }
     }
 
     break;
@@ -1626,6 +1723,9 @@ const char *status_to_str(status_t status) {
 
   case CREX_E_BAD_ESCAPE:
     return "CREX_E_BAD_ESCAPE";
+
+  case CREX_E_BAD_REPETITION:
+    return "CREX_E_BAD_REPETITION";
 
   case CREX_E_UNMATCHED_OPEN_PAREN:
     return "CREX_E_UNMATCHED_OPEN_PAREN";
