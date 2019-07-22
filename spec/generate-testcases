@@ -2,9 +2,11 @@
 
 require 'yaml'
 
-data = Dir.glob('spec/*.yml').sort.flat_map { |filename| YAML.load_file(filename) }
+data = Dir.glob('spec/*.yml').sort.flat_map do |filename|
+  YAML.load_file(filename)
+end
 
-puts("#include \"types.h\"")
+puts("#include \"../spec/types.h\"")
 
 puts("const size_t n_patterns = #{data.size};")
 
@@ -39,7 +41,7 @@ data.each_with_index do |datum, pattern_index|
     is_match = !testcase.fetch('groups').nil?
 
     groups = if !is_match
-      "{0, 0}"
+      "{{0, 0}}"
     else
       parts = testcase.fetch('groups').map do |position, substring|
         raise "Bad test data" unless str[position, substring.length] == substring
