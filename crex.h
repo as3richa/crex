@@ -19,19 +19,31 @@ typedef enum {
 
 typedef struct crex_regex crex_regex_t;
 
+typedef struct crex_context crex_context_t;
+
+typedef struct {
+  void *context;
+  void *(*alloc)(void *, size_t);
+  void (*free)(void *, void *);
+} crex_allocator_t;
+
 typedef struct {
   const char *begin;
   const char *end;
 } crex_slice_t;
-
-typedef struct crex_context crex_context_t;
 
 CREX_WARN_UNUSED_RESULT crex_regex_t *
 crex_compile(crex_status_t *status, const char *pattern, size_t size);
 
 CREX_WARN_UNUSED_RESULT crex_regex_t *crex_compile_str(crex_status_t *status, const char *pattern);
 
+CREX_WARN_UNUSED_RESULT crex_regex_t *crex_compile_with_allocator(
+    crex_status_t *status, const char *pattern, size_t size, const crex_allocator_t *allocator);
+
 CREX_WARN_UNUSED_RESULT crex_context_t *crex_create_context(crex_status_t *status);
+
+CREX_WARN_UNUSED_RESULT crex_context_t *
+crex_create_context_with_allocator(crex_status_t *status, const crex_allocator_t *allocator);
 
 void crex_destroy_regex(crex_regex_t *regex);
 

@@ -13,6 +13,7 @@
 typedef crex_status_t status_t;
 typedef crex_regex_t regex_t;
 typedef crex_context_t context_t;
+typedef crex_allocator_t allocator_t;
 #define WARN_UNUSED_RESULT CREX_WARN_UNUSED_RESULT
 
 #define REPETITION_INFINITY SIZE_MAX
@@ -106,6 +107,22 @@ static void bitmap_clear(unsigned char *bitmap, size_t size) { memset(bitmap, 0,
 
 static int bitmap_size_for_bits(size_t bits) { return (bits + 7) / 8; }
 
+static void *default_alloc(void *context, size_t size) {
+  (void)context;
+  return malloc(size);
+}
+
+static void default_free(void *context, void *pointer) {
+  (void)context;
+  free(pointer);
+}
+
+static const crex_allocator_t default_allocator = {NULL, default_alloc, default_free};
+
+#define ALLOC(allocator, size) ((allocator)->alloc)((allocator)->context, size)
+
+#define FREE(allocator, pointer) ((allocator)->free)((allocator)->context, pointer)
+
 struct crex_regex {
   size_t size;
   unsigned char *bytecode;
@@ -113,6 +130,9 @@ struct crex_regex {
   size_t n_groups;
 
   unsigned char *char_classes;
+
+  void *allocator_context;
+  void (*free)(void *, void *);
 };
 
 typedef union {
@@ -124,8 +144,10 @@ struct crex_context {
   size_t visited_size;
   unsigned char *visited;
 
-  size_t list_buffer_size;
-  allocator_slot_t *list_buffer;
+  allocator_slot_t *buffer;
+  size_t capacity;
+
+  allocator_t allocator;
 };
 
 // FIXME: put these somewhere
@@ -205,12 +227,16 @@ size_t slice_to_size(const char *begin, const char *end) {
 WARN_UNUSED_RESULT static status_t lex_char_class(char_class_buffer_t *char_classes,
                                                   token_t *token,
                                                   const char **str,
-                                                  const char *eof);
+                                                  const char *eof,
+                                                  const allocator_t *allocator);
 
 WARN_UNUSED_RESULT static int lex_escape_code(token_t *token, const char **str, const char *eof);
 
-WARN_UNUSED_RESULT static status_t
-lex(char_class_buffer_t *char_classes, token_t *token, const char **str, const char *eof) {
+WARN_UNUSED_RESULT static status_t lex(char_class_buffer_t *char_classes,
+                                       token_t *token,
+                                       const char **str,
+                                       const char *eof,
+                                       const allocator_t *allocator) {
   assert(*str < eof);
 
   const unsigned char character = **str;
@@ -269,7 +295,7 @@ lex(char_class_buffer_t *char_classes, token_t *token, const char **str, const c
     break;
 
   case '[': {
-    status_t status = lex_char_class(char_classes, token, str, eof);
+    status_t status = lex_char_class(char_classes, token, str, eof, allocator);
 
     if (status != CREX_OK) {
       return status;
@@ -511,22 +537,23 @@ int lex_escape_code(token_t *token, const char **str, const char *eof) {
   return 1;
 }
 
-WARN_UNUSED_RESULT static status_t lex_char_class(char_class_buffer_t *char_classes,
-                                                  token_t *token,
-                                                  const char **str,
-                                                  const char *eof) {
+static status_t lex_char_class(char_class_buffer_t *char_classes,
+                               token_t *token,
+                               const char **str,
+                               const char *eof,
+                               const allocator_t *allocator) {
   assert(char_classes->size <= char_classes->capacity);
 
   if (char_classes->size == char_classes->capacity) {
     const size_t capacity = 2 * char_classes->capacity + 1;
-    unsigned char *buffer = malloc(32 * capacity);
+    unsigned char *buffer = ALLOC(allocator, 32 * capacity);
 
     if (buffer == NULL) {
       return CREX_E_NOMEM;
     }
 
     safe_memcpy(buffer, char_classes->buffer, 32 * char_classes->size);
-    free(char_classes->buffer);
+    FREE(allocator, char_classes->buffer);
 
     char_classes->capacity = capacity;
     char_classes->buffer = buffer;
@@ -764,22 +791,31 @@ typedef struct {
   operator_t *data;
 } operator_stack_t;
 
-static void free_parsetree(parsetree_t *tree);
-
-WARN_UNUSED_RESULT static int push_tree(tree_stack_t *trees, parsetree_t *tree);
-WARN_UNUSED_RESULT static int push_empty(tree_stack_t *trees);
-static void free_tree_stack(tree_stack_t *trees);
+static void destroy_parsetree(parsetree_t *tree, const allocator_t *allocator);
 
 WARN_UNUSED_RESULT static int
-push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator);
-WARN_UNUSED_RESULT static int pop_operator(tree_stack_t *trees, operator_stack_t *operators);
+push_tree(tree_stack_t *trees, parsetree_t *tree, const allocator_t *allocator);
+
+WARN_UNUSED_RESULT static int push_empty(tree_stack_t *trees, const allocator_t *allocator);
+
+static void destroy_tree_stack(tree_stack_t *trees, const allocator_t *allocator);
+
+WARN_UNUSED_RESULT static int push_operator(tree_stack_t *trees,
+                                            operator_stack_t *operators,
+                                            const operator_t *
+                                            operator,
+                                            const allocator_t *allocator);
+
+WARN_UNUSED_RESULT static int
+pop_operator(tree_stack_t *trees, operator_stack_t *operators, const allocator_t *allocator);
 
 WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
                                       size_t *n_groups,
                                       unsigned char **char_classes_buffer,
                                       const char *str,
-                                      size_t length) {
-  const char *eof = str + length;
+                                      size_t size,
+                                      const crex_allocator_t *allocator) {
+  const char *eof = str + size;
 
   tree_stack_t trees = {0, 0, NULL};
   operator_stack_t operators = {0, 0, NULL};
@@ -793,9 +829,9 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
 #define CHECK_ERRORS(condition, code)                                                              \
   do {                                                                                             \
     if (!(condition)) {                                                                            \
-      free_tree_stack(&trees);                                                                     \
-      free(operators.data);                                                                        \
-      free(char_classes.buffer);                                                                   \
+      destroy_tree_stack(&trees, allocator);                                                       \
+      FREE(allocator, operators.data);                                                             \
+      FREE(allocator, char_classes.buffer);                                                        \
       *status = code;                                                                              \
       return NULL;                                                                                 \
     }                                                                                              \
@@ -806,15 +842,15 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
     outer_group.type = PT_GROUP;
     outer_group.data.group_index = 0;
 
-    CHECK_ERRORS(push_operator(&trees, &operators, &outer_group), CREX_E_NOMEM);
-    CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
+    CHECK_ERRORS(push_operator(&trees, &operators, &outer_group, allocator), CREX_E_NOMEM);
+    CHECK_ERRORS(push_empty(&trees, allocator), CREX_E_NOMEM);
   }
 
   *n_groups = 1;
 
   while (str != eof) {
     token_t token;
-    const status_t lex_status = lex(&char_classes, &token, &str, eof);
+    const status_t lex_status = lex(&char_classes, &token, &str, eof, allocator);
 
     CHECK_ERRORS(lex_status == CREX_OK, lex_status);
 
@@ -825,9 +861,9 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
     case TT_ANCHOR: {
       operator_t operator;
       operator.type = PT_CONCATENATION;
-      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator, allocator), CREX_E_NOMEM);
 
-      parsetree_t *tree = malloc(sizeof(parsetree_t));
+      parsetree_t *tree = ALLOC(allocator, sizeof(parsetree_t));
       CHECK_ERRORS(tree != NULL, CREX_E_NOMEM);
 
       switch (token.type) {
@@ -855,7 +891,7 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
         assert(0);
       }
 
-      CHECK_ERRORS(push_tree(&trees, tree), CREX_E_NOMEM);
+      CHECK_ERRORS(push_tree(&trees, tree, allocator), CREX_E_NOMEM);
 
       break;
     }
@@ -863,8 +899,8 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
     case TT_PIPE: {
       operator_t operator;
       operator.type = PT_ALTERNATION;
-      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
-      CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator, allocator), CREX_E_NOMEM);
+      CHECK_ERRORS(push_empty(&trees, allocator), CREX_E_NOMEM);
       break;
     }
 
@@ -875,7 +911,7 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
                                                           : PT_LAZY_REPETITION;
       operator.data.repetition.lower_bound = token.data.repetition.lower_bound;
       operator.data.repetition.upper_bound = token.data.repetition.upper_bound;
-      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator, allocator), CREX_E_NOMEM);
       break;
     }
 
@@ -883,13 +919,13 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
       operator_t operator;
 
       operator.type = PT_CONCATENATION;
-      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator, allocator), CREX_E_NOMEM);
 
       operator.type = PT_GROUP;
       operator.data.group_index =(*n_groups)++;
-      CHECK_ERRORS(push_operator(&trees, &operators, &operator), CREX_E_NOMEM);
+      CHECK_ERRORS(push_operator(&trees, &operators, &operator, allocator), CREX_E_NOMEM);
 
-      CHECK_ERRORS(push_empty(&trees), CREX_E_NOMEM);
+      CHECK_ERRORS(push_empty(&trees, allocator), CREX_E_NOMEM);
       break;
     }
 
@@ -899,14 +935,14 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
           break;
         }
 
-        CHECK_ERRORS(pop_operator(&trees, &operators), CREX_E_NOMEM);
+        CHECK_ERRORS(pop_operator(&trees, &operators, allocator), CREX_E_NOMEM);
       }
 
       CHECK_ERRORS(operators.size > 0, CREX_E_UNMATCHED_CLOSE_PAREN);
 
       assert(operators.data[operators.size - 1].type == PT_GROUP);
 
-      CHECK_ERRORS(pop_operator(&trees, &operators), CREX_E_NOMEM);
+      CHECK_ERRORS(pop_operator(&trees, &operators, allocator), CREX_E_NOMEM);
 
       break;
 
@@ -920,7 +956,7 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
       CHECK_ERRORS(operators.size == 1, CREX_E_UNMATCHED_OPEN_PAREN);
     }
 
-    CHECK_ERRORS(pop_operator(&trees, &operators), CREX_E_NOMEM);
+    CHECK_ERRORS(pop_operator(&trees, &operators, allocator), CREX_E_NOMEM);
   }
 
   // FIXME: nomenclature
@@ -930,15 +966,13 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
 
   parsetree_t *tree = trees.data[0];
 
-  free(trees.data);
-  free(operators.data);
-
-  *status = CREX_OK;
+  FREE(allocator, trees.data);
+  FREE(allocator, operators.data);
 
   return tree;
 }
 
-static void free_parsetree(parsetree_t *tree) {
+static void destroy_parsetree(parsetree_t *tree, const allocator_t *allocator) {
   switch (tree->type) {
   case PT_EMPTY:
   case PT_CHARACTER:
@@ -949,38 +983,43 @@ static void free_parsetree(parsetree_t *tree) {
 
   case PT_CONCATENATION:
   case PT_ALTERNATION:
-    free_parsetree(tree->data.children[0]);
-    free_parsetree(tree->data.children[1]);
+    destroy_parsetree(tree->data.children[0], allocator);
+    destroy_parsetree(tree->data.children[1], allocator);
     break;
 
   case PT_GREEDY_REPETITION:
   case PT_LAZY_REPETITION:
-    free_parsetree(tree->data.repetition.child);
+    destroy_parsetree(tree->data.repetition.child, allocator);
     break;
 
   case PT_GROUP:
-    free_parsetree(tree->data.group.child);
+    destroy_parsetree(tree->data.group.child, allocator);
     break;
 
   default:
     assert(0);
   }
 
-  free(tree);
+  FREE(allocator, tree);
 }
 
-static int push_tree(tree_stack_t *trees, parsetree_t *tree) {
+static int push_tree(tree_stack_t *trees, parsetree_t *tree, const allocator_t *allocator) {
   assert(trees->size <= trees->capacity);
 
   if (trees->size == trees->capacity) {
-    trees->capacity = 2 * trees->capacity + 16;
-    parsetree_t **data = realloc(trees->data, sizeof(parsetree_t *) * trees->capacity);
+    const size_t capacity = 2 * trees->capacity + 4;
+    parsetree_t **data = ALLOC(allocator, sizeof(parsetree_t *) * capacity);
 
     if (data == NULL) {
       return 0;
     }
 
+    safe_memcpy(data, trees->data, sizeof(parsetree_t *) * trees->capacity);
+
+    FREE(allocator, trees->data);
+
     trees->data = data;
+    trees->capacity = capacity;
   }
 
   trees->data[trees->size++] = tree;
@@ -988,8 +1027,8 @@ static int push_tree(tree_stack_t *trees, parsetree_t *tree) {
   return 1;
 }
 
-static int push_empty(tree_stack_t *trees) {
-  parsetree_t *tree = malloc(sizeof(parsetree_t));
+static int push_empty(tree_stack_t *trees, const allocator_t *allocator) {
+  parsetree_t *tree = ALLOC(allocator, sizeof(parsetree_t));
 
   if (tree == NULL) {
     return 0;
@@ -997,19 +1036,22 @@ static int push_empty(tree_stack_t *trees) {
 
   tree->type = PT_EMPTY;
 
-  return push_tree(trees, tree);
+  return push_tree(trees, tree, allocator);
 }
 
-static void free_tree_stack(tree_stack_t *trees) {
+static void destroy_tree_stack(tree_stack_t *trees, const allocator_t *allocator) {
   while (trees->size > 0) {
-    free_parsetree(trees->data[--trees->size]);
+    destroy_parsetree(trees->data[--trees->size], allocator);
   }
 
-  free(trees->data);
+  FREE(allocator, trees->data);
 }
 
-static int
-push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t *operator) {
+static int push_operator(tree_stack_t *trees,
+                         operator_stack_t *operators,
+                         const operator_t *
+                         operator,
+                         const allocator_t *allocator) {
   assert(operators->size <= operators->capacity);
 
   const parsetree_type_t type = operator->type;
@@ -1034,22 +1076,26 @@ push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t
         break;
       }
 
-      if (!pop_operator(trees, operators)) {
+      if (!pop_operator(trees, operators, allocator)) {
         return 0;
       }
     }
   }
 
   if (operators->size == operators->capacity) {
-    operators->capacity = 2 * operators->capacity + 16;
-
-    operator_t *data = realloc(operators->data, sizeof(operator_t) * operators->capacity);
+    const size_t capacity = 2 * operators->capacity + 4;
+    operator_t *data = ALLOC(allocator, sizeof(operator_t) * capacity);
 
     if (data == NULL) {
       return 0;
     }
 
+    safe_memcpy(data, operators->data, sizeof(operator_t) * operators->capacity);
+
+    FREE(allocator, operators->data);
+
     operators->data = data;
+    operators->capacity = capacity;
   }
 
   operators->data[operators->size++] = *operator;
@@ -1057,10 +1103,11 @@ push_operator(tree_stack_t *trees, operator_stack_t *operators, const operator_t
   return 1;
 }
 
-static int pop_operator(tree_stack_t *trees, operator_stack_t *operators) {
+static int
+pop_operator(tree_stack_t *trees, operator_stack_t *operators, const allocator_t *allocator) {
   assert(operators->size > 0);
 
-  parsetree_t *tree = malloc(sizeof(parsetree_t));
+  parsetree_t *tree = ALLOC(allocator, sizeof(parsetree_t));
 
   if (tree == NULL) {
     return 0;
@@ -1178,7 +1225,7 @@ static long deserialize_long(unsigned char *source, size_t size) {
   }
 }
 
-status_t compile(bytecode_t *result, parsetree_t *tree) {
+status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
   switch (tree->type) {
   case PT_EMPTY:
     result->size = 0;
@@ -1187,7 +1234,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
 
   case PT_CHARACTER:
     result->size = 2;
-    result->bytecode = malloc(2);
+    result->bytecode = ALLOC(allocator, 2);
 
     if (result->bytecode == NULL) {
       return CREX_E_NOMEM;
@@ -1201,7 +1248,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
   case PT_CHAR_CLASS:
   case PT_BUILTIN_CHAR_CLASS:
     result->size = 5;
-    result->bytecode = malloc(5);
+    result->bytecode = ALLOC(allocator, 5);
 
     if (result->bytecode == NULL) {
       return CREX_E_NOMEM;
@@ -1214,7 +1261,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
 
   case PT_ANCHOR:
     result->size = 1;
-    result->bytecode = malloc(1);
+    result->bytecode = ALLOC(allocator, 1);
 
     if (result->bytecode == NULL) {
       return CREX_E_NOMEM;
@@ -1228,16 +1275,16 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
   case PT_ALTERNATION: {
     bytecode_t left, right;
 
-    status_t status = compile(&left, tree->data.children[0]);
+    status_t status = compile(&left, tree->data.children[0], allocator);
 
     if (status != CREX_OK) {
       return status;
     }
 
-    status = compile(&right, tree->data.children[1]);
+    status = compile(&right, tree->data.children[1], allocator);
 
     if (status != CREX_OK) {
-      free(left.bytecode);
+      FREE(allocator, left.bytecode);
       return status;
     }
 
@@ -1247,11 +1294,11 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
       result->size = (1 + 4) + left.size + (1 + 4) + right.size;
     }
 
-    result->bytecode = malloc(result->size);
+    result->bytecode = ALLOC(allocator, result->size);
 
     if (result->bytecode == NULL) {
-      free(left.bytecode);
-      free(right.bytecode);
+      FREE(allocator, left.bytecode);
+      FREE(allocator, right.bytecode);
       return CREX_E_NOMEM;
     }
 
@@ -1283,8 +1330,8 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
       safe_memcpy(bytecode + right_location, right.bytecode, right.size);
     }
 
-    free(left.bytecode);
-    free(right.bytecode);
+    FREE(allocator, left.bytecode);
+    FREE(allocator, right.bytecode);
 
     break;
   }
@@ -1293,7 +1340,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
   case PT_LAZY_REPETITION: {
     bytecode_t child;
 
-    status_t status = compile(&child, tree->data.repetition.child);
+    status_t status = compile(&child, tree->data.repetition.child, allocator);
 
     if (status != CREX_OK) {
       return status;
@@ -1312,10 +1359,10 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
       result->size += (upper_bound - lower_bound) * (1 + 4 + child.size);
     }
 
-    result->bytecode = malloc(result->size);
+    result->bytecode = ALLOC(allocator, result->size);
 
     if (result->bytecode == NULL) {
-      free(child.bytecode);
+      FREE(allocator, child.bytecode);
       return CREX_E_NOMEM;
     }
 
@@ -1390,14 +1437,14 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
       }
     }
 
-    free(child.bytecode);
+    FREE(allocator, child.bytecode);
 
     break;
   }
 
   case PT_GROUP: {
     bytecode_t child;
-    status_t status = compile(&child, tree->data.group.child);
+    status_t status = compile(&child, tree->data.group.child, allocator);
 
     if (status != CREX_OK) {
       return status;
@@ -1405,10 +1452,10 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
 
     result->size = 1 + 4 + child.size + 1 + 4;
 
-    result->bytecode = malloc(result->size);
+    result->bytecode = ALLOC(allocator, result->size);
 
     if (result->bytecode == NULL) {
-      free(child.bytecode);
+      FREE(allocator, child.bytecode);
       return CREX_E_NOMEM;
     }
 
@@ -1425,7 +1472,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
     bytecode[offset] = VM_WRITE_POINTER;
     serialize_long(bytecode + offset + 1, (long)(2 * tree->data.group.index + 1), 4);
 
-    free(child.bytecode);
+    FREE(allocator, child.bytecode);
 
     break;
   }
@@ -1440,13 +1487,11 @@ status_t compile(bytecode_t *result, parsetree_t *tree) {
 /** Instruction pointer (i.e. size_t) list with custom allocator **/
 
 typedef size_t state_list_handle_t;
-typedef state_list_handle_t *state_list_iter_t;
 
 #define STATE_LIST_EMPTY (~(state_list_handle_t)0)
 
 typedef struct {
-  size_t capacity;
-  allocator_slot_t *buffer;
+  context_t *context;
 
   size_t n_pointers;
   size_t element_size;
@@ -1458,17 +1503,13 @@ typedef struct {
   state_list_handle_t head;
 } state_list_t;
 
-#define LIST_NEXT(list, handle) (*(size_t *)((list)->buffer + (handle)))
-#define LIST_INSTR_POINTER(list, handle) (*(size_t *)((list)->buffer + (handle) + 1))
-#define LIST_POINTER_BUFFER(list, handle) ((const char **)((list)->buffer + (handle) + 2))
+#define LIST_NEXT(list, handle) (*(size_t *)((list)->context->buffer + (handle)))
+#define LIST_INSTR_POINTER(list, handle) (*(size_t *)((list)->context->buffer + (handle) + 1))
+#define LIST_POINTER_BUFFER(list, handle) ((const char **)((list)->context->buffer + (handle) + 2))
 
-static void state_list_create(state_list_t *list,
-                              size_t capacity,
-                              allocator_slot_t *buffer,
-                              size_t n_pointers,
-                              size_t max_elements) {
-  list->capacity = capacity;
-  list->buffer = buffer;
+static void
+state_list_create(state_list_t *list, context_t *context, size_t n_pointers, size_t max_elements) {
+  list->context = context;
 
   list->n_pointers = n_pointers;
   list->element_size = 2 + n_pointers;
@@ -1487,7 +1528,7 @@ static state_list_handle_t state_list_alloc(state_list_t *list) {
   state = STATE_LIST_EMPTY;
 #endif
 
-  if (list->bump_allocator + list->element_size <= list->capacity) {
+  if (list->bump_allocator + list->element_size <= list->context->capacity) {
     state = list->bump_allocator;
     list->bump_allocator += list->element_size;
   } else if (list->freelist != STATE_LIST_EMPTY) {
@@ -1495,23 +1536,25 @@ static state_list_handle_t state_list_alloc(state_list_t *list) {
     list->freelist = LIST_NEXT(list, state);
   } else {
     // FIXME: think about a better resize strategy?
-    size_t capacity = 2 * list->capacity + list->element_size;
+    size_t capacity = 2 * list->context->capacity + list->element_size;
 
     if (capacity > list->max_capacity) {
       capacity = list->max_capacity;
     }
 
-    allocator_slot_t *buffer = malloc(sizeof(allocator_slot_t) * capacity);
+    allocator_slot_t *buffer =
+        ALLOC(&list->context->allocator, sizeof(allocator_slot_t) * capacity);
 
     if (buffer == NULL) {
       return STATE_LIST_EMPTY;
     }
 
-    safe_memcpy(buffer, list->buffer, sizeof(allocator_slot_t) * list->capacity);
-    free(list->buffer);
+    safe_memcpy(buffer, list->context->buffer, sizeof(allocator_slot_t) * list->context->capacity);
 
-    list->buffer = buffer;
-    list->capacity = capacity;
+    FREE(&list->context->allocator, list->context->buffer);
+
+    list->context->buffer = buffer;
+    list->context->capacity = capacity;
 
     assert(list->bump_allocator + list->element_size <= capacity);
 
@@ -1519,13 +1562,13 @@ static state_list_handle_t state_list_alloc(state_list_t *list) {
     list->bump_allocator += list->element_size;
   }
 
-  assert(state + list->element_size <= list->capacity && state % list->element_size == 0);
+  assert(state + list->element_size <= list->context->capacity && state % list->element_size == 0);
 
   return state;
 }
 
 static int state_list_push_initial_state(state_list_t *list, state_list_handle_t predecessor) {
-  assert(predecessor < list->capacity || predecessor == STATE_LIST_EMPTY);
+  assert(predecessor < list->context->capacity || predecessor == STATE_LIST_EMPTY);
 
   const state_list_handle_t state = state_list_alloc(list);
 
@@ -1554,7 +1597,7 @@ static int state_list_push_initial_state(state_list_t *list, state_list_handle_t
 
 static int
 state_list_push_copy(state_list_t *list, state_list_handle_t predecessor, size_t instr_pointer) {
-  assert(predecessor < list->capacity);
+  assert(predecessor < list->context->capacity);
 
   const state_list_handle_t state = state_list_alloc(list);
 
@@ -1575,11 +1618,11 @@ state_list_push_copy(state_list_t *list, state_list_handle_t predecessor, size_t
 }
 
 static state_list_handle_t state_list_pop(state_list_t *list, state_list_handle_t predecessor) {
-  assert(predecessor < list->capacity || predecessor == STATE_LIST_EMPTY);
+  assert(predecessor < list->context->capacity || predecessor == STATE_LIST_EMPTY);
 
   const state_list_handle_t state =
       (predecessor == STATE_LIST_EMPTY) ? list->head : LIST_NEXT(list, predecessor);
-  assert(state < list->capacity);
+  assert(state < list->context->capacity);
 
   const state_list_handle_t successor = LIST_NEXT(list, state);
 
@@ -1607,64 +1650,84 @@ static state_list_handle_t state_list_pop(state_list_t *list, state_list_handle_
 /** Public API **/
 
 regex_t *crex_compile(status_t *status, const char *pattern, size_t size) {
-  regex_t *regex = malloc(sizeof(regex_t));
-
-  if (regex == NULL) {
-    *status = CREX_E_NOMEM;
-    return NULL;
-  }
-
-  parsetree_t *tree = parse(status, &regex->n_groups, &regex->char_classes, pattern, size);
-
-  if (*status != CREX_OK) {
-    free(regex);
-    return NULL;
-  }
-
-  // bytecode_t is structurally a prefix of regex_t
-  *status = compile((bytecode_t *)regex, tree);
-
-  free_parsetree(tree);
-
-  if (*status != CREX_OK) {
-    free(regex);
-    return NULL;
-  }
-
-  return regex;
+  return crex_compile_with_allocator(status, pattern, size, &default_allocator);
 }
 
 regex_t *crex_compile_str(status_t *status, const char *pattern) {
   return crex_compile(status, pattern, strlen(pattern));
 }
 
+regex_t *crex_compile_with_allocator(status_t *status,
+                                     const char *pattern,
+                                     size_t size,
+                                     const crex_allocator_t *allocator) {
+  regex_t *regex = ALLOC(allocator, sizeof(regex_t));
+
+  if (regex == NULL) {
+    *status = CREX_E_NOMEM;
+    return NULL;
+  }
+
+  parsetree_t *tree =
+      parse(status, &regex->n_groups, &regex->char_classes, pattern, size, allocator);
+
+  if (tree == NULL) {
+    FREE(allocator, regex);
+    return NULL;
+  }
+
+  // bytecode_t is structurally a prefix of regex_t
+  *status = compile((bytecode_t *)regex, tree, allocator);
+
+  destroy_parsetree(tree, allocator);
+
+  if (*status != CREX_OK) {
+    FREE(allocator, regex);
+    return NULL;
+  }
+
+  regex->allocator_context = allocator->context;
+  regex->free = allocator->free;
+
+  return regex;
+}
+
 context_t *crex_create_context(status_t *status) {
-  context_t *context = malloc(sizeof(context_t));
+  return crex_create_context_with_allocator(status, &default_allocator);
+}
+
+context_t *crex_create_context_with_allocator(crex_status_t *status,
+                                              const crex_allocator_t *allocator) {
+  context_t *context = ALLOC(allocator, sizeof(context_t));
 
   if (context == NULL) {
     *status = CREX_E_NOMEM;
     return NULL;
   }
 
+  context->allocator = *allocator;
+
   context->visited_size = 0;
   context->visited = NULL;
 
-  context->list_buffer_size = 0;
-  context->list_buffer = NULL;
+  context->buffer = NULL;
+  context->capacity = 0;
 
   return context;
 }
 
 void crex_destroy_regex(regex_t *regex) {
-  free(regex->bytecode);
-  free(regex->char_classes);
-  free(regex);
+  void *context = regex->allocator_context;
+  regex->free(context, regex->bytecode);
+  regex->free(context, regex->char_classes);
+  regex->free(context, regex);
 }
 
 void crex_destroy_context(context_t *context) {
-  free(context->visited);
-  free(context->list_buffer);
-  free(context);
+  const allocator_t *allocator = &context->allocator;
+  FREE(allocator, context->visited);
+  FREE(allocator, context->buffer);
+  FREE(allocator, context);
 }
 
 size_t crex_regex_n_groups(const regex_t *regex) { return regex->n_groups; }
@@ -1980,7 +2043,7 @@ void crex_debug_parse(const char *str, FILE *file) {
   crex_print_parsetree(tree, 0, file);
   fputc('\n', file);
 
-  free_parsetree(tree);
+  destroy_parsetree(tree);
 }
 
 void crex_debug_compile(const char *str, FILE *file) {
@@ -2001,7 +2064,7 @@ void crex_debug_compile(const char *str, FILE *file) {
   bytecode_t result;
   status = compile(&result, tree);
 
-  free_parsetree(tree);
+  destroy_parsetree(tree);
 
   if (status != CREX_OK) {
     fprintf(file, "Compilation failed with status %s\n", status_to_str(status));

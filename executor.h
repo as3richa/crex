@@ -15,11 +15,8 @@
 
 #endif
 
-status_t NAME(RESULT_DECLARATION,
-              context_t *context,
-              const regex_t *regex,
-              const char *buffer,
-              size_t buffer_size) {
+status_t
+NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *str, size_t size) {
   unsigned char *visited;
 
   const size_t visited_size = bitmap_size_for_bits(regex->size);
@@ -58,26 +55,18 @@ status_t NAME(RESULT_DECLARATION,
   const size_t max_list_size = 2 * regex->size;
 
   state_list_t list;
-  state_list_create(
-      &list, context->list_buffer_size, context->list_buffer, n_pointers, max_list_size);
+  state_list_create(&list, context, n_pointers, max_list_size);
 
-#define CLEANUP()                                                                                  \
-  do {                                                                                             \
-    context->list_buffer_size = list.capacity;                                                     \
-    context->list_buffer = list.buffer;                                                            \
-  } while (0)
-
-  const char *eof = buffer + buffer_size;
+  const char *eof = str + size;
   int prev_character = -1;
 
   for (;;) {
-    const int character = (buffer == eof) ? -1 : (unsigned char)(*buffer);
+    const int character = (str == eof) ? -1 : (unsigned char)(*str);
 
     bitmap_clear(visited, visited_size);
 
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
     if (list.head == STATE_LIST_EMPTY && match_found) {
-      CLEANUP();
       return CREX_OK;
     }
 #endif
@@ -100,7 +89,6 @@ status_t NAME(RESULT_DECLARATION,
 #endif
 
         if (!state_list_push_initial_state(&list, predecessor)) {
-          CLEANUP();
           return CREX_E_NOMEM;
         }
 
@@ -123,7 +111,6 @@ status_t NAME(RESULT_DECLARATION,
 
 #ifdef MATCH_BOOLEAN
           *is_match = 1;
-          CLEANUP();
           return CREX_OK;
 #elif defined(MATCH_LOCATION)
           match_found = 1;
@@ -266,7 +253,6 @@ status_t NAME(RESULT_DECLARATION,
 
           if (!bitmap_test(visited, split_pointer)) {
             if (!state_list_push_copy(&list, state, split_pointer)) {
-              CLEANUP();
               return CREX_E_NOMEM;
             }
           }
@@ -285,13 +271,13 @@ status_t NAME(RESULT_DECLARATION,
           const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
 
           if (index <= 1) {
-            pointer_buffer[index] = buffer;
+            pointer_buffer[index] = str;
           }
 #elif defined(MATCH_GROUPS)
           const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
 
           assert(index < n_pointers);
-          pointer_buffer[index] = buffer;
+          pointer_buffer[index] = str;
 #endif
 
           break;
@@ -320,7 +306,7 @@ status_t NAME(RESULT_DECLARATION,
     }
 
     prev_character = character;
-    buffer++;
+    str++;
   }
 
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
@@ -339,7 +325,6 @@ status_t NAME(RESULT_DECLARATION,
 
 #endif
 
-  CLEANUP();
   return CREX_OK;
 }
 

@@ -1,4 +1,4 @@
-CFLAGS=-std=c99 -pedantic -Wall -Wextra -O3 -fPIC
+CFLAGS=-std=c99 -pedantic -Wall -Wextra -O3 -fPIC -g
 LDFLAGS=-Lbuild -lcrex
 SOURCES=crex.c
 HEADERS=crex.h executor.h

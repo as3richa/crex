@@ -224,6 +224,8 @@ int main(int argc, char **argv) {
     crex_destroy_regex(regexes[i]);
   }
 
+  crex_destroy_context(context);
+
   free(regexes);
 
   free(failures);
