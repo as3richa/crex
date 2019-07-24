@@ -22,13 +22,13 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
   const size_t visited_size = bitmap_size_for_bits(regex->size);
 
   if (context->visited_size < visited_size) {
-    visited = malloc(visited_size);
+    visited = ALLOC(&context->allocator, visited_size);
 
     if (visited == NULL) {
       return CREX_E_NOMEM;
     }
 
-    free(context->visited);
+    FREE(&context->allocator, context->visited);
     context->visited = visited;
     context->visited_size = visited_size;
   } else {
@@ -178,8 +178,7 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
         if (code == VM_CHAR_CLASS) {
           assert(instr_pointer <= regex->size - 4);
 
-          // FIXME: signedness
-          const size_t index = (size_t)deserialize_long(regex->bytecode + instr_pointer, 4);
+          const size_t index = deserialize_size(regex->bytecode + instr_pointer, 4);
           instr_pointer += 4;
 
           keep = character != -1 && bitmap_test(regex->char_classes + 32 * index, character);
@@ -190,8 +189,7 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
         if (code == VM_BUILTIN_CHAR_CLASS) {
           assert(instr_pointer <= regex->size - 4);
 
-          // FIXME: signedness
-          const size_t index = (size_t)deserialize_long(regex->bytecode + instr_pointer, 4);
+          const size_t index = deserialize_size(regex->bytecode + instr_pointer, 4);
           instr_pointer += 4;
 
           keep = character != -1 && BCC_TEST(index, character);
@@ -261,8 +259,7 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
         }
 
         case VM_WRITE_POINTER: {
-          // FIXME: signedness
-          const size_t index = (size_t)deserialize_long(regex->bytecode + instr_pointer, 4);
+          const size_t index = deserialize_size(regex->bytecode + instr_pointer, 4);
           instr_pointer += 4;
 
 #ifdef MATCH_BOOLEAN

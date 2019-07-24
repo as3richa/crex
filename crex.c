@@ -1167,39 +1167,94 @@ enum {
   VM_WRITE_POINTER
 };
 
+enum { VM_OPERAND_SIZE_NONE, VM_OPERAND_SIZE_1, VM_OPERAND_SIZE_2, VM_OPERAND_SIZE_4 };
+
 typedef struct {
   size_t size;
   unsigned char *bytecode;
 } bytecode_t;
 
-static void serialize_long(unsigned char *destination, long value, size_t size) {
-  assert(-2147483647 <= value && value <= 2147483647); // FIXME
+static size_t serialize_size(void *destination, size_t value) {
+  assert(value <= 0xffffffffLU);
 
-  switch (size) {
-  case 1: {
+  if (value <= 0xffLU) {
+    const uint8_t u8_value = value;
+    safe_memcpy(destination, &u8_value, 1);
+    return 1;
+  }
+
+  if (value <= 0xffffLU) {
+    const uint16_t u16_value = value;
+    safe_memcpy(destination, &u16_value, 2);
+    return 2;
+  }
+
+  const uint32_t u32_value = value;
+  safe_memcpy(destination, &u32_value, 4);
+  return 4;
+}
+
+static size_t serialize_long(void *destination, long value) {
+  assert(-2147483647 <= value && value <= 2147483647);
+
+  if (-127 <= value && value <= 127) {
     const int8_t i8_value = value;
     safe_memcpy(destination, &i8_value, 1);
-    break;
+    return 1;
+  }
+
+  if (-32767 <= value && value <= 32767) {
+    const int16_t i16_value = value;
+    safe_memcpy(destination, &i16_value, 2);
+    return 2;
+  }
+
+  const int32_t i32_value = value;
+  safe_memcpy(destination, &i32_value, 4);
+  return 4;
+}
+
+static void serialize_long_32(void *destination, long value) {
+  assert(-2147483647 <= value && value <= 2147483647);
+
+  const int32_t i32_value = value;
+  safe_memcpy(destination, &i32_value, 4);
+}
+
+static void serialize_size_32(void *destination, size_t value) {
+  assert(value <= 0xffffffffLU);
+
+  const uint32_t u32_value = value;
+  safe_memcpy(destination, &u32_value, 4);
+}
+
+static size_t deserialize_size(void *source, size_t size) {
+  switch (size) {
+  case 1: {
+    uint8_t u8_value;
+    safe_memcpy(&u8_value, source, 1);
+    return u8_value;
   }
 
   case 2: {
-    const int16_t i16_value = value;
-    safe_memcpy(destination, &i16_value, 2);
-    break;
+    uint16_t u16_value;
+    safe_memcpy(&u16_value, source, 2);
+    return u16_value;
   }
 
   case 4: {
-    const int32_t i32_value = value;
-    safe_memcpy(destination, &i32_value, 4);
-    break;
+    uint32_t u32_value;
+    safe_memcpy(&u32_value, source, 4);
+    return u32_value;
   }
 
   default:
     assert(0);
+    return 0;
   }
 }
 
-static long deserialize_long(unsigned char *source, size_t size) {
+static long deserialize_long(void *source, size_t size) {
   switch (size) {
   case 1: {
     int8_t i8_value;
@@ -1254,8 +1309,13 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
       return CREX_E_NOMEM;
     }
 
-    result->bytecode[0] = (tree->type == PT_CHAR_CLASS) ? VM_CHAR_CLASS : VM_BUILTIN_CHAR_CLASS;
-    serialize_long(result->bytecode + 1, (long)tree->data.char_class_index, 4);
+    if (tree->type == PT_CHAR_CLASS) {
+      result->bytecode[0] = VM_CHAR_CLASS;
+    } else {
+      result->bytecode[0] = VM_BUILTIN_CHAR_CLASS;
+    }
+
+    serialize_size_32(result->bytecode + 1, tree->data.char_class_index);
 
     break;
 
@@ -1291,7 +1351,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
     if (tree->type == PT_CONCATENATION) {
       result->size = left.size + right.size;
     } else {
-      result->size = (1 + 4) + left.size + (1 + 4) + right.size;
+      result->size = 1 + 4 + left.size + 1 + 4 + right.size;
     }
 
     result->bytecode = ALLOC(allocator, result->size);
@@ -1306,28 +1366,22 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
       safe_memcpy(result->bytecode, left.bytecode, left.size);
       safe_memcpy(result->bytecode + left.size, right.bytecode, right.size);
     } else {
-      const size_t split_location = 0;
-      const size_t left_location = 1 + 4;
-      const size_t jump_location = left_location + left.size;
-      const size_t right_location = jump_location + 1 + 4;
+      unsigned char* bytecode = result->bytecode;
 
-      const size_t split_origin = split_location + 1 + 4;
-      const size_t jump_origin = jump_location + 1 + 4;
+      *(bytecode++) = VM_SPLIT_PASSIVE;
 
-      const long split_delta = (long)right_location - (long)split_origin;
-      const long jump_delta = (long)right_location + (long)right.size - (long)jump_origin;
+      serialize_long_32(bytecode, left.size + 1 + 4);
+      bytecode += 4;
 
-      unsigned char *bytecode = result->bytecode;
+      safe_memcpy(bytecode, left.bytecode, left.size);
+      bytecode += left.size;
 
-      bytecode[split_location] = VM_SPLIT_PASSIVE;
-      serialize_long(bytecode + split_location + 1, split_delta, 4);
+      *(bytecode++) = VM_JUMP;
 
-      safe_memcpy(bytecode + left_location, left.bytecode, left.size);
+      serialize_long_32(bytecode, right.size);
+      bytecode += 4;
 
-      bytecode[jump_location] = VM_JUMP;
-      serialize_long(bytecode + jump_location + 1, jump_delta, 4);
-
-      safe_memcpy(bytecode + right_location, right.bytecode, right.size);
+      safe_memcpy(bytecode, right.bytecode, right.size);
     }
 
     FREE(allocator, left.bytecode);
@@ -1369,7 +1423,8 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
     unsigned char *bytecode = result->bytecode;
 
     for (size_t i = 0; i < lower_bound; i++) {
-      safe_memcpy(bytecode + i * child.size, child.bytecode, child.size);
+      safe_memcpy(bytecode, child.bytecode, child.size);
+      bytecode += child.size;
     }
 
     if (upper_bound == REPETITION_INFINITY) {
@@ -1392,22 +1447,19 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
         backward_split_opcode = VM_SPLIT_PASSIVE;
       }
 
-      const size_t offset = lower_bound * child.size;
+      const long forward_split_delta = child.size + 1 + 4;
+      const long backward_split_delta = -(child.size + 1 + 4);
 
-      const size_t forward_split_origin = offset + 1 + 4;
-      const long forward_split_delta = (long)result->size - (long)forward_split_origin;
+      *(bytecode++) = forward_split_opcode;
 
-      const size_t backward_split_location = offset + 1 + 4 + child.size;
-      const size_t backward_split_origin = backward_split_location + 1 + 4;
-      const long backward_split_delta = (long)forward_split_origin - (long)backward_split_origin;
+      serialize_long_32(bytecode, forward_split_delta);
+      bytecode += 4;
 
-      bytecode[offset] = forward_split_opcode;
-      serialize_long(bytecode + offset + 1, forward_split_delta, 4);
+      safe_memcpy(bytecode, child.bytecode, child.size);
+      bytecode += child.size;
 
-      safe_memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
-
-      bytecode[backward_split_location] = backward_split_opcode;
-      serialize_long(bytecode + backward_split_location + 1, backward_split_delta, 4);
+      *(bytecode++) = backward_split_opcode;
+      serialize_long_32(bytecode, backward_split_delta);
     } else {
       /*
        * ...
@@ -1431,7 +1483,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
         const long split_delta = (long)result->size - (long)split_origin;
 
         bytecode[offset] = split_opcode;
-        serialize_long(bytecode + offset + 1, split_delta, 4);
+        serialize_long_32(bytecode + offset + 1, split_delta);
 
         safe_memcpy(bytecode + offset + 1 + 4, child.bytecode, child.size);
       }
@@ -1450,9 +1502,9 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
       return status;
     }
 
-    result->size = 1 + 4 + child.size + 1 + 4;
+    const size_t max_size = 1 + 4 + child.size + 1 + 4;
 
-    result->bytecode = ALLOC(allocator, result->size);
+    result->bytecode = ALLOC(allocator, max_size);
 
     if (result->bytecode == NULL) {
       FREE(allocator, child.bytecode);
@@ -1461,16 +1513,20 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
 
     unsigned char *bytecode = result->bytecode;
 
-    // FIXME: signedness
+    *(bytecode ++) = VM_WRITE_POINTER;
 
-    bytecode[0] = VM_WRITE_POINTER;
-    serialize_long(bytecode + 1, (long)(2 * tree->data.group.index), 4);
+    serialize_size_32(bytecode, 2 * tree->data.group.index);
+    bytecode += 4;
 
-    safe_memcpy(bytecode + 1 + 4, child.bytecode, child.size);
+    safe_memcpy(bytecode, child.bytecode, child.size);
+    bytecode += child.size;
 
-    const size_t offset = 1 + 4 + child.size;
-    bytecode[offset] = VM_WRITE_POINTER;
-    serialize_long(bytecode + offset + 1, (long)(2 * tree->data.group.index + 1), 4);
+    *(bytecode ++) = VM_WRITE_POINTER;
+
+    serialize_size_32(bytecode, 2 * tree->data.group.index + 1);
+    bytecode += 4;
+
+    result->size = bytecode - result->bytecode;
 
     FREE(allocator, child.bytecode);
 
@@ -1562,7 +1618,8 @@ static state_list_handle_t state_list_alloc(state_list_t *list) {
     list->bump_allocator += list->element_size;
   }
 
-  assert(state + list->element_size <= list->context->capacity && state % list->element_size == 0);
+  assert(state + list->element_size <= list->context->capacity);
+  assert(state % list->element_size == 0);
 
   return state;
 }
