@@ -6,9 +6,9 @@ void crex_debug_lex(const char *, FILE *);
 void crex_debug_parse(const char *, FILE *);
 void crex_debug_compile(const char *, FILE *);
 
-const char *pattern = "a{100}{100}{10}";
+const char *pattern = "a{0,30000}";
 
-const char *cases[] = {"", "a", "aaa", "aaaaa", "aaaaaa"};
+const char *cases[] = {"127.0.0.1"};
 
 const size_t n_cases = sizeof(cases) / sizeof(const char *);
 

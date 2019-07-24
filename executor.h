@@ -161,9 +161,12 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
 
         bitmap_set(visited, instr_pointer);
 
-        const unsigned char code = regex->bytecode[instr_pointer++];
+        const unsigned char byte = regex->bytecode[instr_pointer++];
+        const unsigned char opcode = VM_OPCODE(byte);
+        const size_t operand_size = VM_OPERAND_SIZE(byte);
 
-        if (code == VM_CHARACTER) {
+        if (opcode == VM_CHARACTER) {
+          assert(operand_size == 1);
           assert(instr_pointer <= regex->size - 1);
 
           const unsigned char expected_character = regex->bytecode[instr_pointer++];
@@ -175,29 +178,31 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
           break;
         }
 
-        if (code == VM_CHAR_CLASS) {
-          assert(instr_pointer <= regex->size - 4);
+        if (opcode == VM_CHAR_CLASS) {
+          assert(instr_pointer <= regex->size - operand_size);
 
-          const size_t index = deserialize_size(regex->bytecode + instr_pointer, 4);
-          instr_pointer += 4;
+          const size_t index =
+              deserialize_unsigned_operand(regex->bytecode + instr_pointer, operand_size);
+          instr_pointer += operand_size;
 
           keep = character != -1 && bitmap_test(regex->char_classes + 32 * index, character);
 
           break;
         }
 
-        if (code == VM_BUILTIN_CHAR_CLASS) {
-          assert(instr_pointer <= regex->size - 4);
+        if (opcode == VM_BUILTIN_CHAR_CLASS) {
+          // <= 255 distinct builtin character classes
+          assert(operand_size == 1);
 
-          const size_t index = deserialize_size(regex->bytecode + instr_pointer, 4);
-          instr_pointer += 4;
+          assert(instr_pointer <= regex->size - 1);
 
+          const size_t index = regex->bytecode[instr_pointer++];
           keep = character != -1 && BCC_TEST(index, character);
 
           break;
         }
 
-        switch (code) {
+        switch (opcode) {
         case VM_ANCHOR_BOF:
           keep = prev_character == -1;
           break;
@@ -218,15 +223,17 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
         case VM_ANCHOR_NOT_WORD_BOUNDARY: {
           const int prev_is_word = prev_character != -1 && BCC_TEST(BCC_WORD, prev_character);
           const int char_is_word = character != -1 && BCC_TEST(BCC_WORD, character);
-          keep = prev_is_word ^ char_is_word ^ (code == VM_ANCHOR_NOT_WORD_BOUNDARY);
+          keep = prev_is_word ^ char_is_word ^ (opcode == VM_ANCHOR_NOT_WORD_BOUNDARY);
           break;
         }
 
         case VM_JUMP: {
-          assert(instr_pointer <= regex->size - 4);
+          assert(operand_size != 0);
+          assert(instr_pointer <= regex->size - operand_size);
 
-          const long delta = deserialize_long(regex->bytecode + instr_pointer, 4);
-          instr_pointer += 4;
+          const long delta =
+              deserialize_signed_operand(regex->bytecode + instr_pointer, operand_size);
+          instr_pointer += operand_size;
 
           instr_pointer += delta;
 
@@ -235,14 +242,16 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
 
         case VM_SPLIT_PASSIVE:
         case VM_SPLIT_EAGER: {
-          assert(instr_pointer <= regex->size - 4);
+          assert(operand_size != 0);
+          assert(instr_pointer <= regex->size - operand_size);
 
-          const long delta = deserialize_long(regex->bytecode + instr_pointer, 4);
-          instr_pointer += 4;
+          const long delta =
+              deserialize_signed_operand(regex->bytecode + instr_pointer, operand_size);
+          instr_pointer += operand_size;
 
           size_t split_pointer;
 
-          if (code == VM_SPLIT_PASSIVE) {
+          if (opcode == VM_SPLIT_PASSIVE) {
             split_pointer = instr_pointer + delta;
           } else {
             split_pointer = instr_pointer;
@@ -259,8 +268,11 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
         }
 
         case VM_WRITE_POINTER: {
-          const size_t index = deserialize_size(regex->bytecode + instr_pointer, 4);
-          instr_pointer += 4;
+          assert(operand_size != 0);
+
+          const size_t index =
+              deserialize_unsigned_operand(regex->bytecode + instr_pointer, operand_size);
+          instr_pointer += operand_size;
 
 #ifdef MATCH_BOOLEAN
           (void)index;

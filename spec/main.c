@@ -65,10 +65,10 @@ static void quote(char *result, const char *str, size_t length) {
 int main(int argc, char **argv) {
   unsigned char bitmap[(MAX_TESTS + 7) / 8];
 
-  if(argc != 1) {
+  if (argc != 1) {
     memset(bitmap, 0, (n_cases + 7) / 8);
 
-    for(size_t i = 1; i < (size_t)argc; i ++) {
+    for (size_t i = 1; i < (size_t)argc; i++) {
       const size_t j = (size_t)atol(argv[i]);
 
       assert(j < n_cases);
@@ -98,11 +98,11 @@ int main(int argc, char **argv) {
   size_t run = 0;
 
   for (size_t i = 0; i < n_cases; i++) {
-    if(!(bitmap[i >> 3u] & (1u << (i & 7u)))) {
+    if (!(bitmap[i >> 3u] & (1u << (i & 7u)))) {
       continue;
     }
 
-    run ++;
+    run++;
 
     const testcase_t *testcase = &testcases[i];
 
@@ -117,7 +117,7 @@ int main(int argc, char **argv) {
 
     const char *pattern = pattern_defns[testcase->pattern_index].str;
 
-    const char *str = testcase->str; // FIXME: escape this on output
+    const char *str = testcase->str;
     const char size = testcase->size;
 
     char quoted_str[MAX_QUOTED_LENGTH];
@@ -162,10 +162,8 @@ int main(int argc, char **argv) {
 
     for (size_t j = 0; j < n_groups; j++) {
       const crex_slice_t *slice = &groups[j];
-      const crex_slice_t expected = {
-        str + testcase->groups[j].begin,
-        str + testcase->groups[j].end
-      };
+      const crex_slice_t expected = {str + testcase->groups[j].begin,
+                                     str + testcase->groups[j].end};
 
       if (slice->begin == expected.begin && slice->end == expected.end) {
         continue;
@@ -202,13 +200,14 @@ int main(int argc, char **argv) {
       break;
     }
 
-    if(okay) {
+    if (okay) {
       printf(GREEN("%04zu: /%s/ matches %s; okay\n"), i, pattern, quoted_str);
     }
   }
 
   if (n_failures != 0) {
-    printf("%zu of %zu test(s) failed. To rerun failed tests only:\n  %s ", n_failures, run, argv[0]);
+    printf(
+        "%zu of %zu test(s) failed. To rerun failed tests only:\n  %s ", n_failures, run, argv[0]);
 
     for (size_t i = 0; i < n_failures; i++) {
       printf("%zu%c", failures[i], (i == n_failures - 1) ? '\n' : ' ');

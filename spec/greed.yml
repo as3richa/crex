@@ -1,0 +1,50 @@
+---
+- pattern: 'a*'
+  testcases:
+  - str: ""
+    groups:
+    - [0, ""]
+
+  - str: "a"
+    groups:
+    - [0, "a"]
+
+  - str: "aa"
+    groups:
+    - [0, "aa"]
+
+  - str: "aaa"
+    groups:
+    - [0, "aaa"]
+
+  - str: "aaaaaaaaaaa"
+    groups:
+    - [0, "aaaaaaaaaaa"]
+
+- pattern: 'a*?'
+  testcases:
+  - str: ""
+    groups:
+    - [0, ""]
+
+  - str: "a"
+    groups:
+    - [0, ""]
+
+  - str: "aa"
+    groups:
+    - [0, ""]
+
+  - str: "aaa"
+    groups:
+    - [0, ""]
+
+  - str: "aaaaaaaaaaaaaaa"
+    groups:
+    - [0, ""]
+
+- pattern: '^a*?b'
+  testcases:
+  - str: "aaaaaaaaaaaaab"
+    groups:
+    - [0, "aaaaaaaaaaaaab"]
