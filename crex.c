@@ -104,7 +104,7 @@ static void bitmap_union(unsigned char *bitmap, const unsigned char *other_bitma
   }
 }
 
-static int bitmap_test(unsigned char *bitmap, size_t index) {
+static int bitmap_test(const unsigned char *bitmap, size_t index) {
   return (bitmap[index >> 3u] >> (index & 7u)) & 1u;
 }
 
@@ -220,25 +220,26 @@ typedef struct {
   char_class_t *buffer;
 } char_classes_t;
 
-WARN_UNUSED_RESULT size_t parse_size(const char *being, const char *end);
+WARN_UNUSED_RESULT size_t parse_size(const char *begin, const char *end);
 
 WARN_UNUSED_RESULT static status_t lex_char_class(char_classes_t *classes,
                                                   token_t *token,
-                                                  const char **str,
+                                                  const char **pattern,
                                                   const char *eof,
                                                   const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int lex_escape_code(token_t *token, const char **str, const char *eof);
+WARN_UNUSED_RESULT static int
+lex_escape_code(token_t *token, const char **pattern, const char *eof);
 
 WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
                                        token_t *token,
-                                       const char **str,
+                                       const char **pattern,
                                        const char *eof,
                                        const allocator_t *allocator) {
-  assert(*str < eof);
+  assert(*pattern < eof);
 
-  const unsigned char character = **str;
-  (*str)++;
+  const unsigned char character = **pattern;
+  (*pattern)++;
 
   switch (character) {
   case '^':
@@ -258,8 +259,8 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
   case '*':
   case '+':
   case '?':
-    if (*str < eof && **str == '?') {
-      (*str)++;
+    if (*pattern < eof && **pattern == '?') {
+      (*pattern)++;
       token->type = TT_LAZY_REPETITION;
     } else {
       token->type = TT_GREEDY_REPETITION;
@@ -285,8 +286,8 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
     break;
 
   case '(':
-    if (*str < eof - 1 && **str == '?' && *((*str) + 1) == ':') {
-      (*str) += 2;
+    if (*pattern < eof - 1 && **pattern == '?' && *((*pattern) + 1) == ':') {
+      (*pattern) += 2;
       token->type = TT_NON_CAPTURING_OPEN_PAREN;
     } else {
       token->type = TT_OPEN_PAREN;
@@ -299,7 +300,7 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
     break;
 
   case '[': {
-    status_t status = lex_char_class(classes, token, str, eof, allocator);
+    status_t status = lex_char_class(classes, token, pattern, eof, allocator);
 
     if (status != CREX_OK) {
       return status;
@@ -309,7 +310,7 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
   }
 
   case '{': {
-    const char *lb_begin = *str;
+    const char *lb_begin = *pattern;
     const char *lb_end;
 
     for (lb_end = lb_begin; lb_end != eof && isdigit(*lb_end); lb_end++) {
@@ -322,10 +323,10 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
     }
 
     if (*lb_end == '}') {
-      (*str) = lb_end + 1;
+      (*pattern) = lb_end + 1;
 
-      if (*str < eof && **str == '?') {
-        (*str)++;
+      if (*pattern < eof && **pattern == '?') {
+        (*pattern)++;
         token->type = TT_LAZY_REPETITION;
       } else {
         token->type = TT_GREEDY_REPETITION;
@@ -354,10 +355,10 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
       break;
     }
 
-    (*str) = ub_end + 1;
+    (*pattern) = ub_end + 1;
 
-    if (*str < eof && **str == '?') {
-      (*str)++;
+    if (*pattern < eof && **pattern == '?') {
+      (*pattern)++;
       token->type = TT_LAZY_REPETITION;
     } else {
       token->type = TT_GREEDY_REPETITION;
@@ -387,7 +388,7 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
   }
 
   case '\\':
-    if (!lex_escape_code(token, str, eof)) {
+    if (!lex_escape_code(token, pattern, eof)) {
       return CREX_E_BAD_ESCAPE;
     }
     break;
@@ -400,15 +401,15 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
   return CREX_OK;
 }
 
-int lex_escape_code(token_t *token, const char **str, const char *eof) {
-  assert(*str <= eof);
+int lex_escape_code(token_t *token, const char **pattern, const char *eof) {
+  assert(*pattern <= eof);
 
-  if (*str == eof) {
+  if (*pattern == eof) {
     return 0;
   }
 
-  unsigned char character = **str;
-  (*str)++;
+  unsigned char character = **pattern;
+  (*pattern)++;
 
   token->type = TT_CHARACTER;
 
@@ -461,11 +462,11 @@ int lex_escape_code(token_t *token, const char **str, const char *eof) {
     int value = 0;
 
     for (int i = 2; i--;) {
-      if (*str == eof) {
+      if (*pattern == eof) {
         return CREX_E_BAD_ESCAPE;
       }
 
-      const char hex_byte = *((*str)++);
+      const char hex_byte = *((*pattern)++);
 
       int digit;
 
@@ -543,7 +544,7 @@ int lex_escape_code(token_t *token, const char **str, const char *eof) {
 
 static status_t lex_char_class(char_classes_t *classes,
                                token_t *token,
-                               const char **str,
+                               const char **pattern,
                                const char *eof,
                                const allocator_t *allocator) {
   assert(classes->size <= classes->capacity);
@@ -566,16 +567,16 @@ static status_t lex_char_class(char_classes_t *classes,
   unsigned char *bitmap = classes->buffer[classes->size].bitmap;
   bitmap_clear(bitmap, CHAR_CLASS_BITMAP_SIZE);
 
-  assert(*str <= eof);
+  assert(*pattern <= eof);
 
-  if (*str == eof) {
+  if (*pattern == eof) {
     return CREX_E_BAD_CHARACTER_CLASS;
   }
 
   int inverted;
 
-  if (**str == '^') {
-    (*str)++;
+  if (**pattern == '^') {
+    (*pattern)++;
     inverted = 1;
   } else {
     inverted = 0;
@@ -600,14 +601,14 @@ static status_t lex_char_class(char_classes_t *classes,
   } while (0)
 
   for (;;) {
-    assert(*str <= eof);
+    assert(*pattern <= eof);
 
-    if (*str == eof) {
+    if (*pattern == eof) {
       return CREX_E_BAD_CHARACTER_CLASS;
     }
 
-    unsigned char character = **str;
-    (*str)++;
+    unsigned char character = **pattern;
+    (*pattern)++;
 
     if (character == ']') {
       break;
@@ -617,13 +618,13 @@ static status_t lex_char_class(char_classes_t *classes,
     case '[': {
       const char *end;
 
-      for (end = *str; end < eof; end++) {
+      for (end = *pattern; end < eof; end++) {
         if (!isalpha(*end) && *end != ':') {
           break;
         }
       }
 
-      if (end == eof || **str != ':' || *(end - 1) != ':' || *end != ']') {
+      if (end == eof || **pattern != ':' || *(end - 1) != ':' || *end != ']') {
         PUSH_CHAR('[');
         break;
       }
@@ -632,7 +633,7 @@ static status_t lex_char_class(char_classes_t *classes,
         return CREX_E_BAD_CHARACTER_CLASS;
       }
 
-      const char *name = *str + 1;
+      const char *name = *pattern + 1;
       const size_t size = (end - 1) - name;
 
       size_t i;
@@ -652,13 +653,13 @@ static status_t lex_char_class(char_classes_t *classes,
 
       bitmap_union(bitmap, builtin_classes[i].bitmap, CHAR_CLASS_BITMAP_SIZE);
       prev_character = -1;
-      *str = end + 1;
+      *pattern = end + 1;
 
       break;
     }
 
     case '\\':
-      if (!lex_escape_code(token, str, eof)) {
+      if (!lex_escape_code(token, pattern, eof)) {
         return CREX_E_BAD_ESCAPE;
       }
 
@@ -1815,15 +1816,6 @@ static state_list_handle_t state_list_pop(state_list_t *list, state_list_handle_
   return successor;
 }
 
-#define MATCH_BOOLEAN
-#include "executor.h"
-
-#define MATCH_LOCATION
-#include "executor.h"
-
-#define MATCH_GROUPS
-#include "executor.h"
-
 /** Public API **/
 
 regex_t *crex_compile(status_t *status, const char *pattern, size_t size) {
@@ -1910,19 +1902,28 @@ void crex_destroy_context(context_t *context) {
   FREE(allocator, context);
 }
 
-size_t crex_regex_n_groups(const regex_t *regex) {
+size_t crex_regex_n_capturing_groups(const regex_t *regex) {
   return regex->n_groups;
 }
+
+#define MATCH_BOOLEAN
+#include "executor.h" // crex_is_match
 
 status_t
 crex_is_match_str(int *is_match, context_t *context, const regex_t *regex, const char *str) {
   return crex_is_match(is_match, context, regex, str, strlen(str));
 }
 
+#define MATCH_LOCATION
+#include "executor.h" // crex_find
+
 status_t
 crex_find_str(crex_slice_t *match, context_t *context, const regex_t *regex, const char *str) {
   return crex_find(match, context, regex, str, strlen(str));
 }
+
+#define MATCH_GROUPS
+#include "executor.h" // crex_match_groups
 
 status_t crex_match_groups_str(crex_slice_t *matches,
                                context_t *context,
@@ -1933,7 +1934,6 @@ status_t crex_match_groups_str(crex_slice_t *matches,
 
 #ifdef CREX_DEBUG
 
-#include <ctype.h>
 #include <stdio.h>
 
 const char *anchor_type_to_str(anchor_type_t type) {
@@ -2034,22 +2034,71 @@ const char *opcode_to_str(unsigned char opcode) {
 
   default:
     assert(0);
+    return NULL;
   }
 }
 
-void crex_debug_lex(const char *str, FILE *file) {
-  const char *eof = str + strlen(str);
+static void print_char_class_bitmap(const unsigned char *bitmap, FILE *file) {
+  fputc('[', file);
+
+  for (int c = 0; c <= 255;) {
+    if (!bitmap_test(bitmap, c)) {
+      c++;
+      continue;
+    }
+
+    int d;
+
+    for (d = c; (d + 1) <= 255 && bitmap_test(bitmap, d + 1); d++) {
+    }
+
+    if (c == '-' || c == '[' || c == ']' || c == '^') {
+      fprintf(file, "\\%c", c);
+    } else if (isprint(c) || c == ' ') {
+      fputc(c, file);
+    } else {
+      fprintf(file, "\\x%02x", c);
+    }
+
+    if (c != d) {
+      fputc('-', file);
+
+      if (d == '-' || d == '[' || d == ']' || d == '^') {
+        fprintf(file, "\\%c", d);
+      } else if (isprint(d) || d == ' ') {
+        fputc(d, file);
+      } else {
+        fprintf(file, "\\x%02x", d);
+      }
+    }
+
+    c = d + 1;
+  }
+
+  fputc(']', file);
+}
+
+static void print_char_class(const char_classes_t *classes, size_t index, FILE *file) {
+  print_char_class_bitmap(classes->buffer[index].bitmap, file);
+}
+
+static void print_builtin_char_class(size_t index, FILE *file) {
+  print_char_class_bitmap(builtin_classes[index].bitmap, file);
+}
+
+status_t crex_print_tokenization(const char *pattern, size_t size, FILE *file) {
+  const char *eof = pattern + size;
 
   char_classes_t classes = {0, 0, NULL};
 
   token_t token;
 
-  while (str != eof) {
-    const status_t status = lex(&classes, &token, &str, eof, &default_allocator);
+  while (pattern != eof) {
+    const status_t status = lex(&classes, &token, &pattern, eof, &default_allocator);
 
     if (status != CREX_OK) {
-      fprintf(file, "Lex failed with status %s\n", status_to_str(status));
-      return;
+      free(classes.buffer);
+      return status;
     }
 
     switch (token.type) {
@@ -2059,7 +2108,7 @@ void crex_debug_lex(const char *str, FILE *file) {
       if (isprint(token.data.character)) {
         fputc(token.data.character, file);
       } else {
-        fprintf(file, "0x%02x", 0xff & (int)token.data.character);
+        fprintf(file, "'\\x%02x'", (unsigned int)token.data.character);
       }
 
       fputc('\n', file);
@@ -2067,20 +2116,15 @@ void crex_debug_lex(const char *str, FILE *file) {
       break;
 
     case TT_CHAR_CLASS:
-      fprintf(file, "TT_CHAR_CLASS %zu\n", token.data.char_class_index);
+      fputs("TT_CHAR_CLASS ", file);
+      print_char_class(&classes, token.data.char_class_index, file);
+      fputc('\n', file);
       break;
 
     case TT_BUILTIN_CHAR_CLASS: {
-      const char *name = builtin_classes[token.data.char_class_index].name;
-
       fputs("TT_BUILTIN_CHAR_CLASS ", file);
-
-      if (name != NULL) {
-        fprintf(file, "[[:%s:]]\n", name);
-      } else {
-        fprintf(file, "%zu\n", token.data.char_class_index);
-      }
-
+      print_builtin_char_class(token.data.char_class_index, file);
+      fputc('\n', file);
       break;
     }
 
@@ -2097,7 +2141,7 @@ void crex_debug_lex(const char *str, FILE *file) {
       const char *str =
           (token.type == TT_GREEDY_REPETITION) ? "TT_GREEDY_REPETITION" : "TT_LAZY_REPETITION";
 
-      fprintf(file, "%s %zu ... ", str, token.data.repetition.lower_bound);
+      fprintf(file, "%s %zu .. ", str, token.data.repetition.lower_bound);
 
       if (token.data.repetition.upper_bound == REPETITION_INFINITY) {
         fputs("inf\n", file);
@@ -2128,7 +2172,31 @@ void crex_debug_lex(const char *str, FILE *file) {
   free(classes.buffer);
 }
 
-static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *file) {
+static void
+print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *classes, FILE *file);
+
+status_t crex_print_parsetree(const char *pattern, size_t size, FILE *file) {
+  status_t status;
+
+  size_t n_groups;
+
+  char_classes_t classes = {0, 0, NULL};
+
+  parsetree_t *tree = parse(&status, &n_groups, &classes, pattern, size, &default_allocator);
+
+  if (tree == NULL) {
+    return status;
+  }
+
+  print_parsetree(tree, 0, &classes, file);
+  fputc('\n', file);
+
+  free(classes.buffer);
+  destroy_parsetree(tree, &default_allocator);
+}
+
+static void
+print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *classes, FILE *file) {
   for (size_t i = 0; i < depth; i++) {
     fputc(' ', file);
   }
@@ -2142,28 +2210,25 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *fi
     fputs("(PT_CHARACTER ", file);
 
     if (isprint(tree->data.character)) {
-      fprintf(file, "%c)", tree->data.character);
+      fprintf(file, "'%c')", tree->data.character);
     } else {
-      fprintf(file, "0x%02x)", 0xff & (int)tree->data.character);
+      fprintf(file, "'\\x%02x')", (unsigned int)tree->data.character);
     }
 
     break;
 
   case PT_CHAR_CLASS:
-    fputs("(PT_CHAR_CLASS)", file); // FIXME
+    fputs("(PT_CHAR_CLASS ", file);
+    print_char_class(classes, tree->data.char_class_index, file);
+    fputc(')', file);
     break;
 
   case PT_BUILTIN_CHAR_CLASS: {
     const char *name = builtin_classes[tree->data.char_class_index].name;
 
     fputs("(PT_BUILTIN_CHAR_CLASS ", file);
-
-    if (name != NULL) {
-      fprintf(file, "[[:%s:]])", name);
-    } else {
-      fprintf(file, "%zu)", tree->data.char_class_index);
-    }
-
+    print_builtin_char_class(tree->data.char_class_index, file);
+    fputc(')', file);
     break;
   }
 
@@ -2173,17 +2238,17 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *fi
 
   case PT_CONCATENATION:
     fputs("(PT_CONCATENATION\n", file);
-    crex_print_parsetree(tree->data.children[0], depth + 1, file);
+    print_parsetree(tree->data.children[0], depth + 1, classes, file);
     fputc('\n', file);
-    crex_print_parsetree(tree->data.children[1], depth + 1, file);
+    print_parsetree(tree->data.children[1], depth + 1, classes, file);
     fputc(')', file);
     break;
 
   case PT_ALTERNATION:
     fputs("(PT_ALTERNATION\n", file);
-    crex_print_parsetree(tree->data.children[0], depth + 1, file);
+    print_parsetree(tree->data.children[0], depth + 1, classes, file);
     fputc('\n', file);
-    crex_print_parsetree(tree->data.children[1], depth + 1, file);
+    print_parsetree(tree->data.children[1], depth + 1, classes, file);
     fputc(')', file);
     break;
 
@@ -2200,16 +2265,25 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *fi
       fprintf(file, "%zu\n", tree->data.repetition.upper_bound);
     }
 
-    crex_print_parsetree(tree->data.repetition.child, depth + 1, file);
+    print_parsetree(tree->data.repetition.child, depth + 1, classes, file);
     fputc(')', file);
 
     break;
   }
 
   case PT_GROUP:
-    fprintf(file, "(PT_GROUP %zu\n", tree->data.group.index);
-    crex_print_parsetree(tree->data.group.child, depth + 1, file);
+    fprintf(file, "(PT_GROUP ");
+
+    if (tree->data.group.index == NON_CAPTURING) {
+      fputs("<non-capturing>\n", file);
+    } else {
+      fprintf(file, "%zu\n", tree->data.group.index);
+    }
+
+    print_parsetree(tree->data.group.child, depth + 1, classes, file);
+
     fputc(')', file);
+
     break;
 
   default:
@@ -2217,42 +2291,17 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *fi
   }
 }
 
-void crex_debug_parse(const char *str, FILE *file) {
+status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file) {
   status_t status;
 
   size_t n_groups;
-
   char_classes_t classes = {0, 0, NULL};
 
-  parsetree_t *tree = parse(&status, &n_groups, &classes, str, strlen(str), &default_allocator);
-
-  free(classes.buffer);
+  parsetree_t *tree = parse(&status, &n_groups, &classes, pattern, size, &default_allocator);
 
   if (tree == NULL) {
-    fprintf(file, "Parse failed with status %s\n", status_to_str(status));
-    return;
-  }
-
-  crex_print_parsetree(tree, 0, file);
-  fputc('\n', file);
-
-  destroy_parsetree(tree, &default_allocator);
-}
-
-void crex_debug_compile(const char *str, FILE *file) {
-  status_t status;
-
-  size_t n_groups;
-
-  char_classes_t classes = {0, 0, NULL};
-
-  parsetree_t *tree = parse(&status, &n_groups, &classes, str, strlen(str), &default_allocator);
-
-  free(classes.buffer);
-
-  if (tree == NULL) {
-    fprintf(file, "Parse failed with status %s\n", status_to_str(status));
-    return;
+    free(classes.buffer);
+    return status;
   }
 
   bytecode_t result;
@@ -2261,8 +2310,8 @@ void crex_debug_compile(const char *str, FILE *file) {
   destroy_parsetree(tree, &default_allocator);
 
   if (status != CREX_OK) {
-    fprintf(file, "Compilation failed with status %s\n", status_to_str(status));
-    return;
+    free(classes.buffer);
+    return status;
   }
 
   unsigned char *bytecode = result.bytecode;
@@ -2274,6 +2323,7 @@ void crex_debug_compile(const char *str, FILE *file) {
     fprintf(file, "%05zd", i);
 
     if (i == result.size) {
+      fputc('\n', file);
       break;
     }
 
@@ -2295,7 +2345,7 @@ void crex_debug_compile(const char *str, FILE *file) {
       if (isprint(character) || character == ' ') {
         fprintf(file, " '%c'\n", character);
       } else {
-        fprintf(file, " \\x%02x\n", character);
+        fprintf(file, " \\x%02x\n", (unsigned int)character);
       }
 
       break;
@@ -2308,7 +2358,15 @@ void crex_debug_compile(const char *str, FILE *file) {
       const size_t index = deserialize_unsigned_operand(bytecode, operand_size);
       bytecode += operand_size;
 
-      fprintf(file, " %zu\n", index); // FIXME: prettyprint class
+      fputc(' ', file);
+
+      if (opcode == VM_CHAR_CLASS) {
+        print_char_class(&classes, index, file);
+      } else {
+        print_builtin_char_class(index, file);
+      }
+
+      fputc('\n', file);
 
       break;
     }
@@ -2346,6 +2404,7 @@ void crex_debug_compile(const char *str, FILE *file) {
     }
   }
 
+  free(classes.buffer);
   free(result.bytecode);
 }
 
