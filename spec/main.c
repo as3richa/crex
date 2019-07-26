@@ -113,7 +113,7 @@ int main(int argc, char **argv) {
     }
 
     const crex_regex_t *regex = regexes[testcase->pattern_index];
-    const size_t n_groups = crex_regex_n_groups(regex);
+    const size_t n_capturing_groups = crex_regex_n_capturing_groups(regex);
 
     const char *pattern = pattern_defns[testcase->pattern_index].str;
 
@@ -146,7 +146,7 @@ int main(int argc, char **argv) {
     if (!is_match) {
       assert(find_result.begin == NULL && find_result.end == NULL);
 
-      for (size_t j = 0; j < n_groups; j++) {
+      for (size_t j = 0; j < n_capturing_groups; j++) {
         assert(groups[j].begin == NULL && groups[j].end == NULL);
       }
 
@@ -160,7 +160,7 @@ int main(int argc, char **argv) {
 
     int okay = 1;
 
-    for (size_t j = 0; j < n_groups; j++) {
+    for (size_t j = 0; j < n_capturing_groups; j++) {
       const crex_slice_t *slice = &groups[j];
       const crex_slice_t expected = {str + testcase->groups[j].begin,
                                      str + testcase->groups[j].end};

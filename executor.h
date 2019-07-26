@@ -40,7 +40,7 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
 #elif defined(MATCH_LOCATION)
   const size_t n_pointers = 2;
 #elif defined(MATCH_GROUPS)
-  const size_t n_pointers = 2 * regex->n_groups;
+  const size_t n_pointers = 2 * regex->n_capturing_groups;
 #endif
 
 #ifdef MATCH_BOOLEAN
@@ -51,11 +51,8 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
   int match_found = 0;
 #endif
 
-  // FIXME: tighten and justify this bound
-  const size_t max_list_size = 2 * regex->size;
-
   state_list_t list;
-  state_list_create(&list, context, n_pointers, max_list_size);
+  state_list_create(&list, context, n_pointers, regex->max_concurrent_states);
 
   const char *eof = str + size;
   int prev_character = -1;
@@ -129,7 +126,7 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
 
           const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
 
-          for (size_t i = 0; i < regex->n_groups; i++) {
+          for (size_t i = 0; i < regex->n_capturing_groups; i++) {
             if (pointer_buffer[0] == NULL || pointer_buffer[1] == NULL) {
               matches[i].begin = NULL;
               matches[i].end = NULL;
@@ -325,7 +322,7 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
     match->begin = NULL;
     match->end = NULL;
 #else
-    for (size_t i = 0; i < regex->n_groups; i++) {
+    for (size_t i = 0; i < regex->n_capturing_groups; i++) {
       matches[i].begin = NULL;
       matches[i].end = NULL;
     }

@@ -139,9 +139,11 @@ struct crex_regex {
   size_t size;
   unsigned char *bytecode;
 
-  size_t n_groups;
+  size_t n_capturing_groups;
 
   char_class_t *classes;
+
+  size_t max_concurrent_states;
 
   void *allocator_context;
   void (*free)(void *, void *);
@@ -836,7 +838,7 @@ WARN_UNUSED_RESULT static int
 pop_operator(tree_stack_t *trees, operator_stack_t *operators, const allocator_t *allocator);
 
 WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
-                                      size_t *n_groups,
+                                      size_t *n_capturing_groups,
                                       char_classes_t *classes,
                                       const char *str,
                                       size_t size,
@@ -865,7 +867,7 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
     CHECK_ERRORS(push_empty(&trees, allocator), CREX_E_NOMEM);
   }
 
-  *n_groups = 1;
+  *n_capturing_groups = 1;
 
   while (str != eof) {
     token_t token;
@@ -942,7 +944,8 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
       CHECK_ERRORS(push_operator(&trees, &operators, &operator, allocator), CREX_E_NOMEM);
 
       operator.type = PT_GROUP;
-      operator.data.group_index =(token.type == TT_OPEN_PAREN) ? (*n_groups)++ : NON_CAPTURING;
+      operator.data.group_index =(token.type == TT_OPEN_PAREN) ? (*n_capturing_groups)++
+                                                               : NON_CAPTURING;
       CHECK_ERRORS(push_operator(&trees, &operators, &operator, allocator), CREX_E_NOMEM);
 
       CHECK_ERRORS(push_empty(&trees, allocator), CREX_E_NOMEM);
@@ -1575,6 +1578,10 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
       // later splits first (i.e. by filling the buffer from right to left), we can pick the correct
       // size a priori, and then perform a single copy to account for any saved space
 
+      // In general, this optimization leaves an unbounded amount of memory allocated but unused at
+      // the end of the buffer; however, because the top level parsetree is necessarily a PT_GROUP,
+      // we always free it
+
       unsigned char *end = result->bytecode + max_size;
       unsigned char *begin = end;
 
@@ -1712,7 +1719,8 @@ static state_list_handle_t state_list_alloc(state_list_t *list) {
     state = list->freelist;
     list->freelist = LIST_NEXT(list, state);
   } else {
-    // FIXME: think about a better resize strategy?
+    assert(list->context->capacity < list->max_capacity);
+
     size_t capacity = 2 * list->context->capacity + list->element_size;
 
     if (capacity > list->max_capacity) {
@@ -1839,15 +1847,13 @@ regex_t *crex_compile_with_allocator(status_t *status,
 
   char_classes_t classes = {0, 0, NULL};
 
-  parsetree_t *tree = parse(status, &regex->n_groups, &classes, pattern, size, allocator);
+  parsetree_t *tree = parse(status, &regex->n_capturing_groups, &classes, pattern, size, allocator);
 
   if (tree == NULL) {
     FREE(allocator, regex);
     FREE(allocator, classes.buffer);
     return NULL;
   }
-
-  regex->classes = classes.buffer;
 
   // bytecode_t is structurally a prefix of regex_t
   *status = compile((bytecode_t *)regex, tree, allocator);
@@ -1856,9 +1862,43 @@ regex_t *crex_compile_with_allocator(status_t *status,
 
   if (*status != CREX_OK) {
     FREE(allocator, regex);
+    FREE(allocator, classes.buffer);
     return NULL;
   }
 
+  regex->classes = classes.buffer;
+
+  // At the start of an iteration of the executor's outer loop, every element of the state set has
+  // an instruction pointer corresponding to the instruction immediately following a VM_CHARACTER,
+  // VM_CHAR_CLASS, or VM_BUILTIN_CHAR_CLASS instruction. Moreover, executing a given instruction
+  // causes at most one new state to be enqueued, and each instruction is executed at most once in
+  // any given iteration. Finally, the start state may also be enqueued at some point in the outer
+  // loop. This gives us an upper bound on the total number of states that can be enqueued
+  // concurrently in the executor
+
+  // NB. that we may enqueue new states with the same instruction pointer as already-enqueued states
+  // (so we can't tighten this bound by e.g. only counting instructions that can be jumped to)
+
+  size_t n_charish_instructions = 0;
+  size_t n_instructions = 0;
+
+  for (size_t i = 0; i < regex->size;) {
+    n_instructions++;
+
+    switch (VM_OPCODE(regex->bytecode[i])) {
+    case VM_CHARACTER:
+    case VM_CHAR_CLASS:
+    case VM_BUILTIN_CHAR_CLASS:
+      n_charish_instructions++;
+      break;
+    }
+
+    i += 1 + VM_OPERAND_SIZE(regex->bytecode[i]);
+  }
+
+  regex->max_concurrent_states = n_charish_instructions + n_instructions + 1;
+
+  // Stash the free part of the allocator, so it doesn't need to be passed into crex_regex_destroy
   regex->allocator_context = allocator->context;
   regex->free = allocator->free;
 
@@ -1903,7 +1943,7 @@ void crex_destroy_context(context_t *context) {
 }
 
 size_t crex_regex_n_capturing_groups(const regex_t *regex) {
-  return regex->n_groups;
+  return regex->n_capturing_groups;
 }
 
 #define MATCH_BOOLEAN
@@ -2178,11 +2218,12 @@ print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *cla
 status_t crex_print_parsetree(const char *pattern, size_t size, FILE *file) {
   status_t status;
 
-  size_t n_groups;
+  size_t n_capturing_groups;
 
   char_classes_t classes = {0, 0, NULL};
 
-  parsetree_t *tree = parse(&status, &n_groups, &classes, pattern, size, &default_allocator);
+  parsetree_t *tree =
+      parse(&status, &n_capturing_groups, &classes, pattern, size, &default_allocator);
 
   if (tree == NULL) {
     return status;
@@ -2294,10 +2335,11 @@ print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *cla
 status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file) {
   status_t status;
 
-  size_t n_groups;
+  size_t n_capturing_groups;
   char_classes_t classes = {0, 0, NULL};
 
-  parsetree_t *tree = parse(&status, &n_groups, &classes, pattern, size, &default_allocator);
+  parsetree_t *tree =
+      parse(&status, &n_capturing_groups, &classes, pattern, size, &default_allocator);
 
   if (tree == NULL) {
     free(classes.buffer);
