@@ -45,11 +45,20 @@ CREX_WARN_UNUSED_RESULT crex_context_t *crex_create_context(crex_status_t *statu
 CREX_WARN_UNUSED_RESULT crex_context_t *
 crex_create_context_with_allocator(crex_status_t *status, const crex_allocator_t *allocator);
 
+CREX_WARN_UNUSED_RESULT size_t crex_regex_n_capturing_groups(const crex_regex_t *regex);
+
+CREX_WARN_UNUSED_RESULT crex_status_t crex_context_reserve_is_match(crex_context_t *context,
+                                                                    const crex_regex_t *regex);
+
+CREX_WARN_UNUSED_RESULT crex_status_t crex_context_reserve_find(crex_context_t *context,
+                                                                const crex_regex_t *regex);
+
+CREX_WARN_UNUSED_RESULT crex_status_t crex_context_reserve_match_groups(crex_context_t *context,
+                                                                        const crex_regex_t *regex);
+
 void crex_destroy_regex(crex_regex_t *regex);
 
 void crex_destroy_context(crex_context_t *context);
-
-CREX_WARN_UNUSED_RESULT size_t crex_regex_n_capturing_groups(const crex_regex_t *regex);
 
 CREX_WARN_UNUSED_RESULT crex_status_t crex_is_match(int *is_match,
                                                     crex_context_t *context,

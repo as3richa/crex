@@ -1824,6 +1824,41 @@ static state_list_handle_t state_list_pop(state_list_t *list, state_list_handle_
   return successor;
 }
 
+static status_t reserve(context_t *context, const regex_t *regex, size_t n_pointers) {
+  const size_t min_visited_size = bitmap_size_for_bits(regex->size);
+
+  if (context->visited_size < min_visited_size) {
+    unsigned char *visited = ALLOC(&context->allocator, min_visited_size);
+
+    if (visited == NULL) {
+      return CREX_E_NOMEM;
+    }
+
+    FREE(&context->allocator, context->visited);
+
+    context->visited_size = min_visited_size;
+    context->visited = visited;
+  }
+
+  const size_t element_size = 2 + n_pointers;
+  const size_t max_capacity = regex->max_concurrent_states * element_size;
+
+  if (context->capacity < max_capacity) {
+    allocator_slot_t *buffer = ALLOC(&context->allocator, sizeof(allocator_slot_t) * max_capacity);
+
+    if (buffer == NULL) {
+      return CREX_E_NOMEM;
+    }
+
+    FREE(&context->allocator, context->buffer);
+
+    context->capacity = max_capacity;
+    context->buffer = buffer;
+  }
+
+  return CREX_OK;
+}
+
 /** Public API **/
 
 regex_t *crex_compile(status_t *status, const char *pattern, size_t size) {
@@ -1928,6 +1963,22 @@ context_t *crex_create_context_with_allocator(crex_status_t *status, const alloc
   return context;
 }
 
+size_t crex_regex_n_capturing_groups(const regex_t *regex) {
+  return regex->n_capturing_groups;
+}
+
+status_t crex_context_reserve_is_match(context_t *context, const crex_regex_t *regex) {
+  return reserve(context, regex, 0);
+}
+
+status_t crex_context_reserve_find(crex_context_t *context, const crex_regex_t *regex) {
+  return reserve(context, regex, 2);
+}
+
+status_t crex_context_reserve_match_groups(crex_context_t *context, const crex_regex_t *regex) {
+  return reserve(context, regex, 2 * regex->n_capturing_groups);
+}
+
 void crex_destroy_regex(regex_t *regex) {
   void *context = regex->allocator_context;
   regex->free(context, regex->bytecode);
@@ -1940,10 +1991,6 @@ void crex_destroy_context(context_t *context) {
   FREE(allocator, context->visited);
   FREE(allocator, context->buffer);
   FREE(allocator, context);
-}
-
-size_t crex_regex_n_capturing_groups(const regex_t *regex) {
-  return regex->n_capturing_groups;
 }
 
 #define MATCH_BOOLEAN
