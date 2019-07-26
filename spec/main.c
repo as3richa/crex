@@ -14,7 +14,7 @@
 extern const size_t n_patterns;
 extern const pattern_defn_t pattern_defns[];
 
-extern const size_t n_cases;
+extern const size_t n_testcases;
 extern const testcase_t testcases[];
 
 static const char *inflect(size_t number) {
@@ -48,8 +48,8 @@ static void quote(char *result, const char *str, size_t length) {
     } else {
       *(result++) = '\\';
       *(result++) = 'x';
-      *(result++) = "0123456789abcdef"[(unsigned)str[i] / 16];
-      *(result++) = "0123456789abcdef"[(unsigned)str[i] % 16];
+      *(result++) = "0123456789abcdef"[(unsigned char)str[i] / 16];
+      *(result++) = "0123456789abcdef"[(unsigned char)str[i] % 16];
     }
   }
 
@@ -66,17 +66,17 @@ int main(int argc, char **argv) {
   unsigned char bitmap[(MAX_TESTS + 7) / 8];
 
   if (argc != 1) {
-    memset(bitmap, 0, (n_cases + 7) / 8);
+    memset(bitmap, 0, (n_testcases + 7) / 8);
 
     for (size_t i = 1; i < (size_t)argc; i++) {
       const size_t j = (size_t)atol(argv[i]);
 
-      assert(j < n_cases);
+      assert(j < n_testcases);
 
       bitmap[j >> 3u] |= 1u << (j & 7u);
     }
   } else {
-    memset(bitmap, 0xff, (n_cases + 7) / 8);
+    memset(bitmap, 0xff, (n_testcases + 7) / 8);
   }
 
   crex_regex_t **regexes = malloc(sizeof(crex_regex_t *) * n_patterns);
@@ -87,7 +87,7 @@ int main(int argc, char **argv) {
   }
 
   size_t n_failures = 0;
-  size_t *failures = malloc(sizeof(size_t) * n_cases);
+  size_t *failures = malloc(sizeof(size_t) * n_testcases);
   assert(failures != NULL);
 
   crex_status_t status;
@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
 
   size_t run = 0;
 
-  for (size_t i = 0; i < n_cases; i++) {
+  for (size_t i = 0; i < n_testcases; i++) {
     if (!(bitmap[i >> 3u] & (1u << (i & 7u)))) {
       continue;
     }
@@ -118,7 +118,7 @@ int main(int argc, char **argv) {
     const char *pattern = pattern_defns[testcase->pattern_index].str;
 
     const char *str = testcase->str;
-    const char size = testcase->size;
+    const size_t size = testcase->size;
 
     char quoted_str[MAX_QUOTED_LENGTH];
     quote(quoted_str, str, size);

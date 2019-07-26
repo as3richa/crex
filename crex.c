@@ -1593,6 +1593,8 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
       if (bytecode < begin) {
         result->size = max_size - (begin - bytecode);
         memmove(bytecode, begin, end - begin);
+      } else {
+        result->size = max_size;
       }
     }
 

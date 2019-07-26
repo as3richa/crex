@@ -1,4 +1,4 @@
-CFLAGS=-std=c99 -pedantic -Wall -Wextra -O3 -fPIC -g
+CFLAGS=-std=c99 -pedantic -Wall -Wextra -fPIC -g
 LDFLAGS=-Lbuild -lcrex
 SOURCES=crex.c
 HEADERS=crex.h executor.h
@@ -7,7 +7,8 @@ LIBRARY=build/libcrex.so
 SPEC_SOURCE=spec/main.c
 SPEC_BIN=build/spec
 
-TESTCASES_YML=$(shell echo spec/*.yml)
+TESTCASES_GENERATOR=spec/spec.rb
+TESTCASES=$(shell echo spec/cases/*.rb)
 TESTCASES_SOURCE=build/testcases.c
 
 .PHONY: all clean spec
@@ -26,5 +27,5 @@ spec: $(SPEC_BIN)
 $(SPEC_BIN): $(LIBRARY) $(SPEC_SOURCE) $(TESTCASES_SOURCE)
 	gcc $(LDFLAGS) $(CFLAGS) -o $@ $^
 
-$(TESTCASES_SOURCE): $(TESTCASES_YML)
-	spec/generate-testcases > $@
+$(TESTCASES_SOURCE): $(TESTCASES_GENERATOR) $(TESTCASES)
+	ruby $(TESTCASES_GENERATOR) > $@
