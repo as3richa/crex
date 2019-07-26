@@ -185,7 +185,7 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
               deserialize_unsigned_operand(regex->bytecode + instr_pointer, operand_size);
           instr_pointer += operand_size;
 
-          keep = character != -1 && bitmap_test(regex->char_classes + 32 * index, character);
+          keep = character != -1 && bitmap_test(regex->classes[index].bitmap, character);
 
           break;
         }

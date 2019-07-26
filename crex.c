@@ -28,7 +28,7 @@ typedef struct {
   unsigned char bitmap[CHAR_CLASS_BITMAP_SIZE];
 } builtin_char_class_t;
 
-builtin_char_class_t builtin_char_classes[] = {
+builtin_char_class_t builtin_classes[] = {
     {"alnum", 5, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0xfe, 0xff, 0xff,
                   0x07, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
@@ -82,7 +82,7 @@ builtin_char_class_t builtin_char_classes[] = {
                               0x78, 0x01, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
                               0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}}};
 
-#define N_BUILTIN_CHAR_CLASSES sizeof(builtin_char_classes) / sizeof(*builtin_char_classes)
+#define N_BUILTIN_CLASSES sizeof(builtin_classes) / sizeof(*builtin_classes)
 
 #define BCC_DIGIT 5
 #define BCC_WHITESPACE 10
@@ -91,7 +91,7 @@ builtin_char_class_t builtin_char_classes[] = {
 #define BCC_NOT_WHITESPACE 15
 #define BCC_NOT_WORD 16
 
-#define BCC_TEST(index, character) bitmap_test(builtin_char_classes[index].bitmap, (character))
+#define BCC_TEST(index, character) bitmap_test(builtin_classes[index].bitmap, (character))
 
 static void bitmap_set(unsigned char *bitmap, size_t index) {
   bitmap[index >> 3u] |= 1u << (index & 7u);
@@ -140,7 +140,7 @@ struct crex_regex {
 
   size_t n_groups;
 
-  unsigned char *char_classes;
+  char_class_t *classes;
 
   void *allocator_context;
   void (*free)(void *, void *);
@@ -215,29 +215,12 @@ typedef struct {
 typedef struct {
   size_t size;
   size_t capacity;
-  unsigned char *buffer;
-} char_class_buffer_t;
+  char_class_t *buffer;
+} char_classes_t;
 
-size_t slice_to_size(const char *begin, const char *end) {
-  size_t result = 0;
+WARN_UNUSED_RESULT size_t parse_size(const char *being, const char *end);
 
-  for (const char *it = begin; it != end; it++) {
-    assert(isdigit(*it));
-
-    // FIXME: can't assume ASCII compiler
-    const unsigned int digit = *it - '0';
-
-    if (result > (REPETITION_INFINITY - digit) / 10u) {
-      return REPETITION_INFINITY;
-    }
-
-    result = 10 * result + digit;
-  }
-
-  return result;
-}
-
-WARN_UNUSED_RESULT static status_t lex_char_class(char_class_buffer_t *char_classes,
+WARN_UNUSED_RESULT static status_t lex_char_class(char_classes_t *classes,
                                                   token_t *token,
                                                   const char **str,
                                                   const char *eof,
@@ -245,7 +228,7 @@ WARN_UNUSED_RESULT static status_t lex_char_class(char_class_buffer_t *char_clas
 
 WARN_UNUSED_RESULT static int lex_escape_code(token_t *token, const char **str, const char *eof);
 
-WARN_UNUSED_RESULT static status_t lex(char_class_buffer_t *char_classes,
+WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
                                        token_t *token,
                                        const char **str,
                                        const char *eof,
@@ -308,7 +291,7 @@ WARN_UNUSED_RESULT static status_t lex(char_class_buffer_t *char_classes,
     break;
 
   case '[': {
-    status_t status = lex_char_class(char_classes, token, str, eof, allocator);
+    status_t status = lex_char_class(classes, token, str, eof, allocator);
 
     if (status != CREX_OK) {
       return status;
@@ -340,7 +323,7 @@ WARN_UNUSED_RESULT static status_t lex(char_class_buffer_t *char_classes,
         token->type = TT_GREEDY_REPETITION;
       }
 
-      token->data.repetition.lower_bound = slice_to_size(lb_begin, lb_end);
+      token->data.repetition.lower_bound = parse_size(lb_begin, lb_end);
 
       if (token->data.repetition.lower_bound == REPETITION_INFINITY) {
         return CREX_E_BAD_REPETITION;
@@ -372,7 +355,7 @@ WARN_UNUSED_RESULT static status_t lex(char_class_buffer_t *char_classes,
       token->type = TT_GREEDY_REPETITION;
     }
 
-    token->data.repetition.lower_bound = slice_to_size(lb_begin, lb_end);
+    token->data.repetition.lower_bound = parse_size(lb_begin, lb_end);
 
     if (token->data.repetition.lower_bound == REPETITION_INFINITY) {
       return CREX_E_BAD_REPETITION;
@@ -381,7 +364,7 @@ WARN_UNUSED_RESULT static status_t lex(char_class_buffer_t *char_classes,
     if (ub_begin == ub_end) {
       token->data.repetition.upper_bound = REPETITION_INFINITY;
     } else {
-      token->data.repetition.upper_bound = slice_to_size(ub_begin, ub_end);
+      token->data.repetition.upper_bound = parse_size(ub_begin, ub_end);
 
       if (token->data.repetition.upper_bound == REPETITION_INFINITY) {
         return CREX_E_BAD_REPETITION;
@@ -550,30 +533,30 @@ int lex_escape_code(token_t *token, const char **str, const char *eof) {
   return 1;
 }
 
-static status_t lex_char_class(char_class_buffer_t *char_classes,
+static status_t lex_char_class(char_classes_t *classes,
                                token_t *token,
                                const char **str,
                                const char *eof,
                                const allocator_t *allocator) {
-  assert(char_classes->size <= char_classes->capacity);
+  assert(classes->size <= classes->capacity);
 
-  if (char_classes->size == char_classes->capacity) {
-    const size_t capacity = 2 * char_classes->capacity + 1;
-    unsigned char *buffer = ALLOC(allocator, 32 * capacity);
+  if (classes->size == classes->capacity) {
+    const size_t capacity = 2 * classes->capacity + 1;
+    char_class_t *buffer = ALLOC(allocator, sizeof(char_class_t) * capacity);
 
     if (buffer == NULL) {
       return CREX_E_NOMEM;
     }
 
-    safe_memcpy(buffer, char_classes->buffer, 32 * char_classes->size);
-    FREE(allocator, char_classes->buffer);
+    safe_memcpy(buffer, classes->buffer, sizeof(char_class_t) * classes->size);
+    FREE(allocator, classes->buffer);
 
-    char_classes->capacity = capacity;
-    char_classes->buffer = buffer;
+    classes->capacity = capacity;
+    classes->buffer = buffer;
   }
 
-  unsigned char *bitmap = char_classes->buffer + 32 * char_classes->size;
-  memset(bitmap, 0, 32);
+  unsigned char *bitmap = classes->buffer[classes->size].bitmap;
+  bitmap_clear(bitmap, CHAR_CLASS_BITMAP_SIZE);
 
   assert(*str <= eof);
 
@@ -646,20 +629,20 @@ static status_t lex_char_class(char_class_buffer_t *char_classes,
 
       size_t i;
 
-      for (i = 0; i < N_BUILTIN_CHAR_CLASSES; i++) {
-        const char *class_name = builtin_char_classes[i].name;
-        const size_t class_name_size = builtin_char_classes[i].name_size;
+      for (i = 0; i < N_BUILTIN_CLASSES; i++) {
+        const char *class_name = builtin_classes[i].name;
+        const size_t class_name_size = builtin_classes[i].name_size;
 
         if (size == class_name_size && memcmp(name, class_name, size) == 0) {
           break;
         }
       }
 
-      if (i == N_BUILTIN_CHAR_CLASSES) {
+      if (i == N_BUILTIN_CLASSES) {
         return CREX_E_BAD_CHARACTER_CLASS;
       }
 
-      bitmap_union(bitmap, builtin_char_classes[i].bitmap, sizeof(bitmap));
+      bitmap_union(bitmap, builtin_classes[i].bitmap, CHAR_CLASS_BITMAP_SIZE);
       prev_character = -1;
       *str = end + 1;
 
@@ -685,7 +668,8 @@ static status_t lex_char_class(char_class_buffer_t *char_classes,
         }
 
         const size_t index = token->data.char_class_index;
-        const unsigned char *other_bitmap = builtin_char_classes[index].bitmap;
+        const unsigned char *other_bitmap = builtin_classes[index].bitmap;
+
         bitmap_union(bitmap, other_bitmap, sizeof(bitmap));
 
         prev_character = -1;
@@ -719,8 +703,8 @@ static status_t lex_char_class(char_class_buffer_t *char_classes,
     }
   }
 
-  for (size_t i = 0; i < N_BUILTIN_CHAR_CLASSES; i++) {
-    if (memcmp(bitmap, builtin_char_classes[i].bitmap, 32) == 0) {
+  for (size_t i = 0; i < N_BUILTIN_CLASSES; i++) {
+    if (memcmp(bitmap, builtin_classes[i].bitmap, CHAR_CLASS_BITMAP_SIZE) == 0) {
       token->type = TT_BUILTIN_CHAR_CLASS;
       token->data.char_class_index = i;
       return CREX_OK;
@@ -729,16 +713,35 @@ static status_t lex_char_class(char_class_buffer_t *char_classes,
 
   token->type = TT_CHAR_CLASS;
 
-  for (size_t i = 0; i < char_classes->size; i++) {
-    if (memcmp(bitmap, char_classes->buffer + 32 * i, 32) == 0) {
+  for (size_t i = 0; i < classes->size; i++) {
+    if (memcmp(bitmap, classes->buffer[i].bitmap, CHAR_CLASS_BITMAP_SIZE) == 0) {
       token->data.char_class_index = i;
       return CREX_OK;
     }
   }
 
-  token->data.char_class_index = char_classes->size++;
+  token->data.char_class_index = classes->size++;
 
   return CREX_OK;
+}
+
+size_t parse_size(const char *begin, const char *end) {
+  size_t result = 0;
+
+  for (const char *it = begin; it != end; it++) {
+    assert(isdigit(*it));
+
+    // FIXME: can't assume ASCII compiler
+    const unsigned int digit = *it - '0';
+
+    if (result > (REPETITION_INFINITY - digit) / 10u) {
+      return REPETITION_INFINITY;
+    }
+
+    result = 10 * result + digit;
+  }
+
+  return result;
 }
 
 /** Parser **/
@@ -825,7 +828,7 @@ pop_operator(tree_stack_t *trees, operator_stack_t *operators, const allocator_t
 
 WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
                                       size_t *n_groups,
-                                      unsigned char **char_classes_buffer,
+                                      char_classes_t *classes,
                                       const char *str,
                                       size_t size,
                                       const allocator_t *allocator) {
@@ -834,18 +837,11 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
   tree_stack_t trees = {0, 0, NULL};
   operator_stack_t operators = {0, 0, NULL};
 
-  // FIXME: figure out a better ownership story for char_classes
-  char_class_buffer_t char_classes;
-  char_classes.size = 0;
-  char_classes.capacity = 0;
-  char_classes.buffer = NULL;
-
 #define CHECK_ERRORS(condition, code)                                                              \
   do {                                                                                             \
     if (!(condition)) {                                                                            \
       destroy_tree_stack(&trees, allocator);                                                       \
       FREE(allocator, operators.data);                                                             \
-      FREE(allocator, char_classes.buffer);                                                        \
       *status = code;                                                                              \
       return NULL;                                                                                 \
     }                                                                                              \
@@ -864,7 +860,7 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
 
   while (str != eof) {
     token_t token;
-    const status_t lex_status = lex(&char_classes, &token, &str, eof, allocator);
+    const status_t lex_status = lex(classes, &token, &str, eof, allocator);
 
     CHECK_ERRORS(lex_status == CREX_OK, lex_status);
 
@@ -972,9 +968,6 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
 
     CHECK_ERRORS(pop_operator(&trees, &operators, allocator), CREX_E_NOMEM);
   }
-
-  // FIXME: nomenclature
-  *char_classes_buffer = char_classes.buffer;
 
   assert(trees.size == 1);
 
@@ -1839,13 +1832,17 @@ regex_t *crex_compile_with_allocator(status_t *status,
     return NULL;
   }
 
-  parsetree_t *tree =
-      parse(status, &regex->n_groups, &regex->char_classes, pattern, size, allocator);
+  char_classes_t classes = {0, 0, NULL};
+
+  parsetree_t *tree = parse(status, &regex->n_groups, &classes, pattern, size, allocator);
 
   if (tree == NULL) {
     FREE(allocator, regex);
+    FREE(allocator, classes.buffer);
     return NULL;
   }
+
+  regex->classes = classes.buffer;
 
   // bytecode_t is structurally a prefix of regex_t
   *status = compile((bytecode_t *)regex, tree, allocator);
@@ -1889,7 +1886,7 @@ context_t *crex_create_context_with_allocator(crex_status_t *status, const alloc
 void crex_destroy_regex(regex_t *regex) {
   void *context = regex->allocator_context;
   regex->free(context, regex->bytecode);
-  regex->free(context, regex->char_classes);
+  regex->free(context, regex->classes);
   regex->free(context, regex);
 }
 
@@ -2030,15 +2027,12 @@ const char *opcode_to_str(unsigned char opcode) {
 void crex_debug_lex(const char *str, FILE *file) {
   const char *eof = str + strlen(str);
 
-  char_class_buffer_t char_classes;
-  char_classes.size = 0;
-  char_classes.capacity = 0;
-  char_classes.buffer = NULL;
+  char_class_buffer_t classes = {0, 0, NULL};
 
   token_t token;
 
   while (str != eof) {
-    const status_t status = lex(&char_classes, &token, &str, eof, &default_allocator);
+    const status_t status = lex(&classes, &token, &str, eof, &default_allocator);
 
     if (status != CREX_OK) {
       fprintf(file, "Lex failed with status %s\n", status_to_str(status));
@@ -2064,7 +2058,7 @@ void crex_debug_lex(const char *str, FILE *file) {
       break;
 
     case TT_BUILTIN_CHAR_CLASS: {
-      const char *name = builtin_char_classes[token.data.char_class_index].name;
+      const char *name = builtin_classes[token.data.char_class_index].name;
 
       fputs("TT_BUILTIN_CHAR_CLASS ", file);
 
@@ -2114,7 +2108,7 @@ void crex_debug_lex(const char *str, FILE *file) {
     }
   }
 
-  free(char_classes.buffer);
+  free(classes.buffer);
 }
 
 static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *file) {
@@ -2143,7 +2137,7 @@ static void crex_print_parsetree(const parsetree_t *tree, size_t depth, FILE *fi
     break;
 
   case PT_BUILTIN_CHAR_CLASS: {
-    const char *name = builtin_char_classes[tree->data.char_class_index].name;
+    const char *name = builtin_classes[tree->data.char_class_index].name;
 
     fputs("(PT_BUILTIN_CHAR_CLASS ", file);
 
@@ -2211,12 +2205,11 @@ void crex_debug_parse(const char *str, FILE *file) {
 
   size_t n_groups;
 
-  unsigned char *char_classes;
+  char_class_buffer_t classes = {0, 0, NULL};
 
-  parsetree_t *tree =
-      parse(&status, &n_groups, &char_classes, str, strlen(str), &default_allocator);
+  parsetree_t *tree = parse(&status, &n_groups, &classes, str, strlen(str), &default_allocator);
 
-  free(char_classes);
+  free(classes.buffer);
 
   if (tree == NULL) {
     fprintf(file, "Parse failed with status %s\n", status_to_str(status));
@@ -2233,12 +2226,12 @@ void crex_debug_compile(const char *str, FILE *file) {
   status_t status;
 
   size_t n_groups;
-  unsigned char *char_classes;
 
-  parsetree_t *tree =
-      parse(&status, &n_groups, &char_classes, str, strlen(str), &default_allocator);
+  char_class_buffer_t classes = {0, 0, NULL};
 
-  free(char_classes);
+  parsetree_t *tree = parse(&status, &n_groups, &classes, str, strlen(str), &default_allocator);
+
+  free(classes.buffer);
 
   if (tree == NULL) {
     fprintf(file, "Parse failed with status %s\n", status_to_str(status));
