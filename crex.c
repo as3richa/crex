@@ -6,22 +6,26 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <stdio.h> // FIXME
-
 #include "crex.h"
 
 typedef crex_status_t status_t;
-typedef crex_regex_t regex_t;
-typedef crex_context_t context_t;
-typedef crex_allocator_t allocator_t;
+
 #define WARN_UNUSED_RESULT CREX_WARN_UNUSED_RESULT
 
 #define REPETITION_INFINITY SIZE_MAX
 
+/** Character class plumbing **/
+
+#define CHAR_CLASS_BITMAP_SIZE 32
+
+typedef struct {
+  unsigned char bitmap[CHAR_CLASS_BITMAP_SIZE];
+} char_class_t;
+
 typedef struct {
   const char *name;
   size_t name_size;
-  unsigned char bitmap[32];
+  unsigned char bitmap[CHAR_CLASS_BITMAP_SIZE];
 } builtin_char_class_t;
 
 builtin_char_class_t builtin_char_classes[] = {
@@ -103,9 +107,17 @@ static int bitmap_test(unsigned char *bitmap, size_t index) {
   return (bitmap[index >> 3u] >> (index & 7u)) & 1u;
 }
 
-static void bitmap_clear(unsigned char *bitmap, size_t size) { memset(bitmap, 0, size); }
+static void bitmap_clear(unsigned char *bitmap, size_t size) {
+  memset(bitmap, 0, size);
+}
 
-static int bitmap_size_for_bits(size_t bits) { return (bits + 7) / 8; }
+static size_t bitmap_size_for_bits(size_t bits) {
+  return (bits + 7) / 8;
+}
+
+/** Allocator **/
+
+typedef crex_allocator_t allocator_t;
 
 static void *default_alloc(void *context, size_t size) {
   (void)context;
@@ -117,10 +129,9 @@ static void default_free(void *context, void *pointer) {
   free(pointer);
 }
 
-static const crex_allocator_t default_allocator = {NULL, default_alloc, default_free};
+static const allocator_t default_allocator = {NULL, default_alloc, default_free};
 
 #define ALLOC(allocator, size) ((allocator)->alloc)((allocator)->context, size)
-
 #define FREE(allocator, pointer) ((allocator)->free)((allocator)->context, pointer)
 
 struct crex_regex {
@@ -134,6 +145,8 @@ struct crex_regex {
   void *allocator_context;
   void (*free)(void *, void *);
 };
+
+typedef crex_regex_t regex_t;
 
 typedef union {
   size_t size;
@@ -150,7 +163,7 @@ struct crex_context {
   allocator_t allocator;
 };
 
-// FIXME: put these somewhere
+typedef crex_context_t context_t;
 
 static void safe_memcpy(void *destination, const void *source, size_t size) {
   assert((destination != NULL && source != NULL) || size == 0);
@@ -634,9 +647,10 @@ static status_t lex_char_class(char_class_buffer_t *char_classes,
       size_t i;
 
       for (i = 0; i < N_BUILTIN_CHAR_CLASSES; i++) {
-        const builtin_char_class_t *bcc = &builtin_char_classes[i];
+        const char *class_name = builtin_char_classes[i].name;
+        const size_t class_name_size = builtin_char_classes[i].name_size;
 
-        if (size == bcc->name_size && memcmp(name, bcc->name, size) == 0) {
+        if (size == class_name_size && memcmp(name, class_name, size) == 0) {
           break;
         }
       }
@@ -814,7 +828,7 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
                                       unsigned char **char_classes_buffer,
                                       const char *str,
                                       size_t size,
-                                      const crex_allocator_t *allocator) {
+                                      const allocator_t *allocator) {
   const char *eof = str + size;
 
   tree_stack_t trees = {0, 0, NULL};
@@ -1815,7 +1829,7 @@ regex_t *crex_compile_str(status_t *status, const char *pattern) {
 regex_t *crex_compile_with_allocator(status_t *status,
                                      const char *pattern,
                                      size_t size,
-                                     const crex_allocator_t *allocator) {
+                                     const allocator_t *allocator) {
   regex_t *regex = ALLOC(allocator, sizeof(regex_t));
 
   if (regex == NULL) {
@@ -1851,8 +1865,7 @@ context_t *crex_create_context(status_t *status) {
   return crex_create_context_with_allocator(status, &default_allocator);
 }
 
-context_t *crex_create_context_with_allocator(crex_status_t *status,
-                                              const crex_allocator_t *allocator) {
+context_t *crex_create_context_with_allocator(crex_status_t *status, const allocator_t *allocator) {
   context_t *context = ALLOC(allocator, sizeof(context_t));
 
   if (context == NULL) {
@@ -1885,7 +1898,9 @@ void crex_destroy_context(context_t *context) {
   FREE(allocator, context);
 }
 
-size_t crex_regex_n_groups(const regex_t *regex) { return regex->n_groups; }
+size_t crex_regex_n_groups(const regex_t *regex) {
+  return regex->n_groups;
+}
 
 status_t
 crex_is_match_str(int *is_match, context_t *context, const regex_t *regex, const char *str) {

@@ -4,3 +4,4 @@ BasedOnStyle: LLVM
 ColumnLimit: 100
 BinPackArguments: false
 BinPackParameters: false
+AllowShortFunctionsOnASingleLine: false
