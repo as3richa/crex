@@ -6,7 +6,8 @@ void crex_debug_lex(const char *, FILE *);
 void crex_debug_parse(const char *, FILE *);
 void crex_debug_compile(const char *, FILE *);
 
-const char *pattern = "a{0,30000}";
+const char *pattern = "\\A(?:0|[1-9][0-9]{0,2})\\.(?:0|[1-9][0-9]{0,2})\\.(?:0|[1-9][0-9]{0,2})\\.("
+                      "?:0|[1-9][0-9]{0,2})\\z";
 
 const char *cases[] = {"127.0.0.1"};
 

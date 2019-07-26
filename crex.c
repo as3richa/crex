@@ -13,6 +13,7 @@ typedef crex_status_t status_t;
 #define WARN_UNUSED_RESULT CREX_WARN_UNUSED_RESULT
 
 #define REPETITION_INFINITY SIZE_MAX
+#define NON_CAPTURING SIZE_MAX
 
 /** Character class plumbing **/
 
@@ -193,6 +194,7 @@ typedef enum {
   TT_GREEDY_REPETITION,
   TT_LAZY_REPETITION,
   TT_OPEN_PAREN,
+  TT_NON_CAPTURING_OPEN_PAREN,
   TT_CLOSE_PAREN
 } token_type_t;
 
@@ -283,7 +285,13 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
     break;
 
   case '(':
-    token->type = TT_OPEN_PAREN;
+    if (*str < eof - 1 && **str == '?' && *((*str) + 1) == ':') {
+      (*str) += 2;
+      token->type = TT_NON_CAPTURING_OPEN_PAREN;
+    } else {
+      token->type = TT_OPEN_PAREN;
+    }
+
     break;
 
   case ')':
@@ -925,14 +933,15 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
       break;
     }
 
-    case TT_OPEN_PAREN: {
+    case TT_OPEN_PAREN:
+    case TT_NON_CAPTURING_OPEN_PAREN: {
       operator_t operator;
 
       operator.type = PT_CONCATENATION;
       CHECK_ERRORS(push_operator(&trees, &operators, &operator, allocator), CREX_E_NOMEM);
 
       operator.type = PT_GROUP;
-      operator.data.group_index =(*n_groups)++;
+      operator.data.group_index =(token.type == TT_OPEN_PAREN) ? (*n_groups)++ : NON_CAPTURING;
       CHECK_ERRORS(push_operator(&trees, &operators, &operator, allocator), CREX_E_NOMEM);
 
       CHECK_ERRORS(push_empty(&trees, allocator), CREX_E_NOMEM);
@@ -1597,6 +1606,10 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
   }
 
   case PT_GROUP: {
+    if (tree->data.group.index == NON_CAPTURING) {
+      return compile(result, tree->data.group.child, allocator);
+    }
+
     bytecode_t child;
     status_t status = compile(&child, tree->data.group.child, allocator);
 
@@ -2027,7 +2040,7 @@ const char *opcode_to_str(unsigned char opcode) {
 void crex_debug_lex(const char *str, FILE *file) {
   const char *eof = str + strlen(str);
 
-  char_class_buffer_t classes = {0, 0, NULL};
+  char_classes_t classes = {0, 0, NULL};
 
   token_t token;
 
@@ -2097,6 +2110,10 @@ void crex_debug_lex(const char *str, FILE *file) {
 
     case TT_OPEN_PAREN:
       fputs("TT_OPEN_PAREN\n", file);
+      break;
+
+    case TT_NON_CAPTURING_OPEN_PAREN:
+      fputs("TT_NON_CAPTURING_OPEN_PAREN\n", file);
       break;
 
     case TT_CLOSE_PAREN:
@@ -2205,7 +2222,7 @@ void crex_debug_parse(const char *str, FILE *file) {
 
   size_t n_groups;
 
-  char_class_buffer_t classes = {0, 0, NULL};
+  char_classes_t classes = {0, 0, NULL};
 
   parsetree_t *tree = parse(&status, &n_groups, &classes, str, strlen(str), &default_allocator);
 
@@ -2227,7 +2244,7 @@ void crex_debug_compile(const char *str, FILE *file) {
 
   size_t n_groups;
 
-  char_class_buffer_t classes = {0, 0, NULL};
+  char_classes_t classes = {0, 0, NULL};
 
   parsetree_t *tree = parse(&status, &n_groups, &classes, str, strlen(str), &default_allocator);
 
