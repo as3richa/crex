@@ -81,7 +81,10 @@ builtin_char_class_t builtin_classes[] = {
                                     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
     {NULL /* Non-word */, 0, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0xfc, 0x01, 0x00, 0x00,
                               0x78, 0x01, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                              0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}}};
+                              0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
+    {NULL /* Dot */, 0, {0xff, 0xfb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}}};
 
 #define N_BUILTIN_CLASSES sizeof(builtin_classes) / sizeof(*builtin_classes)
 
@@ -91,6 +94,7 @@ builtin_char_class_t builtin_classes[] = {
 #define BCC_NOT_DIGIT 14
 #define BCC_NOT_WHITESPACE 15
 #define BCC_NOT_WORD 16
+#define BCC_ANY 17
 
 #define BCC_TEST(index, character) bitmap_test(builtin_classes[index].bitmap, (character))
 
@@ -299,6 +303,11 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
 
   case ')':
     token->type = TT_CLOSE_PAREN;
+    break;
+
+  case '.':
+    token->type = TT_BUILTIN_CHAR_CLASS;
+    token->data.char_class_index = BCC_ANY;
     break;
 
   case '[': {
@@ -2257,6 +2266,8 @@ status_t crex_print_tokenization(const char *pattern, size_t size, FILE *file) {
   }
 
   free(classes.buffer);
+
+  return CREX_OK;
 }
 
 static void
@@ -2281,6 +2292,8 @@ status_t crex_print_parsetree(const char *pattern, size_t size, FILE *file) {
 
   free(classes.buffer);
   destroy_parsetree(tree, &default_allocator);
+
+  return CREX_OK;
 }
 
 static void
@@ -2312,8 +2325,6 @@ print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *cla
     break;
 
   case PT_BUILTIN_CHAR_CLASS: {
-    const char *name = builtin_classes[tree->data.char_class_index].name;
-
     fputs("(PT_BUILTIN_CHAR_CLASS ", file);
     print_builtin_char_class(tree->data.char_class_index, file);
     fputc(')', file);
@@ -2495,6 +2506,8 @@ status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file)
 
   free(classes.buffer);
   free(result.bytecode);
+
+  return CREX_OK;
 }
 
 #endif
