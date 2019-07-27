@@ -1,22 +1,21 @@
 #ifdef MATCH_BOOLEAN
 
 #define NAME crex_is_match
-#define RESULT_DECLARATION int *is_match
+#define RESULT int *is_match
 
 #elif defined(MATCH_LOCATION)
 
 #define NAME crex_find
-#define RESULT_DECLARATION crex_slice_t *match
+#define RESULT match_t *match
 
 #elif defined(MATCH_GROUPS)
 
 #define NAME crex_match_groups
-#define RESULT_DECLARATION crex_slice_t *matches
+#define RESULT match_t *matches
 
 #endif
 
-status_t
-NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *str, size_t size) {
+status_t NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t size) {
   unsigned char *visited;
 
   const size_t visited_size = bitmap_size_for_bits(regex->size);
@@ -176,6 +175,7 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
           if ((size_t)character != operand) {
             keep = 0;
           }
+
           break;
         }
 
@@ -326,4 +326,4 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
 #undef MATCH_LOCATION
 #undef MATCH_GROUPS
 #undef NAME
-#undef RESULT_DECLARATION
+#undef RESULT

@@ -10,7 +10,7 @@
 
 crex_status_t crex_print_tokenization(const char *pattern, const size_t size, FILE *file);
 crex_status_t crex_print_parsetree(const char *pattern, const size_t size, FILE *file);
-crex_status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file);
+void crex_print_bytecode(const crex_regex_t *regex, FILE *file);
 
 typedef struct {
   size_t size;
@@ -57,8 +57,6 @@ int main(void) {
 
   putchar('\n');
 
-  status = crex_print_bytecode(pattern.buffer, pattern.size, stdout);
-
   if (status != CREX_OK) {
     free(pattern.buffer);
     return 1;
@@ -70,6 +68,8 @@ int main(void) {
     free(pattern.buffer);
     return 1;
   }
+
+  crex_print_bytecode(regex, stdout);
 
   const size_t n_capturing_groups = crex_regex_n_capturing_groups(regex);
 
@@ -94,7 +94,7 @@ int main(void) {
       return 1;
     }
 
-    crex_slice_t groups[MAX_GROUPS];
+    crex_match_t groups[MAX_GROUPS];
 
     status = crex_match_groups(groups, context, regex, str.buffer, str.size);
 

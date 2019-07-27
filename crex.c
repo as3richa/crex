@@ -139,22 +139,6 @@ static const allocator_t default_allocator = {NULL, default_alloc, default_free}
 #define ALLOC(allocator, size) ((allocator)->alloc)((allocator)->context, size)
 #define FREE(allocator, pointer) ((allocator)->free)((allocator)->context, pointer)
 
-struct crex_regex {
-  size_t size;
-  unsigned char *bytecode;
-
-  size_t n_capturing_groups;
-
-  char_class_t *classes;
-
-  size_t max_concurrent_states;
-
-  void *allocator_context;
-  void (*free)(void *, void *);
-};
-
-typedef crex_regex_t regex_t;
-
 typedef union {
   size_t size;
   char *pointer;
@@ -1231,32 +1215,33 @@ static void serialize_operand(void *destination, size_t operand, size_t size) {
   switch (size) {
   case 0: {
     assert(operand == 0);
-    return;
+    break;
   }
 
   case 1: {
     assert(operand <= 0xffLU);
     uint8_t u8_operand = operand;
     safe_memcpy(destination, &u8_operand, 1);
-    return;
+    break;
   }
 
   case 2: {
     assert(operand <= 0xffffLU);
     uint16_t u16_operand = operand;
     safe_memcpy(destination, &u16_operand, 2);
-    return;
+    break;
   }
 
   case 4: {
     assert(operand <= 0xffffffffLU);
     uint32_t u32_operand = operand;
     safe_memcpy(destination, &u32_operand, 4);
-    return;
-  }
+    break;
   }
 
-  assert(0);
+  default:
+    assert(0);
+  }
 }
 
 static size_t deserialize_operand(void *source, size_t size) {
@@ -1285,6 +1270,72 @@ static size_t deserialize_operand(void *source, size_t size) {
 
   assert(0);
   return 0;
+}
+
+static void serialize_operand_le(void *destination, size_t operand, size_t size) {
+  unsigned char *bytes = destination;
+
+  switch (size) {
+  case 0: {
+    assert(operand == 0);
+    break;
+  }
+
+  case 1: {
+    assert(operand <= 0xffLU);
+    bytes[0] = operand;
+    break;
+  }
+
+  case 2: {
+    assert(operand <= 0xffffLU);
+    bytes[0] = operand & 0xffu;
+    bytes[1] = operand >> 8u;
+    break;
+  }
+
+  case 4: {
+    assert(operand <= 0xffffffffLU);
+    bytes[0] = operand & 0xffu;
+    bytes[1] = (operand >> 8u) & 0xffu;
+    bytes[2] = (operand >> 16u) & 0xffu;
+    bytes[3] = (operand >> 24u) & 0xffu;
+    break;
+  }
+
+  default:
+    assert(0);
+  }
+}
+
+static size_t deserialize_operand_le(void *source, size_t size) {
+  unsigned char *bytes = source;
+
+  switch (size) {
+  case 0:
+    return 0;
+
+  case 1:
+    return bytes[0];
+
+  case 2: {
+    size_t operand = bytes[0];
+    operand |= ((size_t)bytes[1]) << 8u;
+    return operand;
+  }
+
+  case 4: {
+    size_t operand = bytes[0];
+    operand |= ((size_t)bytes[1]) << 8u;
+    operand |= ((size_t)bytes[2]) << 16u;
+    operand |= ((size_t)bytes[3]) << 24u;
+    return operand;
+  }
+
+  default:
+    assert(0);
+    return 0;
+  }
 }
 
 status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
@@ -1781,6 +1832,23 @@ static state_list_handle_t state_list_pop(state_list_t *list, state_list_handle_
   return successor;
 }
 
+struct crex_regex {
+  size_t size;
+  size_t n_capturing_groups;
+  size_t n_classes;
+  size_t max_concurrent_states;
+
+  unsigned char *bytecode;
+
+  char_class_t *classes;
+
+  void *allocator_context;
+  void (*free)(void *, void *);
+};
+
+// For brevity
+typedef crex_regex_t regex_t;
+
 static status_t reserve(context_t *context, const regex_t *regex, size_t n_pointers) {
   const size_t min_visited_size = bitmap_size_for_bits(regex->size);
 
@@ -1818,6 +1886,9 @@ static status_t reserve(context_t *context, const regex_t *regex, size_t n_point
 
 /** Public API **/
 
+// For brevity
+typedef crex_match_t match_t;
+
 regex_t *crex_compile(status_t *status, const char *pattern, size_t size) {
   return crex_compile_with_allocator(status, pattern, size, &default_allocator);
 }
@@ -1842,22 +1913,27 @@ regex_t *crex_compile_with_allocator(status_t *status,
   parsetree_t *tree = parse(status, &regex->n_capturing_groups, &classes, pattern, size, allocator);
 
   if (tree == NULL) {
-    FREE(allocator, regex);
     FREE(allocator, classes.buffer);
+    FREE(allocator, regex);
     return NULL;
   }
 
-  // bytecode_t is structurally a prefix of regex_t
-  *status = compile((bytecode_t *)regex, tree, allocator);
+  bytecode_t bytecode;
+
+  *status = compile(&bytecode, tree, allocator);
 
   destroy_parsetree(tree, allocator);
 
   if (*status != CREX_OK) {
-    FREE(allocator, regex);
     FREE(allocator, classes.buffer);
+    FREE(allocator, regex);
     return NULL;
   }
 
+  regex->size = bytecode.size;
+  regex->bytecode = bytecode.bytecode;
+
+  regex->n_classes = classes.size;
   regex->classes = classes.buffer;
 
   // At the start of an iteration of the executor's outer loop, every element of the state set has
@@ -1924,18 +2000,6 @@ size_t crex_regex_n_capturing_groups(const regex_t *regex) {
   return regex->n_capturing_groups;
 }
 
-status_t crex_context_reserve_is_match(context_t *context, const crex_regex_t *regex) {
-  return reserve(context, regex, 0);
-}
-
-status_t crex_context_reserve_find(crex_context_t *context, const crex_regex_t *regex) {
-  return reserve(context, regex, 2);
-}
-
-status_t crex_context_reserve_match_groups(crex_context_t *context, const crex_regex_t *regex) {
-  return reserve(context, regex, 2 * regex->n_capturing_groups);
-}
-
 void crex_destroy_regex(regex_t *regex) {
   void *context = regex->allocator_context;
   regex->free(context, regex->bytecode);
@@ -1961,26 +2025,187 @@ crex_is_match_str(int *is_match, context_t *context, const regex_t *regex, const
 #define MATCH_LOCATION
 #include "executor.h" // crex_find
 
-status_t
-crex_find_str(crex_slice_t *match, context_t *context, const regex_t *regex, const char *str) {
+status_t crex_find_str(match_t *match, context_t *context, const regex_t *regex, const char *str) {
   return crex_find(match, context, regex, str, strlen(str));
 }
 
 #define MATCH_GROUPS
 #include "executor.h" // crex_match_groups
 
-status_t crex_match_groups_str(crex_slice_t *matches,
-                               context_t *context,
-                               const regex_t *regex,
-                               const char *str) {
+status_t
+crex_match_groups_str(match_t *matches, context_t *context, const regex_t *regex, const char *str) {
   return crex_match_groups(matches, context, regex, str, strlen(str));
 }
 
-#ifdef CREX_DEBUG
+status_t crex_context_reserve_is_match(context_t *context, const regex_t *regex) {
+  return reserve(context, regex, 0);
+}
+
+status_t crex_context_reserve_find(context_t *context, const regex_t *regex) {
+  return reserve(context, regex, 2);
+}
+
+status_t crex_context_reserve_match_groups(context_t *context, const regex_t *regex) {
+  return reserve(context, regex, 2 * regex->n_capturing_groups);
+}
+
+unsigned char *crex_dump_regex(status_t *status, size_t *size, const regex_t *regex) {
+  return crex_dump_regex_with_allocator(status, size, regex, &default_allocator);
+}
+
+unsigned char *crex_dump_regex_with_allocator(status_t *status,
+                                              size_t *size,
+                                              const regex_t *regex,
+                                              const allocator_t *allocator) {
+  const size_t classes_size = sizeof(char_class_t) * regex->n_classes;
+
+  *size = 5 + 16 + regex->size + classes_size;
+
+  unsigned char *buffer = ALLOC(allocator, *size);
+
+#ifndef NDEBUG
+  // For a sanity check
+  unsigned char *buf = buffer;
+#endif
+
+  if (buffer == NULL) {
+    *status = CREX_E_NOMEM;
+    return NULL;
+  }
+
+  // Magic number
+  safe_memcpy(buffer, "crex", 4);
+  buffer += 4;
+
+  // Version byte
+  *(buffer++) = 0;
+
+  // Scalar elements
+  serialize_operand_le(buffer, regex->size, 4);
+  serialize_operand_le(buffer + 4, regex->n_capturing_groups, 4);
+  serialize_operand_le(buffer + 8, regex->n_classes, 4);
+  serialize_operand_le(buffer + 12, regex->max_concurrent_states, 4);
+  buffer += 16;
+
+  // Bytecode. Need to re-serialize each operand into little endian byte order
+
+  unsigned char *bytecode = regex->bytecode;
+  unsigned char *end = bytecode + regex->size;
+
+  while (bytecode != end) {
+    const size_t operand_size = VM_OPERAND_SIZE(*bytecode);
+
+    *(buffer++) = *(bytecode++);
+
+    const size_t operand = deserialize_operand(bytecode, operand_size);
+    serialize_operand_le(buffer, operand, operand_size);
+
+    buffer += operand_size;
+    bytecode += operand_size;
+  }
+
+  // Character classes. NB> a character class is just a blob of byes
+  safe_memcpy(buffer, regex->classes, classes_size);
+  buffer += classes_size;
+
+  assert(buffer == buf + *size);
+
+  return buf;
+}
+
+regex_t *crex_load_regex(status_t *status, unsigned char *buffer, size_t size) {
+  return crex_load_regex_with_allocator(status, buffer, size, &default_allocator);
+}
+
+regex_t *crex_load_regex_with_allocator(status_t *status,
+                                        unsigned char *buffer,
+                                        size_t size,
+                                        const allocator_t *allocator) {
+#ifndef NDEBUG
+  // For a sanity check
+  unsigned char *buf = buffer;
+#endif
+
+  // At minimum, the buffer must contain the magic number, version byte, and scalars
+  if (size < 5 + 16) {
+    // FIXME
+    return NULL;
+  }
+
+  regex_t *regex = ALLOC(allocator, sizeof(regex_t));
+
+  // Magic number
+  if (memcmp(buffer, "crex", 4) != 0) {
+    // FIXME
+    return NULL;
+  }
+  buffer += 4;
+
+  // Version byte
+  if (*(buffer++) != 0) {
+    // FIXME
+    return NULL;
+  }
+
+  // Scalars
+  regex->size = deserialize_operand_le(buffer, 4);
+  regex->n_capturing_groups = deserialize_operand_le(buffer + 4, 4);
+  regex->n_classes = deserialize_operand_le(buffer + 8, 4);
+  regex->max_concurrent_states = deserialize_operand_le(buffer + 12, 4);
+  buffer += 16;
+
+  // Bytecode. Need to parse each operand as a little-endian number, then re-serialize it as a
+  // native integer
+
+  regex->bytecode = ALLOC(allocator, regex->size);
+
+  if (regex->bytecode == NULL) {
+    *status = CREX_E_NOMEM;
+    FREE(allocator, regex);
+    return NULL;
+  }
+
+  unsigned char *bytecode = regex->bytecode;
+  unsigned char *end = bytecode + regex->size;
+
+  while (bytecode != end) {
+    const size_t operand_size = VM_OPERAND_SIZE(*buffer);
+
+    *(bytecode++) = *(buffer++);
+
+    const size_t operand = deserialize_operand_le(buffer, operand_size);
+    serialize_operand(bytecode, operand, operand_size);
+
+    bytecode += operand_size;
+    buffer += operand_size;
+  }
+
+  // Character classes
+
+  const size_t classes_size = sizeof(char_class_t) * regex->n_classes;
+
+  regex->classes = ALLOC(allocator, classes_size);
+
+  if (regex->classes == NULL) {
+    *status = CREX_E_NOMEM;
+    FREE(allocator, regex->bytecode);
+    FREE(allocator, regex);
+  }
+
+  safe_memcpy(regex->classes, buffer, classes_size);
+  buffer += classes_size;
+
+  assert(buffer == buf + size);
+
+  *status = CREX_OK;
+  return regex;
+}
+
+#ifndef NDEBUG
 
 #include <stdio.h>
 
-const char *anchor_type_to_str(anchor_type_t type) {
+static const char *anchor_type_to_str(anchor_type_t type) {
   switch (type) {
   case AT_BOF:
     return "\\A";
@@ -2099,8 +2324,8 @@ static void print_char_class_bitmap(const unsigned char *bitmap, FILE *file) {
   fputc(']', file);
 }
 
-static void print_char_class(const char_classes_t *classes, size_t index, FILE *file) {
-  print_char_class_bitmap(classes->buffer[index].bitmap, file);
+static void print_char_class(const char_class_t *classes, size_t index, FILE *file) {
+  print_char_class_bitmap(classes[index].bitmap, file);
 }
 
 static void print_builtin_char_class(size_t index, FILE *file) {
@@ -2138,7 +2363,7 @@ status_t crex_print_tokenization(const char *pattern, size_t size, FILE *file) {
 
     case TT_CHAR_CLASS:
       fputs("TT_CHAR_CLASS ", file);
-      print_char_class(&classes, token.data.char_class_index, file);
+      print_char_class(classes.buffer, token.data.char_class_index, file);
       fputc('\n', file);
       break;
 
@@ -2209,6 +2434,7 @@ status_t crex_print_parsetree(const char *pattern, size_t size, FILE *file) {
       parse(&status, &n_capturing_groups, &classes, pattern, size, &default_allocator);
 
   if (tree == NULL) {
+    free(classes.buffer);
     return status;
   }
 
@@ -2245,7 +2471,7 @@ print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *cla
 
   case PT_CHAR_CLASS:
     fputs("(PT_CHAR_CLASS ", file);
-    print_char_class(classes, tree->data.char_class_index, file);
+    print_char_class(classes->buffer, tree->data.char_class_index, file);
     fputc(')', file);
     break;
 
@@ -2315,39 +2541,16 @@ print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *cla
   }
 }
 
-status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file) {
-  status_t status;
-
-  size_t n_capturing_groups;
-  char_classes_t classes = {0, 0, NULL};
-
-  parsetree_t *tree =
-      parse(&status, &n_capturing_groups, &classes, pattern, size, &default_allocator);
-
-  if (tree == NULL) {
-    free(classes.buffer);
-    return status;
-  }
-
-  bytecode_t result;
-  status = compile(&result, tree, &default_allocator);
-
-  destroy_parsetree(tree, &default_allocator);
-
-  if (status != CREX_OK) {
-    free(classes.buffer);
-    return status;
-  }
-
-  unsigned char *bytecode = result.bytecode;
+void crex_print_bytecode(const regex_t *regex, FILE *file) {
+  unsigned char *bytecode = regex->bytecode;
 
   for (;;) {
-    const size_t i = bytecode - result.bytecode;
-    assert(i <= result.size);
+    const size_t i = bytecode - regex->bytecode;
+    assert(i <= regex->size);
 
     fprintf(file, "%05zd", i);
 
-    if (i == result.size) {
+    if (i == regex->size) {
       fputc('\n', file);
       break;
     }
@@ -2381,7 +2584,7 @@ status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file)
       fputc(' ', file);
 
       if (opcode == VM_CHAR_CLASS) {
-        print_char_class(&classes, operand, file);
+        print_char_class(regex->classes, operand, file);
       } else {
         print_builtin_char_class(operand, file);
       }
@@ -2404,7 +2607,7 @@ status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file)
         destination = i + operand;
       }
 
-      assert(destination < result.size);
+      assert(destination < regex->size);
 
       fprintf(file, " %zu (=> %zu)\n", operand, destination);
 
@@ -2421,11 +2624,6 @@ status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file)
       fputc('\n', file);
     }
   }
-
-  free(classes.buffer);
-  free(result.bytecode);
-
-  return CREX_OK;
 }
 
 #endif
