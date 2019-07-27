@@ -1193,6 +1193,8 @@ enum {
   VM_JUMP,
   VM_SPLIT_PASSIVE,
   VM_SPLIT_EAGER,
+  VM_SPLIT_BACKWARDS_PASSIVE,
+  VM_SPLIT_BACKWARDS_EAGER,
   VM_WRITE_POINTER
 };
 
@@ -1207,8 +1209,12 @@ typedef struct {
   unsigned char *bytecode;
 } bytecode_t;
 
-static size_t unsigned_operand_size(size_t operand) {
+static size_t size_for_operand(size_t operand) {
   assert(operand <= 0xffffffffLU);
+
+  if (operand == 0) {
+    return 0;
+  }
 
   if (operand <= 0xffLU) {
     return 1;
@@ -1221,22 +1227,13 @@ static size_t unsigned_operand_size(size_t operand) {
   return 4;
 }
 
-static size_t signed_operand_size(long operand) {
-  assert(INT32_MIN <= operand && operand <= INT32_MAX);
-
-  if (INT8_MIN <= operand && operand <= INT8_MAX) {
-    return 1;
-  }
-
-  if (INT16_MIN <= operand && operand <= INT16_MAX) {
-    return 2;
-  }
-
-  return 4;
-}
-
-static void serialize_unsigned_operand(void *destination, size_t operand, size_t size) {
+static void serialize_operand(void *destination, size_t operand, size_t size) {
   switch (size) {
+  case 0: {
+    assert(operand == 0);
+    return;
+  }
+
   case 1: {
     assert(operand <= 0xffLU);
     uint8_t u8_operand = operand;
@@ -1262,35 +1259,11 @@ static void serialize_unsigned_operand(void *destination, size_t operand, size_t
   assert(0);
 }
 
-static void serialize_signed_operand(void *destination, long operand, size_t size) {
+static size_t deserialize_operand(void *source, size_t size) {
   switch (size) {
-  case 1: {
-    assert(INT8_MIN <= operand && operand <= INT8_MAX);
-    int8_t i8_operand = operand;
-    safe_memcpy(destination, &i8_operand, 1);
-    return;
-  }
+  case 0:
+    return 0;
 
-  case 2: {
-    assert(INT16_MIN <= operand && operand <= INT16_MAX);
-    int16_t i16_operand = operand;
-    safe_memcpy(destination, &i16_operand, 2);
-    return;
-  }
-
-  case 4: {
-    assert(INT32_MIN <= operand && operand <= INT32_MAX);
-    int32_t i32_operand = operand;
-    safe_memcpy(destination, &i32_operand, 4);
-    return;
-  }
-  }
-
-  assert(0);
-}
-
-static size_t deserialize_unsigned_operand(void *source, size_t size) {
-  switch (size) {
   case 1: {
     uint8_t u8_value;
     safe_memcpy(&u8_value, source, 1);
@@ -1307,31 +1280,6 @@ static size_t deserialize_unsigned_operand(void *source, size_t size) {
     uint32_t u32_value;
     safe_memcpy(&u32_value, source, 4);
     return u32_value;
-  }
-  }
-
-  assert(0);
-  return 0;
-}
-
-static long deserialize_signed_operand(void *source, size_t size) {
-  switch (size) {
-  case 1: {
-    int8_t i8_value;
-    safe_memcpy(&i8_value, source, 1);
-    return i8_value;
-  }
-
-  case 2: {
-    int16_t i16_value;
-    safe_memcpy(&i16_value, source, 2);
-    return i16_value;
-  }
-
-  case 4: {
-    int32_t i32_value;
-    safe_memcpy(&i32_value, source, 4);
-    return i32_value;
   }
   }
 
@@ -1362,7 +1310,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
   case PT_CHAR_CLASS:
   case PT_BUILTIN_CHAR_CLASS: {
     const size_t index = tree->data.char_class_index;
-    const size_t operand_size = unsigned_operand_size(index);
+    const size_t operand_size = size_for_operand(index);
 
     result->size = 1 + operand_size;
     result->bytecode = ALLOC(allocator, result->size);
@@ -1375,7 +1323,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
         (tree->type == PT_CHAR_CLASS) ? VM_CHAR_CLASS : VM_BUILTIN_CHAR_CLASS;
 
     *result->bytecode = VM_OP(opcode, operand_size);
-    serialize_unsigned_operand(result->bytecode + 1, index, operand_size);
+    serialize_operand(result->bytecode + 1, index, operand_size);
 
     break;
   }
@@ -1435,15 +1383,15 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
 
       result->size = left.size + right.size;
     } else {
-      const long jump_delta = right.size;
-      const size_t jump_operand_size = signed_operand_size(jump_delta);
+      const size_t jump_delta = right.size;
+      const size_t jump_operand_size = size_for_operand(jump_delta);
 
-      const long split_delta = left.size + 1 + jump_operand_size;
-      const size_t split_operand_size = signed_operand_size(split_delta);
+      const size_t split_delta = left.size + 1 + jump_operand_size;
+      const size_t split_operand_size = size_for_operand(split_delta);
 
       *(bytecode++) = VM_OP(VM_SPLIT_PASSIVE, split_operand_size);
 
-      serialize_signed_operand(bytecode, split_delta, split_operand_size);
+      serialize_operand(bytecode, split_delta, split_operand_size);
       bytecode += split_operand_size;
 
       safe_memcpy(bytecode, left.bytecode, left.size);
@@ -1451,7 +1399,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
 
       *(bytecode++) = VM_OP(VM_JUMP, jump_operand_size);
 
-      serialize_signed_operand(bytecode, jump_delta, jump_operand_size);
+      serialize_operand(bytecode, jump_delta, jump_operand_size);
       bytecode += jump_operand_size;
 
       safe_memcpy(bytecode, right.bytecode, right.size);
@@ -1517,13 +1465,13 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
 
       if (tree->type == PT_GREEDY_REPETITION) {
         leading_split_opcode = VM_SPLIT_PASSIVE;
-        trailing_split_opcode = VM_SPLIT_EAGER;
+        trailing_split_opcode = VM_SPLIT_BACKWARDS_EAGER;
       } else {
         leading_split_opcode = VM_SPLIT_EAGER;
-        trailing_split_opcode = VM_SPLIT_PASSIVE;
+        trailing_split_opcode = VM_SPLIT_BACKWARDS_PASSIVE;
       }
 
-      long trailing_split_delta;
+      size_t trailing_split_delta;
       size_t trailing_split_operand_size;
 
       // Because the source address for a jump or split is the address immediately after the
@@ -1534,13 +1482,13 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
       // into its own function, but this is the only instance of a backwards jump in the compiler
 
       {
-        long delta;
+        size_t delta;
         size_t operand_size;
 
         for (operand_size = 1; operand_size <= 4; operand_size *= 2) {
-          delta = -1 * (child.size + 1 + operand_size);
+          delta = child.size + 1 + operand_size;
 
-          if (signed_operand_size(delta) <= operand_size) {
+          if (size_for_operand(delta) <= operand_size) {
             break;
           }
         }
@@ -1549,12 +1497,12 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
         trailing_split_operand_size = operand_size;
       }
 
-      const long leading_split_delta = child.size + 1 + trailing_split_operand_size;
-      const size_t leading_split_operand_size = signed_operand_size(leading_split_delta);
+      const size_t leading_split_delta = child.size + 1 + trailing_split_operand_size;
+      const size_t leading_split_operand_size = size_for_operand(leading_split_delta);
 
       *(bytecode++) = VM_OP(leading_split_opcode, leading_split_operand_size);
 
-      serialize_signed_operand(bytecode, leading_split_delta, leading_split_operand_size);
+      serialize_operand(bytecode, leading_split_delta, leading_split_operand_size);
       bytecode += leading_split_operand_size;
 
       safe_memcpy(bytecode, child.bytecode, child.size);
@@ -1562,7 +1510,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
 
       *(bytecode++) = VM_OP(trailing_split_opcode, trailing_split_operand_size);
 
-      serialize_signed_operand(bytecode, trailing_split_delta, trailing_split_operand_size);
+      serialize_operand(bytecode, trailing_split_delta, trailing_split_operand_size);
       bytecode += trailing_split_operand_size;
 
       result->size = bytecode - result->bytecode;
@@ -1589,7 +1537,7 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
 
       // In general, this optimization leaves an unbounded amount of memory allocated but unused at
       // the end of the buffer; however, because the top level parsetree is necessarily a PT_GROUP,
-      // we always free it
+      // we always free it before yielding the final compiled regex
 
       unsigned char *end = result->bytecode + max_size;
       unsigned char *begin = end;
@@ -1599,10 +1547,10 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
         safe_memcpy(begin, child.bytecode, child.size);
 
         const long delta = end - begin;
-        const size_t operand_size = signed_operand_size(delta);
+        const size_t operand_size = size_for_operand(delta);
 
         begin -= operand_size;
-        serialize_signed_operand(begin, delta, operand_size);
+        serialize_operand(begin, delta, operand_size);
 
         *(--begin) = VM_OP(split_opcode, operand_size);
       }
@@ -1637,10 +1585,10 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
     const size_t leading_index = 2 * tree->data.group.index;
     const size_t trailing_index = leading_index + 1;
 
-    const size_t operand_size = unsigned_operand_size(leading_index);
-    assert(operand_size == unsigned_operand_size(trailing_index));
+    const size_t leading_operand_size = size_for_operand(leading_index);
+    const size_t trailing_operand_size = size_for_operand(trailing_index);
 
-    result->size = 1 + operand_size + child.size + 1 + operand_size;
+    result->size = 1 + leading_operand_size + child.size + 1 + trailing_operand_size;
     result->bytecode = ALLOC(allocator, result->size);
 
     if (result->bytecode == NULL) {
@@ -1650,18 +1598,18 @@ status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *alloc
 
     unsigned char *bytecode = result->bytecode;
 
-    *(bytecode++) = VM_OP(VM_WRITE_POINTER, operand_size);
+    *(bytecode++) = VM_OP(VM_WRITE_POINTER, leading_operand_size);
 
-    serialize_unsigned_operand(bytecode, leading_index, operand_size);
-    bytecode += operand_size;
+    serialize_operand(bytecode, leading_index, leading_operand_size);
+    bytecode += leading_operand_size;
 
     safe_memcpy(bytecode, child.bytecode, child.size);
     bytecode += child.size;
 
-    *(bytecode++) = VM_OP(VM_WRITE_POINTER, operand_size);
+    *(bytecode++) = VM_OP(VM_WRITE_POINTER, trailing_operand_size);
 
-    serialize_unsigned_operand(bytecode, trailing_index, operand_size);
-    bytecode += operand_size;
+    serialize_operand(bytecode, trailing_index, trailing_operand_size);
+    bytecode += trailing_operand_size;
 
     assert(result->size == (size_t)(bytecode - result->bytecode));
 
@@ -2058,35 +2006,6 @@ const char *anchor_type_to_str(anchor_type_t type) {
   }
 }
 
-const char *status_to_str(status_t status) {
-  switch (status) {
-  case CREX_OK:
-    return "CREX_OK";
-
-  case CREX_E_NOMEM:
-    return "CREX_E_NOMEM";
-
-  case CREX_E_BAD_ESCAPE:
-    return "CREX_E_BAD_ESCAPE";
-
-  case CREX_E_BAD_REPETITION:
-    return "CREX_E_BAD_REPETITION";
-
-  case CREX_E_BAD_CHARACTER_CLASS:
-    return "CREX_E_BAD_CHARACTER_CLASS";
-
-  case CREX_E_UNMATCHED_OPEN_PAREN:
-    return "CREX_E_UNMATCHED_OPEN_PAREN";
-
-  case CREX_E_UNMATCHED_CLOSE_PAREN:
-    return "CREX_E_UNMATCHED_CLOSE_PAREN";
-
-  default:
-    assert(0);
-    return NULL;
-  }
-}
-
 const char *opcode_to_str(unsigned char opcode) {
   switch (opcode) {
   case VM_CHARACTER:
@@ -2124,6 +2043,12 @@ const char *opcode_to_str(unsigned char opcode) {
 
   case VM_SPLIT_EAGER:
     return "VM_SPLIT_EAGER";
+
+  case VM_SPLIT_BACKWARDS_PASSIVE:
+    return "VM_SPLIT_BACKWARDS_PASSIVE";
+
+  case VM_SPLIT_BACKWARDS_EAGER:
+    return "VM_SPLIT_BACKWARDS_EAGER";
 
   case VM_WRITE_POINTER:
     return "VM_WRITE_POINTER";
@@ -2430,22 +2355,22 @@ status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file)
     const unsigned char byte = *(bytecode++);
 
     const unsigned char opcode = VM_OPCODE(byte);
+
     const size_t operand_size = VM_OPERAND_SIZE(byte);
 
-    const char *str = opcode_to_str(opcode);
+    const size_t operand = deserialize_operand(bytecode, operand_size);
+    bytecode += operand_size;
 
-    fprintf(file, " %s", str);
+    fprintf(file, " %s", opcode_to_str(opcode));
 
     switch (opcode) {
     case VM_CHARACTER: {
-      assert(operand_size == 1);
+      assert(operand <= 0xffu);
 
-      const char character = *(bytecode++);
-
-      if (isprint(character) || character == ' ') {
-        fprintf(file, " '%c'\n", character);
+      if (isprint(operand) || operand == ' ') {
+        fprintf(file, " '%c'\n", (char)operand);
       } else {
-        fprintf(file, " \\x%02x\n", (unsigned int)character);
+        fprintf(file, " \\x%02zx\n", operand);
       }
 
       break;
@@ -2453,17 +2378,12 @@ status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file)
 
     case VM_CHAR_CLASS:
     case VM_BUILTIN_CHAR_CLASS: {
-      assert(operand_size > 0);
-
-      const size_t index = deserialize_unsigned_operand(bytecode, operand_size);
-      bytecode += operand_size;
-
       fputc(' ', file);
 
       if (opcode == VM_CHAR_CLASS) {
-        print_char_class(&classes, index, file);
+        print_char_class(&classes, operand, file);
       } else {
-        print_builtin_char_class(index, file);
+        print_builtin_char_class(operand, file);
       }
 
       fputc('\n', file);
@@ -2473,28 +2393,26 @@ status_t crex_print_bytecode(const char *pattern, const size_t size, FILE *file)
 
     case VM_JUMP:
     case VM_SPLIT_PASSIVE:
-    case VM_SPLIT_EAGER: {
-      assert(operand_size > 0);
+    case VM_SPLIT_EAGER:
+    case VM_SPLIT_BACKWARDS_PASSIVE:
+    case VM_SPLIT_BACKWARDS_EAGER: {
+      size_t destination;
 
-      const long delta = deserialize_signed_operand(bytecode, operand_size);
-      bytecode += operand_size;
+      if (opcode == VM_SPLIT_BACKWARDS_PASSIVE || opcode == VM_SPLIT_BACKWARDS_EAGER) {
+        destination = i - operand;
+      } else {
+        destination = i + operand;
+      }
 
-      const size_t destination = i + delta;
       assert(destination < result.size);
 
-      fprintf(file, " %ld (=> %zu)\n", delta, destination);
+      fprintf(file, " %zu (=> %zu)\n", operand, destination);
 
       break;
     }
 
     case VM_WRITE_POINTER: {
-      assert(operand_size > 0);
-
-      const size_t index = deserialize_unsigned_operand(bytecode, operand_size);
-      bytecode += operand_size;
-
-      fprintf(file, " %zu\n", index);
-
+      fprintf(file, " %zu\n", operand);
       break;
     }
 

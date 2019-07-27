@@ -154,48 +154,39 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
 
         if (bitmap_test(visited, instr_pointer)) {
           keep = 0;
+          break;
         }
 
         bitmap_set(visited, instr_pointer);
 
         const unsigned char byte = regex->bytecode[instr_pointer++];
+
         const unsigned char opcode = VM_OPCODE(byte);
         const size_t operand_size = VM_OPERAND_SIZE(byte);
 
+        assert(instr_pointer <= regex->size - operand_size);
+
+        size_t operand = deserialize_operand(regex->bytecode + instr_pointer, operand_size);
+        instr_pointer += operand_size;
+
         if (opcode == VM_CHARACTER) {
-          assert(operand_size == 1);
-          assert(instr_pointer <= regex->size - 1);
+          assert(operand <= 0xffu);
 
-          const unsigned char expected_character = regex->bytecode[instr_pointer++];
-
-          if (character != expected_character) {
+          // FIXME: make character/prev_character size_t?
+          if ((size_t)character != operand) {
             keep = 0;
           }
-
           break;
         }
 
         if (opcode == VM_CHAR_CLASS) {
-          assert(instr_pointer <= regex->size - operand_size);
-
-          const size_t index =
-              deserialize_unsigned_operand(regex->bytecode + instr_pointer, operand_size);
-          instr_pointer += operand_size;
-
-          keep = character != -1 && bitmap_test(regex->classes[index].bitmap, character);
-
+          keep = character != -1 && bitmap_test(regex->classes[operand].bitmap, character);
           break;
         }
 
         if (opcode == VM_BUILTIN_CHAR_CLASS) {
-          // <= 255 distinct builtin character classes
-          assert(operand_size == 1);
-
-          assert(instr_pointer <= regex->size - 1);
-
-          const size_t index = regex->bytecode[instr_pointer++];
-          keep = character != -1 && BCC_TEST(index, character);
-
+          assert(operand <= N_BUILTIN_CLASSES);
+          keep = character != -1 && BCC_TEST(operand, character);
           break;
         }
 
@@ -225,35 +216,38 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
         }
 
         case VM_JUMP: {
-          assert(operand_size != 0);
-          assert(instr_pointer <= regex->size - operand_size);
-
-          const long delta =
-              deserialize_signed_operand(regex->bytecode + instr_pointer, operand_size);
-          instr_pointer += operand_size;
-
-          instr_pointer += delta;
-
+          instr_pointer += operand;
           break;
         }
 
         case VM_SPLIT_PASSIVE:
-        case VM_SPLIT_EAGER: {
-          assert(operand_size != 0);
-          assert(instr_pointer <= regex->size - operand_size);
-
-          const long delta =
-              deserialize_signed_operand(regex->bytecode + instr_pointer, operand_size);
-          instr_pointer += operand_size;
-
+        case VM_SPLIT_EAGER:
+        case VM_SPLIT_BACKWARDS_PASSIVE:
+        case VM_SPLIT_BACKWARDS_EAGER: {
           size_t split_pointer;
 
-          if (opcode == VM_SPLIT_PASSIVE) {
-            split_pointer = instr_pointer + delta;
-          } else {
+          switch (opcode) {
+          case VM_SPLIT_PASSIVE:
+            split_pointer = instr_pointer + operand;
+            break;
+
+          case VM_SPLIT_EAGER:
             split_pointer = instr_pointer;
-            instr_pointer += delta;
+            instr_pointer += operand;
+            break;
+
+          case VM_SPLIT_BACKWARDS_PASSIVE:
+            split_pointer = instr_pointer - operand;
+            break;
+
+          case VM_SPLIT_BACKWARDS_EAGER:
+            split_pointer = instr_pointer;
+            instr_pointer -= operand;
+            break;
           }
+
+          assert(instr_pointer <= regex->size);
+          assert(split_pointer <= regex->size);
 
           if (!bitmap_test(visited, split_pointer)) {
             if (!state_list_push_copy(&list, state, split_pointer)) {
@@ -265,25 +259,19 @@ NAME(RESULT_DECLARATION, context_t *context, const regex_t *regex, const char *s
         }
 
         case VM_WRITE_POINTER: {
-          assert(operand_size != 0);
-
-          const size_t index =
-              deserialize_unsigned_operand(regex->bytecode + instr_pointer, operand_size);
-          instr_pointer += operand_size;
-
 #ifdef MATCH_BOOLEAN
-          (void)index;
+          (void)operand;
 #elif defined(MATCH_LOCATION)
           const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
 
-          if (index <= 1) {
-            pointer_buffer[index] = str;
+          if (operand <= 1) {
+            pointer_buffer[operand] = str;
           }
 #elif defined(MATCH_GROUPS)
           const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
 
-          assert(index < n_pointers);
-          pointer_buffer[index] = str;
+          assert(operand < n_pointers);
+          pointer_buffer[operand] = str;
 #endif
 
           break;
