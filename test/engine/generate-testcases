@@ -1,3 +1,5 @@
+#!/usr/bin/env ruby
+
 module Spec
   def pattern(pat)
     raise "nested call to pattern" unless @active_pattern_id.nil?
@@ -16,16 +18,14 @@ module Spec
     testcases << [@active_pattern_id, str, groups]
   end
 
-  def emit
-    puts("#include \"../spec/types.h\"")
+  def emit(file)
+    file.puts("const size_t n_patterns = #{patterns.size};")
 
-    puts("const size_t n_patterns = #{patterns.size};")
+    file.puts("const pattern_defn_t pattern_defns[] = {")
+    file.puts(patterns.map { |pattern| "  {#{pattern.inspect}, #{pattern.size}}" }.join(",\n"))
+    file.puts("};")
 
-    puts("const pattern_defn_t pattern_defns[] = {")
-    puts(patterns.map { |pattern| "  {#{pattern.inspect}, #{pattern.size}}" }.join(",\n"))
-    puts("};")
-
-    puts("const size_t n_testcases = #{testcases.size};")
+    file.puts("const size_t n_testcases = #{testcases.size};")
 
     serialized_cases = testcases.map do |pattern_id, str, groups|
       if groups.nil?
@@ -52,9 +52,9 @@ module Spec
       "  {#{pattern_id}, #{str.inspect}, #{str.size}, #{groups.nil? ? 0 : 1}, {#{serialized_groups}}}"
     end
 
-    puts("const testcase_t testcases[] = {")
-    puts(serialized_cases.join(",\n"))
-    puts("};")
+    file.puts("const testcase_t testcases[] = {")
+    file.puts(serialized_cases.join(",\n"))
+    file.puts("};")
   end
 
   private
@@ -70,9 +70,19 @@ end
 
 include Spec
 
-Dir.glob('**/*.rb', base: __dir__) do |path|
+if ARGV.length != 2
+  $stderr.puts("usage: #{$0} <output file> <dependency file>")
+  exit(1)
+end
+
+deps = [__FILE__]
+
+Dir.glob('*.rb', base: __dir__) do |path|
+  deps << "#{File.dirname(__FILE__)}/#{path}"
   next if path == File.basename(__FILE__)
   require_relative(path)
 end
 
-emit
+File.write(ARGV[1], "#{ARGV[0]}: #{deps.join(' ')}\n")
+
+emit(File.open(ARGV[0], 'w'))

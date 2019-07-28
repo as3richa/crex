@@ -2063,10 +2063,7 @@ unsigned char *crex_dump_regex_with_allocator(status_t *status,
 
   unsigned char *buffer = ALLOC(allocator, *size);
 
-#ifndef NDEBUG
-  // For a sanity check
   unsigned char *buf = buffer;
-#endif
 
   if (buffer == NULL) {
     *status = CREX_E_NOMEM;

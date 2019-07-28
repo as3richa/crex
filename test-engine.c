@@ -5,8 +5,29 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../crex.h"
-#include "types.h"
+#define MAX_GROUPS 100
+
+typedef struct {
+  const char *str;
+  size_t size;
+} pattern_defn_t;
+
+typedef struct {
+  size_t pattern_index;
+
+  const char *str;
+  size_t size;
+
+  int is_match;
+
+  struct {
+    size_t begin;
+    size_t end;
+  } groups[MAX_GROUPS];
+} testcase_t;
+
+#include "build/engine-testcases.h"
+#include "crex.h"
 
 #define MAX_QUOTED_LENGTH 50000
 #define MAX_TESTS 1000000
@@ -124,8 +145,8 @@ int main(int argc, char **argv) {
     quote(quoted_str, str, size);
 
     int is_match;
-    crex_slice_t find_result;
-    crex_slice_t groups[MAX_GROUPS];
+    crex_match_t find_result;
+    crex_match_t groups[MAX_GROUPS];
 
     assert(crex_is_match(&is_match, context, regex, str, size) == CREX_OK);
     assert(crex_find(&find_result, context, regex, str, size) == CREX_OK);
@@ -161,8 +182,8 @@ int main(int argc, char **argv) {
     int okay = 1;
 
     for (size_t j = 0; j < n_capturing_groups; j++) {
-      const crex_slice_t *slice = &groups[j];
-      const crex_slice_t expected = {str + testcase->groups[j].begin,
+      const crex_match_t *slice = &groups[j];
+      const crex_match_t expected = {str + testcase->groups[j].begin,
                                      str + testcase->groups[j].end};
 
       if (slice->begin == expected.begin && slice->end == expected.end) {
