@@ -905,7 +905,10 @@ WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
         assert(0);
       }
 
-      CHECK_ERRORS(push_tree(&trees, tree, allocator), CREX_E_NOMEM);
+      if (!push_tree(&trees, tree, allocator)) {
+        FREE(allocator, tree);
+        CHECK_ERRORS(0, CREX_E_NOMEM);
+      }
 
       break;
     }
@@ -1028,7 +1031,6 @@ static int push_tree(tree_stack_t *trees, parsetree_t *tree, const allocator_t *
     }
 
     safe_memcpy(data, trees->data, sizeof(parsetree_t *) * trees->capacity);
-
     FREE(allocator, trees->data);
 
     trees->data = data;
@@ -1049,7 +1051,12 @@ static int push_empty(tree_stack_t *trees, const allocator_t *allocator) {
 
   tree->type = PT_EMPTY;
 
-  return push_tree(trees, tree, allocator);
+  if (!push_tree(trees, tree, allocator)) {
+    FREE(allocator, tree);
+    return 0;
+  }
+
+  return 1;
 }
 
 static void destroy_tree_stack(tree_stack_t *trees, const allocator_t *allocator) {

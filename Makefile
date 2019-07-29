@@ -20,16 +20,20 @@ DUMPER_SOURCE := crexdump.c
 DUMPER_OBJECT := build/crexdump.o
 DUMPER_BINARY := bin/crexdump
 
-ENGINE_TEST_SOURCE := test-engine.c
-ENGINE_TEST_OBJECT := build/test-engine.o
-ENGINE_TEST_BINARY := bin/test-engine
-ENGINE_TEST_TESTCASES := build/engine-testcases.h
+TEST_ENGINE_SOURCE := test-engine.c
+TEST_ENGINE_OBJECT := build/test-engine.o
+TEST_ENGINE_BINARY := bin/test-engine
+TEST_ENGINE_TESTCASES := build/engine-testcases.h
+
+TEST_CLEANUP_SOURCE := test-cleanup.c
+TEST_CLEANUP_OBJECT := build/test-cleanup.o
+TEST_CLEANUP_BINARY := bin/test-cleanup
 
 DEP_FILES := $(shell find build -name "*.in")
 
 AR ?= ar
 
-.PHONY: all clean test
+.PHONY: all clean tests run-tests
 
 .PRECIOUS: build/%.o bin/%
 
@@ -37,8 +41,11 @@ all: $(STATIC_LIBRARY) $(DYNAMIC_LIBRARY)
 
 tools: $(EXAMINER_BINARY) $(DUMPER_BINARY)
 
-test: $(ENGINE_TEST_BINARY)
-	$(ENGINE_TEST_BINARY)
+tests: $(TEST_ENGINE_BINARY) $(TEST_CLEANUP_BINARY)
+
+run-tests: tests
+	$(TEST_ENGINE_BINARY)
+	$(TEST_CLEANUP_BINARY)
 
 $(STATIC_LIBRARY): $(LIBRARY_OBJECT)
 	$(AR) rcs $@ $^
@@ -52,17 +59,18 @@ build/%.o: %.c
 bin/%: build/%.o $(STATIC_LIBRARY)
 	$(CC) $(CFLAGS) -o $@ $^
 
-$(ENGINE_TEST_OBJECT): $(ENGINE_TEST_SOURCE) $(ENGINE_TEST_TESTCASES)
+$(TEST_ENGINE_OBJECT): $(TEST_ENGINE_SOURCE) $(TEST_ENGINE_TESTCASES)
 	$(CC) -MMD -MF $(@:.o=.in) $(CFLAGS) -c -o $@ $<
 
-$(ENGINE_TEST_TESTCASES):
+$(TEST_ENGINE_TESTCASES):
 	test/engine/generate-testcases $@ $(@:.h=.in)
 
 clean:
 	rm -f $(LIBRARY_OBJECT) $(DYNAMIC_LIBRARY) $(STATIC_LIBRARY)
 	rm -f $(EXAMINER_OBJECT) $(EXAMINER_BINARY)
 	rm -f $(DUMPER_OBJECT) $(DUMPER_BINARY)
-	rm -f $(ENGINE_TEST_TESTCASES) $(ENGINE_TEST_OBJECT) $(ENGINE_TEST_BINARY)
+	rm -f $(TEST_ENGINE_TESTCASES) $(TEST_ENGINE_OBJECT) $(TEST_ENGINE_BINARY)
+	rm -f $(TEST_CLEANUP_OBJECT) $(TEST_CLEANUP_BINARY)
 	rm -f $(DEP_FILES)
 
 include $(DEP_FILES)
