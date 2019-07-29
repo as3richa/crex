@@ -1,2 +1,4 @@
 build/
 bin/
+libcrex.a
+libcrex.so

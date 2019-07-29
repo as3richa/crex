@@ -148,9 +148,20 @@ int main(int argc, char **argv) {
     crex_match_t find_result;
     crex_match_t groups[MAX_GROUPS];
 
-    assert(crex_is_match(&is_match, context, regex, str, size) == CREX_OK);
-    assert(crex_find(&find_result, context, regex, str, size) == CREX_OK);
-    assert(crex_match_groups(groups, context, regex, str, size) == CREX_OK);
+    if (crex_is_match(&is_match, context, regex, str, size) != CREX_OK) {
+      // FIXME
+      return 1;
+    }
+
+    if (crex_find(&find_result, context, regex, str, size) != CREX_OK) {
+      // FIXME
+      return 1;
+    }
+
+    if (crex_match_groups(groups, context, regex, str, size) != CREX_OK) {
+      // FIXME
+      return 1;
+    }
 
     if (testcase->is_match && !is_match) {
       printf(RED("%04zu: expected /%s/ to match %s, but it did not\n"), i, pattern, quoted_str);
