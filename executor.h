@@ -15,7 +15,8 @@
 
 #endif
 
-status_t NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t size) {
+PUBLIC status_t
+NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t size) {
   unsigned char *visited;
 
   const size_t visited_size = bitmap_size_for_bits(regex->size);

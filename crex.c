@@ -29,7 +29,7 @@ typedef struct {
   unsigned char bitmap[CHAR_CLASS_BITMAP_SIZE];
 } builtin_char_class_t;
 
-builtin_char_class_t builtin_classes[] = {
+static builtin_char_class_t builtin_classes[] = {
     {"alnum", 5, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0xfe, 0xff, 0xff,
                   0x07, 0xfe, 0xff, 0xff, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
@@ -210,7 +210,7 @@ typedef struct {
   char_class_t *buffer;
 } char_classes_t;
 
-WARN_UNUSED_RESULT size_t parse_size(const char *begin, const char *end);
+WARN_UNUSED_RESULT static size_t parse_size(const char *begin, const char *end);
 
 WARN_UNUSED_RESULT static status_t lex_char_class(char_classes_t *classes,
                                                   token_t *token,
@@ -830,12 +830,12 @@ WARN_UNUSED_RESULT static int push_operator(tree_stack_t *trees,
 WARN_UNUSED_RESULT static int
 pop_operator(tree_stack_t *trees, operator_stack_t *operators, const allocator_t *allocator);
 
-WARN_UNUSED_RESULT parsetree_t *parse(status_t *status,
-                                      size_t *n_capturing_groups,
-                                      char_classes_t *classes,
-                                      const char *str,
-                                      size_t size,
-                                      const allocator_t *allocator) {
+WARN_UNUSED_RESULT static parsetree_t *parse(status_t *status,
+                                             size_t *n_capturing_groups,
+                                             char_classes_t *classes,
+                                             const char *str,
+                                             size_t size,
+                                             const allocator_t *allocator) {
   const char *eof = str + size;
 
   tree_stack_t trees = {0, 0, NULL};
@@ -1345,7 +1345,8 @@ static size_t deserialize_operand_le(void *source, size_t size) {
   }
 }
 
-status_t compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
+WARN_UNUSED_RESULT static status_t
+compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
   switch (tree->type) {
   case PT_EMPTY:
     result->size = 0;
@@ -1893,21 +1894,27 @@ static status_t reserve(context_t *context, const regex_t *regex, size_t n_point
 
 /** Public API **/
 
+#if defined(__GNUC__) || defined(__clang__)
+#define PUBLIC __attribute__((visibility("default")))
+#else
+#define PUBLIC
+#endif
+
 // For brevity
 typedef crex_match_t match_t;
 
-regex_t *crex_compile(status_t *status, const char *pattern, size_t size) {
+PUBLIC regex_t *crex_compile(status_t *status, const char *pattern, size_t size) {
   return crex_compile_with_allocator(status, pattern, size, &default_allocator);
 }
 
-regex_t *crex_compile_str(status_t *status, const char *pattern) {
+PUBLIC regex_t *crex_compile_str(status_t *status, const char *pattern) {
   return crex_compile(status, pattern, strlen(pattern));
 }
 
-regex_t *crex_compile_with_allocator(status_t *status,
-                                     const char *pattern,
-                                     size_t size,
-                                     const allocator_t *allocator) {
+PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
+                                            const char *pattern,
+                                            size_t size,
+                                            const allocator_t *allocator) {
   regex_t *regex = ALLOC(allocator, sizeof(regex_t));
 
   if (regex == NULL) {
@@ -1980,11 +1987,12 @@ regex_t *crex_compile_with_allocator(status_t *status,
   return regex;
 }
 
-context_t *crex_create_context(status_t *status) {
+PUBLIC context_t *crex_create_context(status_t *status) {
   return crex_create_context_with_allocator(status, &default_allocator);
 }
 
-context_t *crex_create_context_with_allocator(crex_status_t *status, const allocator_t *allocator) {
+PUBLIC context_t *crex_create_context_with_allocator(crex_status_t *status,
+                                                     const allocator_t *allocator) {
   context_t *context = ALLOC(allocator, sizeof(context_t));
 
   if (context == NULL) {
@@ -2003,18 +2011,18 @@ context_t *crex_create_context_with_allocator(crex_status_t *status, const alloc
   return context;
 }
 
-size_t crex_regex_n_capturing_groups(const regex_t *regex) {
+PUBLIC size_t crex_regex_n_capturing_groups(const regex_t *regex) {
   return regex->n_capturing_groups;
 }
 
-void crex_destroy_regex(regex_t *regex) {
+PUBLIC void crex_destroy_regex(regex_t *regex) {
   void *context = regex->allocator_context;
   regex->free(context, regex->bytecode);
   regex->free(context, regex->classes);
   regex->free(context, regex);
 }
 
-void crex_destroy_context(context_t *context) {
+PUBLIC void crex_destroy_context(context_t *context) {
   const allocator_t *allocator = &context->allocator;
   FREE(allocator, context->visited);
   FREE(allocator, context->buffer);
@@ -2024,46 +2032,53 @@ void crex_destroy_context(context_t *context) {
 #define MATCH_BOOLEAN
 #include "executor.h" // crex_is_match
 
-status_t
-crex_is_match_str(int *is_match, context_t *context, const regex_t *regex, const char *str) {
+PUBLIC status_t crex_is_match_str(int *is_match,
+                                  context_t *context,
+                                  const regex_t *regex,
+                                  const char *str) {
   return crex_is_match(is_match, context, regex, str, strlen(str));
 }
 
 #define MATCH_LOCATION
 #include "executor.h" // crex_find
 
-status_t crex_find_str(match_t *match, context_t *context, const regex_t *regex, const char *str) {
+PUBLIC status_t crex_find_str(match_t *match,
+                              context_t *context,
+                              const regex_t *regex,
+                              const char *str) {
   return crex_find(match, context, regex, str, strlen(str));
 }
 
 #define MATCH_GROUPS
 #include "executor.h" // crex_match_groups
 
-status_t
-crex_match_groups_str(match_t *matches, context_t *context, const regex_t *regex, const char *str) {
+PUBLIC status_t crex_match_groups_str(match_t *matches,
+                                      context_t *context,
+                                      const regex_t *regex,
+                                      const char *str) {
   return crex_match_groups(matches, context, regex, str, strlen(str));
 }
 
-status_t crex_context_reserve_is_match(context_t *context, const regex_t *regex) {
+PUBLIC status_t crex_context_reserve_is_match(context_t *context, const regex_t *regex) {
   return reserve(context, regex, 0);
 }
 
-status_t crex_context_reserve_find(context_t *context, const regex_t *regex) {
+PUBLIC status_t crex_context_reserve_find(context_t *context, const regex_t *regex) {
   return reserve(context, regex, 2);
 }
 
-status_t crex_context_reserve_match_groups(context_t *context, const regex_t *regex) {
+PUBLIC status_t crex_context_reserve_match_groups(context_t *context, const regex_t *regex) {
   return reserve(context, regex, 2 * regex->n_capturing_groups);
 }
 
-unsigned char *crex_dump_regex(status_t *status, size_t *size, const regex_t *regex) {
+PUBLIC unsigned char *crex_dump_regex(status_t *status, size_t *size, const regex_t *regex) {
   return crex_dump_regex_with_allocator(status, size, regex, &default_allocator);
 }
 
-unsigned char *crex_dump_regex_with_allocator(status_t *status,
-                                              size_t *size,
-                                              const regex_t *regex,
-                                              const allocator_t *allocator) {
+PUBLIC unsigned char *crex_dump_regex_with_allocator(status_t *status,
+                                                     size_t *size,
+                                                     const regex_t *regex,
+                                                     const allocator_t *allocator) {
   const size_t classes_size = sizeof(char_class_t) * regex->n_classes;
 
   *size = 5 + 16 + regex->size + classes_size;
@@ -2117,14 +2132,14 @@ unsigned char *crex_dump_regex_with_allocator(status_t *status,
   return buf;
 }
 
-regex_t *crex_load_regex(status_t *status, unsigned char *buffer, size_t size) {
+PUBLIC regex_t *crex_load_regex(status_t *status, unsigned char *buffer, size_t size) {
   return crex_load_regex_with_allocator(status, buffer, size, &default_allocator);
 }
 
-regex_t *crex_load_regex_with_allocator(status_t *status,
-                                        unsigned char *buffer,
-                                        size_t size,
-                                        const allocator_t *allocator) {
+PUBLIC regex_t *crex_load_regex_with_allocator(status_t *status,
+                                               unsigned char *buffer,
+                                               size_t size,
+                                               const allocator_t *allocator) {
 #ifndef NDEBUG
   // For a sanity check
   unsigned char *buf = buffer;

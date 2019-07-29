@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  printf("size_t size = %zu\n", size);
+  printf("size_t size = %zu;\n", size);
 
   printf("unsigned char* buffer = {");
 

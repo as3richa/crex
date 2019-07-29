@@ -1,6 +1,10 @@
 #ifndef CREX_H
 #define CREX_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
 #define CREX_WARN_UNUSED_RESULT __attribute__((warn_unused_result))
 #else
@@ -109,5 +113,9 @@ crex_load_regex(crex_status_t *status, unsigned char *buffer, size_t size);
 
 CREX_WARN_UNUSED_RESULT crex_regex_t *crex_load_regex_with_allocator(
     crex_status_t *status, unsigned char *buffer, size_t size, const crex_allocator_t *allocator);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

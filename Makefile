@@ -1,4 +1,4 @@
-CFLAGS := $(CFLAGS) -std=c99 -pedantic -Wall -Wextra -fPIC
+CFLAGS := $(CFLAGS) -std=c99 -pedantic -Wall -Wextra -fPIC -s -Wl,--version-script=libcrex.version
 
 ifeq ($(ENV),development)
 	CFLAGS := $(CFLAGS) -g -O0
@@ -9,7 +9,7 @@ endif
 LIBRARY_SOURCE := crex.c
 LIBRARY_HEADERS := crex.h executor.h
 LIBRARY_OBJECT := build/crex.o
-DYNAMIC_LIBRARY := libcrex.so
+DYNAMIC_LIBRARY := libcrex.so.1
 STATIC_LIBRARY := libcrex.a
 
 EXAMINER_SOURCE := crexamine.c
@@ -32,6 +32,7 @@ TEST_CLEANUP_BINARY := bin/test-cleanup
 DEP_FILES := $(shell find build -name "*.in")
 
 AR ?= ar
+STRIP ?= strip
 
 .PHONY: all clean tests run-tests
 
@@ -49,6 +50,7 @@ run-tests: tests
 
 $(STATIC_LIBRARY): $(LIBRARY_OBJECT)
 	$(AR) rcs $@ $^
+	$(STRIP) -x $@
 
 $(DYNAMIC_LIBRARY): $(LIBRARY_OBJECT)
 	$(CC) $(CFLAGS) -shared -o $@ $^

@@ -1,0 +1,4 @@
+LIBCREX_1 {
+  global: crex_*;
+  local: *;  
+};
