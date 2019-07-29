@@ -7,7 +7,17 @@
 
 #include "crex.h"
 
-#define MAX_ALLOCATIONS 8192
+const char *argv0;
+
+#define DIE(message)                                                                               \
+  do {                                                                                             \
+    fprintf(stderr, "\x1b[31m%s: %s:%d: %s\x1b[0m\n", argv0, __FILE__, __LINE__, message);         \
+    abort();                                                                                       \
+  } while (0)
+
+#define MAX_CAPTURING_GROUPS 128
+
+#define MAX_ALLOCATIONS 1024
 
 typedef struct {
   size_t allocs;
@@ -37,8 +47,7 @@ void *metered_alloc(void *context, size_t size) {
   allocator->pointers[index] = malloc(size);
 
   if (allocator->pointers[index] == NULL) {
-    fputs("malloc unexpectedly returned NULL (too little memory?)\n", stderr);
-    exit(1);
+    DIE("malloc unexpectedly returned NULL");
   }
 
   return allocator->pointers[index];
@@ -62,16 +71,39 @@ void metered_free(void *context, void *pointer) {
     }
   }
 
-  fputs("free called with a pointer that was never alloced\n", stderr);
-  exit(1);
+  DIE("free called with an un-alloced pointer");
 }
 
-#define N_PATTERNS 1
+#define N_PATTERNS 5
 
 static const char *patterns[N_PATTERNS] = {
-    "\\A(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\z"};
+    "a*",
+    "a{13,37}",
+    "(?:alpha)??",
+    "([1-9][0-9]*)(?:\\.([0-9]+))?(?:[eE](-?[1-9][0-9]*))?",
+    "\\A(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\z",
+};
 
-int main(void) {
+#define N_STRINGS 10
+
+static const char *strings[N_STRINGS] = {
+    "",
+    "aaa",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "alpha",
+    "1.3e37",
+    "0.00000000000001",
+    "192.168.1.254",
+    "the quick brown fox jumps over the lazy dogs",
+    "f7f376a1fcd0d0e11a10ed1b6577c99784d3a6bbe669b1d13fae43eb64634f6e",
+    "*\x13\xc1\x97\x1e\n|\xde@\xd6\xe4\xa4u\xda|\xc5kA-\x1a\xb5\x0e\x0c "
+    "\xdd\xd8u\xf0x)G\xedW'A\x9c<\x81\x08\xa4",
+};
+
+int main(int argc, char **argv) {
+  (void)argc;
+  argv0 = argv[0];
+
   metered_allocator_t allocator;
   const crex_allocator_t crex_allocator = {&allocator, metered_alloc, metered_free};
 
@@ -83,80 +115,96 @@ int main(void) {
     const char *pattern = patterns[i];
     const size_t size = strlen(pattern);
 
-    allocator.allocs = 0;
-    allocator.frees = 0;
-    allocator.quota = MAX_ALLOCATIONS;
-
-    crex_status_t status;
-    crex_regex_t *regex = crex_compile_with_allocator(&status, pattern, size, &crex_allocator);
-
-    if (regex == NULL) {
-      if (status == CREX_E_NOMEM) {
-        fprintf(stderr, "/%s/: MAX_ALLOCATIONS too low\n", pattern);
-      } else {
-        fprintf(stderr,
-                "/%s/: unexpected status from crex_compile_with_allocator: %d\n",
-                pattern,
-                status);
-      }
-
-      return 1;
-    }
-
-    crex_destroy_regex(regex);
-
-    if (allocator.allocs != allocator.frees) {
-      fprintf(stderr,
-              "/%s/: successful compilation with quota %zu, %zu alloc(s) but only %zu free(s)\n",
-              pattern,
-              allocator.quota,
-              allocator.allocs,
-              allocator.frees);
-
-      return 1;
-    }
-
-    const size_t allocs_required = allocator.allocs;
-
-    printf("/%s/: compiled with %zu alloc(s)\n", pattern, allocs_required);
-
-    for (allocator.quota = 0; allocator.quota < allocs_required; allocator.quota++) {
+    for (allocator.quota = 0; allocator.quota <= MAX_ALLOCATIONS; allocator.quota++) {
       allocator.allocs = 0;
       allocator.frees = 0;
 
-      regex = crex_compile_with_allocator(&status, pattern, size, &crex_allocator);
+      crex_status_t status;
+      crex_regex_t *regex = crex_compile_with_allocator(&status, pattern, size, &crex_allocator);
 
-      if (regex != NULL) {
-        fprintf(stderr,
-                "/%s/: unexpectedly successful compilation with quota %zu\n",
-                pattern,
-                allocator.quota);
-        return 1;
+      if (regex == NULL) {
+        if (status == CREX_E_NOMEM) {
+          if (allocator.allocs != allocator.frees) {
+            DIE("mismatched allocs/frees");
+          }
+
+          continue;
+        }
+
+        DIE("unexpected status");
       }
 
-      if (status != CREX_E_NOMEM) {
-        fprintf(stderr,
-                "/%s/: unexpected status from crex_compile_with_allocator: %d\n",
-                pattern,
-                status);
-        return 1;
+      crex_context_t *context = crex_create_context_with_allocator(&status, &crex_allocator);
+
+      if (context == NULL) {
+        if (status == CREX_E_NOMEM) {
+          crex_destroy_regex(regex);
+
+          if (allocator.allocs != allocator.frees) {
+            DIE("mismatched allocs/frees");
+          }
+
+          continue;
+        }
+
+        DIE("unexpected status");
       }
+
+      for (size_t j = 0; j < N_STRINGS; j++) {
+        const char *str = strings[j];
+
+        int is_match;
+        status = crex_is_match_str(&is_match, context, regex, str);
+
+        if (status == CREX_E_NOMEM) {
+          break;
+        }
+
+        if (status != CREX_OK) {
+          DIE("unexpected status");
+        }
+
+        crex_match_t match;
+        status = crex_find_str(&match, context, regex, str);
+
+        if (status == CREX_E_NOMEM) {
+          break;
+        }
+
+        if (status != CREX_OK) {
+          DIE("unexpected status");
+        }
+
+        crex_match_t matches[MAX_CAPTURING_GROUPS];
+        status = crex_match_groups_str(matches, context, regex, str);
+
+        if (status == CREX_E_NOMEM) {
+          break;
+        }
+
+        if (status != CREX_OK) {
+          DIE("unexpected status");
+        }
+      }
+
+      crex_destroy_context(context);
+      crex_destroy_regex(regex);
 
       if (allocator.allocs != allocator.frees) {
-        fprintf(
-            stderr,
-            "/%s/: unsuccessful compilation with quota %zu, %zu alloc(s) but only %zu free(s)\n",
-            pattern,
-            allocator.quota,
-            allocator.allocs,
-            allocator.frees);
-
-        return 1;
+        DIE("mismatched allocs/frees");
       }
+
+      if (status == CREX_OK) {
+        break;
+      }
+    }
+
+    if (allocator.quota > MAX_ALLOCATIONS) {
+      DIE("MAX_ALLOCATIONS too low");
     }
   }
 
-  // FIXME: test things other than compilation
+  printf("\x1b[32m%s: %s:%d: passed\x1b[0m\n", argv0, __FILE__, __LINE__);
 
   return 0;
 }
