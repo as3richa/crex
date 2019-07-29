@@ -14,7 +14,7 @@ module Spec
 
   def testcase(str, groups)
     raise "call to testcase outside of pattern" if @active_pattern_id.nil?
-    groups = { 0 => groups } if groups.is_a?(String)
+    groups = { 0 => groups } if groups.is_a?(String) || groups.is_a?(Array)
     testcases << [@active_pattern_id, str, groups]
   end
 
@@ -83,6 +83,5 @@ Dir.glob('*.rb', base: __dir__) do |path|
   require_relative(path)
 end
 
-File.write(ARGV[1], "#{ARGV[0]}: #{deps.join(' ')}\n")
-
 emit(File.open(ARGV[0], 'w'))
+File.write(ARGV[1], "#{ARGV[0]}: #{deps.join(' ')}\n")
