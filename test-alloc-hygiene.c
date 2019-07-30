@@ -7,6 +7,28 @@
 
 #include "crex.h"
 
+// This program tests allocation hygiene and error handling.
+//
+// For any particular sequence of operations (compilations, searches, etc.), the library will make
+// some number of memory allocations; moreover, this number is deterministic if we start from a
+// fresh context. Using the allocator API, we can construct an allocator that succeeds for the first
+// k allocations, and fails all allocations thereafter. If we run a sequence of operations using
+// this allocator with k set to (e.g.) zero, the very first allocation done by the library will
+// fail, some error handling branch will execute, and the library call will return CREX_E_NOMEM. If
+// we set k to one, the first allocation will succeed, but the second allocation will fail, causing
+// some other error handling branch to execute.
+//
+// In principle, if we repeatedly run the same sequence of operations against this allocator,
+// looping over k starting from zero until the entire sequence of operations succeeds, we can
+// exercise every allocation-related error handling branch that the sequence might ever encounter in
+// production. This allows us to assert that each library function correctly returns CREX_E_NOMEM on
+// allocation failure. Moreover, by adding some simple instrumentation to our custom allocator, we
+// can assert that each error handling branch correctly frees any intermediate heap-allocated
+// objects. Finally, we can add some additional bookkeeping to the custom allocator in order to
+// detect invalid and double frees.
+//
+// These tests are extremely valuable and would be impossible to build without a custom allocator.
+
 const char *argv0;
 
 #define DIE(message)                                                                               \
@@ -81,8 +103,7 @@ static const char *patterns[N_PATTERNS] = {
     "a{13,37}",
     "(?:alpha)??",
     "([1-9][0-9]*)(?:\\.([0-9]+))?(?:[eE](-?[1-9][0-9]*))?",
-    "\\A(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\z",
-};
+    "\\A(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\z"};
 
 #define N_STRINGS 10
 
@@ -96,9 +117,7 @@ static const char *strings[N_STRINGS] = {
     "192.168.1.254",
     "the quick brown fox jumps over the lazy dogs",
     "f7f376a1fcd0d0e11a10ed1b6577c99784d3a6bbe669b1d13fae43eb64634f6e",
-    "*\x13\xc1\x97\x1e\n|\xde@\xd6\xe4\xa4u\xda|\xc5kA-\x1a\xb5\x0e\x0c "
-    "\xdd\xd8u\xf0x)G\xedW'A\x9c<\x81\x08\xa4",
-};
+    "*\x13\xc1\x97\x1e\n|\xde@\xd6\xe4\xa4u\xda|\xc5kA-\x1a\xb5\x0e\x0c\xdd\xd8u\xf0x)G\xedW'A"};
 
 int main(int argc, char **argv) {
   (void)argc;
