@@ -40,7 +40,7 @@ DEP_FILES := $(shell find build -name "*.in")
 AR ?= ar
 STRIP ?= strip
 
-.PHONY: all clean tests run-tests
+.PHONY: all tools clean tests run-tests
 
 .PRECIOUS: build/%.o bin/%
 
