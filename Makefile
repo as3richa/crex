@@ -1,9 +1,15 @@
-CFLAGS := $(CFLAGS) -std=c99 -pedantic -Wall -Wextra -fPIC -s -Wl,--version-script=libcrex.version
+CFLAGS := $(CFLAGS) -std=c99 -pedantic -Wall -Wextra -fPIC
 
 ifeq ($(ENV),development)
 	CFLAGS := $(CFLAGS) -g -O0
 else
 	CFLAGS := $(CFLAGS) -O3 -DNDEBUG
+
+	ifeq ($(shell uname),Darwin)
+		LDFLAGS := $(LDFLAGS) -Wl,-x
+	else
+		LDFLAGS := $(LDFLAGS) -Wl,-x,-s,--version-script=libcrex.version
+	endif
 endif
 
 LIBRARY_SOURCE := crex.c
@@ -53,7 +59,7 @@ $(STATIC_LIBRARY): $(LIBRARY_OBJECT)
 	$(STRIP) -x $@
 
 $(DYNAMIC_LIBRARY): $(LIBRARY_OBJECT)
-	$(CC) $(CFLAGS) -shared -o $@ $^
+	$(CC) $(LDFLAGS) $(CFLAGS) -shared -o $@ $^
 
 build/%.o: %.c
 	$(CC) -MMD -MF $(@:.o=.in) $(CFLAGS) -c -o $@ $<
