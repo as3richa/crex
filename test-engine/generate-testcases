@@ -19,13 +19,13 @@ module Spec
   end
 
   def emit(file)
-    file.puts("const size_t n_patterns = #{patterns.size};")
+    file.puts("#define N_PATTERNS #{patterns.size}")
 
-    file.puts("const pattern_defn_t pattern_defns[] = {")
+    file.puts("const pattern_defn_t pattern_defns[N_PATTERNS] = {")
     file.puts(patterns.map { |pattern| "  {#{pattern.inspect}, #{pattern.size}}" }.join(",\n"))
     file.puts("};")
 
-    file.puts("const size_t n_testcases = #{testcases.size};")
+    file.puts("#define N_TESTCASES #{testcases.size}")
 
     serialized_cases = testcases.map do |pattern_id, str, groups|
       if groups.nil?
@@ -52,7 +52,7 @@ module Spec
       "  {#{pattern_id}, #{str.inspect}, #{str.size}, #{groups.nil? ? 0 : 1}, {#{serialized_groups}}}"
     end
 
-    file.puts("const testcase_t testcases[] = {")
+    file.puts("const testcase_t testcases[N_TESTCASES] = {")
     file.puts(serialized_cases.join(",\n"))
     file.puts("};")
   end
@@ -75,12 +75,14 @@ if ARGV.length != 2
   exit(1)
 end
 
+dirname = File.dirname(__FILE__)
+
 deps = [__FILE__]
 
-Dir.glob('*.rb', base: __dir__) do |path|
-  deps << "#{File.dirname(__FILE__)}/#{path}"
-  next if path == File.basename(__FILE__)
-  require_relative(path)
+Dir.glob(File.join(__dir__, '*.rb')) do |path|
+  filename = File.basename(path)
+  deps << File.join(dirname, filename)
+  require_relative(filename)
 end
 
 emit(File.open(ARGV[0], 'w'))

@@ -32,12 +32,6 @@ typedef struct {
 #define MAX_QUOTED_LENGTH 50000
 #define MAX_TESTS 1000000
 
-extern const size_t n_patterns;
-extern const pattern_defn_t pattern_defns[];
-
-extern const size_t n_testcases;
-extern const testcase_t testcases[];
-
 static const char *inflect(size_t number) {
   switch (number % 10) {
   case 1:
@@ -87,28 +81,28 @@ int main(int argc, char **argv) {
   unsigned char bitmap[(MAX_TESTS + 7) / 8];
 
   if (argc != 1) {
-    memset(bitmap, 0, (n_testcases + 7) / 8);
+    memset(bitmap, 0, (N_TESTCASES + 7) / 8);
 
     for (size_t i = 1; i < (size_t)argc; i++) {
       const size_t j = (size_t)atol(argv[i]);
 
-      assert(j < n_testcases);
+      assert(j < N_TESTCASES);
 
       bitmap[j >> 3u] |= 1u << (j & 7u);
     }
   } else {
-    memset(bitmap, 0xff, (n_testcases + 7) / 8);
+    memset(bitmap, 0xff, (N_TESTCASES + 7) / 8);
   }
 
-  crex_regex_t **regexes = malloc(sizeof(crex_regex_t *) * n_patterns);
+  crex_regex_t **regexes = malloc(sizeof(crex_regex_t *) * N_PATTERNS);
   assert(regexes != NULL);
 
-  for (size_t i = 0; i < n_patterns; i++) {
+  for (size_t i = 0; i < N_PATTERNS; i++) {
     regexes[i] = NULL;
   }
 
   size_t n_failures = 0;
-  size_t *failures = malloc(sizeof(size_t) * n_testcases);
+  size_t *failures = malloc(sizeof(size_t) * N_TESTCASES);
   assert(failures != NULL);
 
   crex_status_t status;
@@ -118,7 +112,7 @@ int main(int argc, char **argv) {
 
   size_t run = 0;
 
-  for (size_t i = 0; i < n_testcases; i++) {
+  for (size_t i = 0; i < N_TESTCASES; i++) {
     if (!(bitmap[i >> 3u] & (1u << (i & 7u)))) {
       continue;
     }
@@ -248,7 +242,7 @@ int main(int argc, char **argv) {
     printf("All %zu test(s) passed.\n", run);
   }
 
-  for (size_t i = 0; i < n_patterns; i++) {
+  for (size_t i = 0; i < N_PATTERNS; i++) {
     if (regexes[i] == NULL) {
       continue;
     }
