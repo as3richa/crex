@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define REX(w, r, x, b) (0x40u | ((w) << 3u) | ((r) << 2u) | ((x) << 1u) | (b))
 
@@ -10,13 +11,59 @@
 
 typedef enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15 } reg_t;
 
-typedef enum {
-  SCALE_1,
-  SCALE_2,
-  SCALE_4,
-  SCALE_8,
-  SCALE_NONE,
-} scale_t;
+typedef enum { SCALE_1, SCALE_2, SCALE_4, SCALE_8 } scale_t;
+
+typedef struct {
+  unsigned int rip_relative : 1;
+  unsigned int base : 4;
+  unsigned int has_index : 1;
+  unsigned int scale : 2;
+  unsigned int index : 4;
+  long displacement;
+} indirect_operand_t;
+
+#define INDIRECT_REG(reg) ((indirect_operand_t){0, reg, 0, 0, 0, 0})
+
+#define INDIRECT_BSXD(base, scale, index, displacement)                                            \
+  ((indirect_operand_t){0, base, 1, scale, index, displacement})
+
+#define INDIRECT_RIP(displacement) ((indirect_operand_t){1, 0, 0, 0, 0, displacement})
+
+static void serialize_operand_le(void *destination, size_t operand, size_t size) {
+  unsigned char *bytes = destination;
+
+  switch (size) {
+  case 0: {
+    assert(operand == 0);
+    break;
+  }
+
+  case 1: {
+    assert(operand <= 0xffLU);
+    bytes[0] = operand;
+    break;
+  }
+
+  case 2: {
+    assert(operand <= 0xffffLU);
+    bytes[0] = operand & 0xffu;
+    bytes[1] = operand >> 8u;
+    break;
+  }
+
+  case 4: {
+    assert(operand <= 0xffffffffLU);
+    bytes[0] = operand & 0xffu;
+    bytes[1] = (operand >> 8u) & 0xffu;
+    bytes[2] = (operand >> 16u) & 0xffu;
+    bytes[3] = (operand >> 24u) & 0xffu;
+    break;
+  }
+
+  default:
+    assert(0);
+  }
+}
 
 typedef struct {
   size_t size;
@@ -24,13 +71,11 @@ typedef struct {
   unsigned char *data;
 } buffer_t;
 
-static unsigned char *extend(buffer_t *buffer, size_t delta) {
+static unsigned char *reserve(buffer_t *buffer, size_t delta) {
   size_t min_capacity = buffer->size + delta;
 
   if (buffer->capacity >= min_capacity) {
     unsigned char *result = buffer->data + buffer->size;
-    buffer->size += delta;
-
     return result;
   }
 
@@ -49,44 +94,45 @@ static unsigned char *extend(buffer_t *buffer, size_t delta) {
   buffer->data = data;
   buffer->capacity = min_capacity;
 
-  buffer->size += delta;
-
   return result;
 }
 
-typedef struct {
-  reg_t base;
-  scale_t scale;
-  reg_t index;
-  long displacement;
-} memory_t;
+static void resize(buffer_t *buffer, unsigned char *end) {
+  buffer->size = end - buffer->data;
+}
 
 static void copy_displacement(unsigned char *destination, long value, size_t size);
 
-static void
-encode_instr_r_r(buffer_t *buffer, unsigned char opcode, reg_t reg, reg_t rm, int rex_w) {
-  const int rex_r = reg >> 3u;
+static size_t encode_rex_r(unsigned char *data, int rex_w, int rex_r, reg_t rm) {
   const int rex_b = rm >> 3u;
 
-  unsigned char *data;
-
   if (rex_w || rex_r || rex_b) {
-    data = extend(buffer, 3);
-    *(data++) = REX(rex_w, rex_r, 0, rex_b);
-  } else {
-    data = extend(buffer, 2);
+    *data = REX(rex_w, rex_r, 0, rex_b);
+    return 1;
   }
 
-  data[0] = opcode;
-  data[1] = MOD_REG_RM(3u, reg & 7u, rm & 7u);
+  return 0;
 }
 
-static void encode_instr_r_m(buffer_t *buffer,
-                             unsigned char opcode,
-                             size_t reg_or_extension,
-                             const memory_t *rm,
-                             int rex_w,
-                             int rex_r) {
+static size_t encode_mod_reg_rm_r(unsigned char *data, size_t reg_or_extension, reg_t rm) {
+  *data = MOD_REG_RM(3u, reg_or_extension & 7u, rm & 7u);
+  return 1;
+}
+
+static size_t encode_rex_m(unsigned char *data, int rex_w, int rex_r, indirect_operand_t rm) {
+  const int rex_x = (rm.has_index) ? (rm.index >> 3u) : 0;
+  const int rex_b = (rm.rip_relative) ? 0 : rm.base >> 3u;
+
+  if (rex_w || rex_r || rex_x || rex_b) {
+    *data = REX(rex_w, rex_r, rex_x, rex_b);
+    return 1;
+  }
+
+  return 0;
+}
+
+static size_t
+encode_mod_reg_rm_m(unsigned char *data, size_t reg_or_extension, indirect_operand_t rm) {
   size_t displacement_size;
   unsigned char mod;
 
@@ -95,56 +141,43 @@ static void encode_instr_r_m(buffer_t *buffer,
   // and displacement-only mode in the latter). We can encode these forms as e.g. [rbp + 0], with an
   // 8-bit displacement instead
 
-  if (rm->displacement == 0 && rm->base != RBP && rm->base != R13) {
+  if (rm.rip_relative) {
+    displacement_size = 4;
+    mod = 0;
+  } else if (rm.displacement == 0 && rm.base != RBP && rm.base != R13) {
     displacement_size = 0;
     mod = 0;
-  } else if (-128 <= rm->displacement && rm->displacement <= 127) {
+  } else if (-128 <= rm.displacement && rm.displacement <= 127) {
     displacement_size = 1;
     mod = 1;
   } else {
-    assert(-2147483648 <= rm->displacement && rm->displacement <= 2147483647);
+    assert(-2147483648 <= rm.displacement && rm.displacement <= 2147483647);
     displacement_size = 4;
     mod = 2;
   }
 
-  if (rm->scale != SCALE_NONE || rm->base == RSP) {
+  if (rm.rip_relative) {
+    *(data++) = MOD_REG_RM(0, reg_or_extension & 7u, RBP);
+    copy_displacement(data, rm.displacement, displacement_size);
+
+    return 1 + displacement_size;
+  }
+
+  if (rm.has_index || rm.base == RSP) {
     // Can't use RSP as the index register in a SIB byte
-    assert(rm->index != RSP);
+    assert(rm.index != RSP);
 
-    const int rex_x = rm->index >> 3u;
-    const int rex_b = rm->base >> 3u;
+    *(data++) = MOD_REG_RM(mod, reg_or_extension & 7u, 0x04);
+    *(data++) = SIB(rm.scale, rm.index & 7u, rm.base & 7u);
+    copy_displacement(data, rm.displacement, displacement_size);
 
-    unsigned char *data;
-
-    if (rex_w || rex_r || rex_x || rex_b) {
-      data = extend(buffer, 4 + displacement_size);
-      *(data++) = REX(rex_w, rex_r, rex_x, rex_b);
-    } else {
-      data = extend(buffer, 3 + displacement_size);
-    }
-
-    data[0] = opcode;
-    data[1] = MOD_REG_RM(mod, reg_or_extension & 7u, 0x04);
-    data[2] = SIB(rm->scale, rm->index & 7u, rm->base & 7u);
-    copy_displacement(data + 3, rm->displacement, displacement_size);
-
-    return;
+    return 2 + displacement_size;
   }
 
-  const int rex_b = rm->base >> 3u;
+  *(data++) = MOD_REG_RM(mod, reg_or_extension, rm.base);
+  copy_displacement(data, rm.displacement, displacement_size);
 
-  unsigned char *data;
-
-  if (rex_w || rex_r || rex_b) {
-    data = extend(buffer, 3 + displacement_size);
-    *(data++) = REX(rex_w, rex_r, 0, rex_b);
-  } else {
-    data = extend(buffer, 2 + displacement_size);
-  }
-
-  data[0] = opcode;
-  data[1] = MOD_REG_RM(mod, reg_or_extension, rm->base);
-  copy_displacement(data + 2, rm->displacement, displacement_size);
+  return 1 + displacement_size;
 }
 
 static void copy_displacement(unsigned char *destination, long value, size_t size) {
@@ -169,31 +202,20 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
   destination[3] = (unsigned_value >> 24u) & 0xffu;
 }
 
-static void mov_qword_reg_reg(buffer_t *buffer, reg_t destination, reg_t source) {
-  encode_instr_r_r(buffer, 0x89, source, destination, 1);
-}
-
-static void call_mem(buffer_t *buffer, const memory_t *callee) {
-  encode_instr_r_m(buffer, 0xff, 0x02, callee, 0, 0);
-}
+#include "x64.h"
 
 int main(void) {
   buffer_t buffer = {0, 0, NULL};
 
-  for (reg_t r = RAX; r <= R15; r++) {
-    for (reg_t s = RAX; s <= R15; s++) {
-      // mov_qword_reg_reg(&buffer, r, s);
-
-      memory_t callee;
-      callee.base = r;
-      callee.scale = (3 * r + s) % 5;
-      callee.index = (s == RSP) ? RAX : s;
-      callee.displacement = (signed long)(13 * r + 37 * s) % 1001 - 50;
-      fprintf(stderr, "%ld\n", callee.displacement);
-
-      call_mem(&buffer, &callee);
-    }
-  }
+  mov64_reg_mem(&buffer, R13, INDIRECT_BSXD(RSP, SCALE_8, RAX, 0));
+  call_mem(&buffer, INDIRECT_REG(RBP));
+  bt64_reg_u8(&buffer, RSI, 40);
+  bt32_mem_u8(&buffer, INDIRECT_BSXD(R11, SCALE_1, R13, 9999), 0);
+  lea64_reg_mem(&buffer, RAX, INDIRECT_RIP(1));
+  lea64_reg_mem(&buffer, RDI, INDIRECT_REG(RBP));
+  lea64_reg_mem(&buffer, R12, INDIRECT_REG(RSP));
+  lea64_reg_mem(&buffer, R13, INDIRECT_BSXD(R13, SCALE_8, R12, 1337));
+  lea64_reg_mem(&buffer, RAX, INDIRECT_RIP(0xffffff));
 
   for (size_t i = 0; i < buffer.size; i++) {
     putchar(buffer.data[i]);
