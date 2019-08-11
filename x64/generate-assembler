@@ -1,0 +1,108 @@
+#!/usr/bin/env ruby
+
+require 'erb'
+require 'yaml'
+
+TYPES = {
+  i8: 'int',
+  i32: 'long',
+  reg: 'reg_t',
+  rm_mem: 'indirect_operand_t',
+  rm_reg: 'reg_t',
+  u8: 'size_t',
+  u32: 'size_t',
+}.freeze
+
+if ARGV.length != 2
+  $stderr.puts("usage: #{$0} <output file> <dependency file>")
+  exit(1)
+end
+
+file = File.open(ARGV[0], 'w')
+
+template = ERB.new(File.read(File.join(__dir__, 'instruction.erb.c')))
+
+instructions = YAML.load_file(File.join(__dir__, 'instructions.yml'))
+
+# symbolize_keys isn't standard :(
+instructions = instructions.map do |hsh|
+  hsh.map { |key, value| [key.to_sym, value] }.to_h
+end
+
+first = true
+
+instructions.each do |name:, opcode:, params:, encoding:, rex_w: false, extension: nil|
+  function_name = ([name] + encoding.map { |enc| enc.gsub('rm_', '') }).join('_')
+
+  param_types = encoding.map { |enc| TYPES.fetch(enc.to_sym) }
+  param_list = param_types.zip(params).map { |type, name| "#{type} #{name}"}.join(', ')
+
+  opcode_literal = '{' + opcode.map { |byte| "0x#{byte.to_s(16)}" }.join(', ') + '}'
+
+  reg_param = nil
+
+  rm_mem_param = nil
+  rm_reg_param = nil
+
+  imm_param = nil
+  imm_size = nil
+  imm_unsigned = nil
+
+  encoding.zip(params).each do |enc, name|
+    case enc
+    when 'reg'
+      reg_param = name
+    when 'rm_mem'
+      rm_mem_param = name
+    when 'rm_reg'
+      rm_reg_param = name
+    when 'i8'
+      imm_param = name
+      imm_size = 1
+      imm_unsigned = false
+    when 'i32'
+      imm_param = name
+      imm_size = 4
+      imm_unsigned = false
+    when 'u8'
+      imm_param = name
+      imm_size = 1
+      imm_unsigned = true
+    when 'u32'
+      imm_param = name
+      imm_size = 4
+      imm_unsigned = true
+    else
+      raise "bad operand encoding: #{enc}"
+    end
+  end
+
+  reg_or_extension = if reg_param
+    reg_param
+  elsif extension
+    "0x#{extension.to_s(16)}"
+  end
+
+  # Possible REX byte, opcode
+  max_size = 1 + opcode.length
+
+  # ModRM byte if requried
+  max_size += 1 if reg_param || rm_mem_param || rm_reg_param || extension
+
+  # Possible SIB and displacement
+  max_size += 5 if rm_mem_param
+
+  # Immediate
+  max_size += imm_size if imm_size
+
+  code = template.result(binding)
+  while code.gsub!("\n\n\n", "\n\n"); end
+  file.puts("\n") unless first
+  file.puts(code)
+
+  first = false
+end
+
+dirname = File.dirname(__FILE__)
+deps = [__FILE__, File.join(dirname, 'instructions.yml'), File.join(dirname, 'instruction.erb.c')]
+File.write(ARGV[1], "#{ARGV[0]}: #{deps.join(' ')}\n")

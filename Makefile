@@ -18,6 +18,8 @@ LIBRARY_OBJECT := build/crex.o
 DYNAMIC_LIBRARY := libcrex.so.1
 STATIC_LIBRARY := libcrex.a
 
+X64_ASSEMBLER := build/x64.h
+
 EXAMINER_SOURCE := crexamine.c
 EXAMINER_OBJECT := build/crexamine.o
 EXAMINER_BINARY := bin/crexamine
@@ -61,19 +63,27 @@ $(STATIC_LIBRARY): $(LIBRARY_OBJECT)
 $(DYNAMIC_LIBRARY): $(LIBRARY_OBJECT)
 	$(CC) $(LDFLAGS) $(CFLAGS) -shared -o $@ $^
 
-build/%.o: %.c
-	$(CC) -MMD -MF $(@:.o=.in) $(CFLAGS) -c -o $@ $<
+ifeq ($(shell uname -m),x86_64)
+$(LIBRARY_OBJECT): $(X64_ASSEMBLER)
+endif
 
-bin/%: build/%.o $(STATIC_LIBRARY)
-	$(CC) $(CFLAGS) -o $@ $^
+$(X64_ASSEMBLER):
+	x64/generate-assembler $@ $(@:.h=.in)
 
 $(TEST_ENGINE_OBJECT): $(TEST_ENGINE_SOURCE) $(TEST_ENGINE_TESTCASES)
 
 $(TEST_ENGINE_TESTCASES):
 	test-engine/generate-testcases $@ $(@:.h=.in)
 
+build/%.o: %.c
+	$(CC) -MMD -MF $(@:.o=.in) $(CFLAGS) -c -o $@ $<
+
+bin/%: build/%.o $(STATIC_LIBRARY)
+	$(CC) $(CFLAGS) -o $@ $^
+
 clean:
 	rm -f $(LIBRARY_OBJECT) $(DYNAMIC_LIBRARY) $(STATIC_LIBRARY)
+	rm -f $(X64_ASSEMBLER)
 	rm -f $(EXAMINER_OBJECT) $(EXAMINER_BINARY)
 	rm -f $(DUMPER_OBJECT) $(DUMPER_BINARY)
 	rm -f $(TEST_ENGINE_TESTCASES) $(TEST_ENGINE_OBJECT) $(TEST_ENGINE_BINARY)

@@ -1,3 +1,6 @@
+// For MAP_ANONYMOUS
+#define _GNU_SOURCE
+
 #include <assert.h>
 #include <ctype.h>
 #include <limits.h>
@@ -7,6 +10,20 @@
 #include <string.h>
 
 #include "crex.h"
+
+#if defined(__x86_64__) && !defined(NO_NATIVE_COMPILER)
+
+#include <unistd.h>
+#include <sys/mman.h>
+
+// It's spelled MAP_ANON on Darwin
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+
+#define NATIVE_COMPILER
+
+#endif
 
 typedef crex_status_t status_t;
 
@@ -1684,6 +1701,227 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
   return CREX_OK;
 }
 
+#ifdef NATIVE_COMPILER
+
+typedef struct {
+  size_t size;
+  size_t capacity;
+  unsigned char* buffer;
+} native_code_t;
+
+static size_t get_page_size(void) {
+  const long size = sysconf(_SC_PAGE_SIZE);
+  return (size < 0) ? 4096 : size;
+}
+
+static unsigned char* my_mremap(unsigned char* buffer, size_t old_size, size_t size) {
+#ifndef NDEBUG
+  const size_t page_size = get_page_size();
+  assert(old_size % page_size == 0 && size % page_size == 0);
+#endif
+
+  // "Shrink" an existing mapping by unmapping its tail
+  if(size <= old_size) {
+    munmap(buffer + size, old_size - size);
+    return buffer;
+  }
+
+  const int prot = PROT_READ | PROT_WRITE;
+  const int flags = MAP_ANONYMOUS;
+
+  const size_t delta = size - old_size;
+
+  // First, try to "extend" the existing mapping by creating a new mapping immediately following
+  unsigned char* next = mmap(buffer + old_size, delta, prot, flags, -1, 0);
+
+  // ENOMEM, probably
+  if (next == MAP_FAILED) {
+    return NULL;
+  } 
+
+  // If in fact the new mapping was created immediately after the old mapping, we're done
+  if (next == buffer + old_size) {
+    return buffer;
+  }
+
+  // Otherwise, we need to create an entirely new, sufficiently-large mapping
+  munmap(next, delta);
+  next = mmap(NULL, size, prot, flags, -1, 0);
+
+  if (next == MAP_FAILED) {
+    return NULL;
+  }
+
+  // Copy the old data and destroy the old mapping
+  memcpy(next, buffer, old_size);
+  munmap(buffer, old_size);
+
+  return next;
+}
+
+// x64 instruction encoding
+
+#define REX(w, r, x, b) (0x40u | ((w) << 3u) | ((r) << 2u) | ((x) << 1u) | (b))
+
+#define MOD_REG_RM(mod, reg, rm) (((mod) << 6u) | ((reg) << 3u) | (rm))
+
+#define SIB(scale, index, base) (((scale) << 6u) | ((index) << 3u) | (base))
+
+typedef enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15 } reg_t;
+
+typedef enum { SCALE_1, SCALE_2, SCALE_4, SCALE_8 } scale_t;
+
+typedef struct {
+  unsigned int rip_relative : 1;
+  unsigned int base : 4;
+  unsigned int has_index : 1;
+  unsigned int scale : 2;
+  unsigned int index : 4;
+  long displacement;
+} indirect_operand_t;
+
+#define INDIRECT_REG(reg) ((indirect_operand_t){0, reg, 0, 0, 0, 0})
+
+#define INDIRECT_BSXD(base, scale, index, displacement)                                            \
+  ((indirect_operand_t){0, base, 1, scale, index, displacement})
+
+#define INDIRECT_RIP(displacement) ((indirect_operand_t){1, 0, 0, 0, 0, displacement})
+
+static unsigned char *reserve_native_code(native_code_t *code, size_t size) {
+  if(code->size + size <= code->capacity) {
+    return code->buffer + code->size;
+  }
+
+  unsigned char* buffer = my_mremap(code->buffer, code->capacity, 2 * code->capacity);
+
+  if(buffer == MAP_FAILED) {
+    return NULL;
+  }
+
+  code->buffer = buffer;
+  code->capacity *= 2;
+
+  return code->buffer + code->size;
+}
+
+static void resize(native_code_t *buffer, unsigned char *end) {
+  buffer->size = end - buffer->buffer;
+}
+
+static void copy_displacement(unsigned char *destination, long value, size_t size);
+
+static size_t encode_rex_r(unsigned char *data, int rex_w, int rex_r, reg_t rm) {
+  const int rex_b = rm >> 3u;
+
+  if (rex_w || rex_r || rex_b) {
+    *data = REX(rex_w, rex_r, 0, rex_b);
+    return 1;
+  }
+
+  return 0;
+}
+
+static size_t encode_mod_reg_rm_r(unsigned char *data, size_t reg_or_extension, reg_t rm) {
+  *data = MOD_REG_RM(3u, reg_or_extension & 7u, rm & 7u);
+  return 1;
+}
+
+static size_t encode_rex_m(unsigned char *data, int rex_w, int rex_r, indirect_operand_t rm) {
+  const int rex_x = (rm.has_index) ? (rm.index >> 3u) : 0;
+  const int rex_b = (rm.rip_relative) ? 0 : rm.base >> 3u;
+
+  if (rex_w || rex_r || rex_x || rex_b) {
+    *data = REX(rex_w, rex_r, rex_x, rex_b);
+    return 1;
+  }
+
+  return 0;
+}
+
+static size_t
+encode_mod_reg_rm_m(unsigned char *data, size_t reg_or_extension, indirect_operand_t rm) {
+  size_t displacement_size;
+  unsigned char mod;
+
+  // [rbp], [r13], [rbp + reg], and [r13 + reg] can't be encoded with a zero-size displacement
+  // (because the corresponding bit patterns are used for RIP-relative addressing in the former case
+  // and displacement-only mode in the latter). We can encode these forms as e.g. [rbp + 0], with an
+  // 8-bit displacement instead
+
+  if (rm.rip_relative) {
+    displacement_size = 4;
+    mod = 0;
+  } else if (rm.displacement == 0 && rm.base != RBP && rm.base != R13) {
+    displacement_size = 0;
+    mod = 0;
+  } else if (-128 <= rm.displacement && rm.displacement <= 127) {
+    displacement_size = 1;
+    mod = 1;
+  } else {
+    assert(-2147483648 <= rm.displacement && rm.displacement <= 2147483647);
+    displacement_size = 4;
+    mod = 2;
+  }
+
+  if (rm.rip_relative) {
+    *(data++) = MOD_REG_RM(0, reg_or_extension & 7u, RBP);
+    copy_displacement(data, rm.displacement, displacement_size);
+
+    return 1 + displacement_size;
+  }
+
+  if (rm.has_index || rm.base == RSP) {
+    // Can't use RSP as the index register in a SIB byte
+    assert(rm.index != RSP);
+
+    *(data++) = MOD_REG_RM(mod, reg_or_extension & 7u, 0x04);
+    *(data++) = SIB(rm.scale, rm.index & 7u, rm.base & 7u);
+    copy_displacement(data, rm.displacement, displacement_size);
+
+    return 2 + displacement_size;
+  }
+
+  *(data++) = MOD_REG_RM(mod, reg_or_extension, rm.base);
+  copy_displacement(data, rm.displacement, displacement_size);
+
+  return 1 + displacement_size;
+}
+
+// FIXME: sane name
+static void copy_displacement(unsigned char *destination, long value, size_t size) {
+  assert(size == 0 || size == 1 || size == 4);
+
+  if (size == 0) {
+    return;
+  }
+
+  if (size == 1) {
+    assert(-128 <= value && value <= 127);
+    *destination = value;
+  }
+
+  assert(-2147483648 <= value && value <= 2147483647);
+
+  // Should get optimized down to a mov on x64
+  unsigned long unsigned_value = value;
+  destination[0] = unsigned_value & 0xffu;
+  destination[1] = (unsigned_value >> 8u) & 0xffu;
+  destination[2] = (unsigned_value >> 16u) & 0xffu;
+  destination[3] = (unsigned_value >> 24u) & 0xffu;
+}
+
+#include "build/x64.h"
+
+WARN_UNUSED_RESULT static status_t compile_to_native(unsigned char** result, size_t* size, unsigned char* bytecode, size_t n_instructions) {
+  (void)result;
+  (void)size;
+  (void)bytecode;
+  (void)n_instructions;
+  return CREX_OK;
+}
+
+#endif
+
 /** Instruction pointer (i.e. size_t) list with custom allocator **/
 
 typedef size_t state_list_handle_t;
@@ -1852,6 +2090,11 @@ struct crex_regex {
 
   void *allocator_context;
   void (*free)(void *, void *);
+
+#ifdef NATIVE_COMPILER
+  unsigned char *native_code;
+  size_t native_code_size;
+#endif
 };
 
 // For brevity
@@ -1983,6 +2226,19 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
   // Stash the free part of the allocator, so it doesn't need to be passed into crex_regex_destroy
   regex->allocator_context = allocator->context;
   regex->free = allocator->free;
+
+#ifdef NATIVE_COMPILER
+
+  *status = compile_to_native(&regex->native_code, &regex->native_code_size, regex->bytecode, n_instructions);
+
+  if(*status != CREX_OK) {
+    FREE(allocator, regex->classes);
+    FREE(allocator, regex->bytecode);
+    FREE(allocator, regex);
+    return NULL;
+  }
+
+#endif
 
   return regex;
 }

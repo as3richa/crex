@@ -1,17 +1,17 @@
-static int <%= function_name %>(buffer_t* buffer, <%= param_list %>) {
-  unsigned char* data = reserve(buffer, <%= max_size %>);
+static int <%= function_name %>(native_code_t* code, <%= param_list %>) {
+  unsigned char* data = reserve_native_code(code, <%= max_size %>);
 
   if (data == NULL) {
     return 0;
   }
 
   const int rex_w = <%= rex_w ? 1 : 0 %>;
-  const int rex_r = <%= reg_param ? "#{reg_param} >> 3u" : 0 %>
+  const int rex_r = <%= reg_param ? "#{reg_param} >> 3u" : 0 %>;
 
 <% if rm_reg_param %>
   data += encode_rex_r(data, rex_w, rex_r, <%= rm_reg_param %>);
 <% elsif rm_mem_param %>
-  data += encode_rex_m(data, rex_w, rex_r, M%= rm_mem_param %>);
+  data += encode_rex_m(data, rex_w, rex_r, <%= rm_mem_param %>);
 <% else %>
   (void)rex_r;
 <% end %>
@@ -32,12 +32,10 @@ static int <%= function_name %>(buffer_t* buffer, <%= param_list %>) {
 <% else %>
   copy_displacement(data, <%= imm_param %>, <%= imm_size %>);
 <% end %>
-<% end %>
-
   data += <%= imm_size %>;
 <% end %>
 
-  resize(buffer, data);
+  resize(code, data);
 
   return 1;
 }

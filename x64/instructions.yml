@@ -1,0 +1,25 @@
+---
+- name: mov64
+  rex_w: true
+  opcode: [0x8b]
+  params: [destination, source]
+  encoding: [reg, rm_mem]
+
+- name: call
+  opcode: [0xff]
+  extension: 0x02
+  params: [callee]
+  encoding: [rm_mem]
+
+- name: bt64
+  rex_w: true
+  opcode: [0x0f, 0xba]
+  extension: 0x04
+  params: [bitstring, index]
+  encoding: [rm_reg, u8]
+
+- name: lea64
+  rex_w: true
+  opcode: [0x8d]
+  params: [destination, address]
+  encoding: [reg, rm_mem]
