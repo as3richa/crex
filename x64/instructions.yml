@@ -13,8 +13,8 @@
 
 - name: bts64
   rex_w: true
-  opcode: [0x0f, 0xab]
-  extension: 0x04
+  opcode: [0x0f, 0xba]
+  extension: 0x05
   params: [bitstring, index]
   encoding: [rm_reg, u8]
 

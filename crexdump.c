@@ -10,7 +10,7 @@ int main(int argc, char **argv) {
   }
 
   crex_status_t status;
-  crex_regex_t *regex = crex_compile_str(&status, argv[0]);
+  crex_regex_t *regex = crex_compile_str(&status, argv[1]);
 
   if (regex == NULL) {
     return 1;

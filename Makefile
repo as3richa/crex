@@ -28,6 +28,10 @@ DUMPER_SOURCE := crexdump.c
 DUMPER_OBJECT := build/crexdump.o
 DUMPER_BINARY := bin/crexdump
 
+NATIVE_DUMPER_SOURCE := crexdump-native.c
+NATIVE_DUMPER_OBJECT := build/crexdump-native.o
+NATIVE_DUMPER_BINARY := bin/crexdump-native
+
 TEST_ENGINE_SOURCE := test-engine.c
 TEST_ENGINE_OBJECT := build/test-engine.o
 TEST_ENGINE_BINARY := bin/test-engine
@@ -58,7 +62,9 @@ run-tests: tests
 
 $(STATIC_LIBRARY): $(LIBRARY_OBJECT)
 	$(AR) rcs $@ $^
+ifneq ($(ENV),development)
 	$(STRIP) -x $@
+endif
 
 $(DYNAMIC_LIBRARY): $(LIBRARY_OBJECT)
 	$(CC) $(LDFLAGS) $(CFLAGS) -shared -o $@ $^
@@ -86,6 +92,7 @@ clean:
 	rm -f $(X64_ASSEMBLER)
 	rm -f $(EXAMINER_OBJECT) $(EXAMINER_BINARY)
 	rm -f $(DUMPER_OBJECT) $(DUMPER_BINARY)
+	rm -f $(NATIVE_DUMPER_OBJECT) $(NATIVE_DUMPER_BINARY)
 	rm -f $(TEST_ENGINE_TESTCASES) $(TEST_ENGINE_OBJECT) $(TEST_ENGINE_BINARY)
 	rm -f $(TEST_ALLOC_HYGIENE_OBJECT) $(TEST_ALLOC_HYGIENE_BINARY)
 	rm -f $(DEP_FILES)

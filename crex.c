@@ -1727,7 +1727,7 @@ static unsigned char *my_mremap(unsigned char *buffer, size_t old_size, size_t s
   }
 
   const int prot = PROT_READ | PROT_WRITE;
-  const int flags = MAP_ANONYMOUS;
+  const int flags = MAP_ANONYMOUS | MAP_PRIVATE;
 
   const size_t delta = size - old_size;
 
@@ -1808,8 +1808,8 @@ static unsigned char *reserve_native_code(native_code_t *code, size_t size) {
   return code->buffer + code->size;
 }
 
-static void resize(native_code_t *buffer, unsigned char *end) {
-  buffer->size = end - buffer->buffer;
+static void resize(native_code_t *code, unsigned char *end) {
+  code->size = end - code->buffer;
 }
 
 static void copy_displacement(unsigned char *destination, long value, size_t size);
@@ -1929,10 +1929,16 @@ WARN_UNUSED_RESULT static unsigned char *compile_to_native(status_t *status,
   native_code.capacity = get_page_size();
   native_code.buffer = my_mremap(NULL, 0, native_code.capacity);
 
+  if (native_code.buffer == NULL) {
+    *status = CREX_E_NOMEM;
+    return NULL;
+  }
+
 #define ASM0(id)                                                                                   \
   do {                                                                                             \
     if (!id(&native_code)) {                                                                       \
       my_mremap(native_code.buffer, native_code.capacity, 0);                                      \
+      *status = CREX_E_NOMEM;                                                                      \
       return NULL;                                                                                 \
     }                                                                                              \
   } while (0)
@@ -1953,8 +1959,8 @@ WARN_UNUSED_RESULT static unsigned char *compile_to_native(status_t *status,
     }                                                                                              \
   } while (0)
 
-#define BRANCH(instr)                                                                               \
-  instr;                                                                                          \
+#define BRANCH(instr)                                                                              \
+  instr;                                                                                           \
   size_t branch_origin = native_code.size
 
 #define BRANCH_TARGET()                                                                            \
@@ -3025,10 +3031,9 @@ void crex_print_bytecode(const regex_t *regex, FILE *file) {
 
 #ifdef NATIVE_COMPILER
 
-void crex_dump_native_code(const regex_t* regex, FILE* file) {
-  (void)regex;
-  (void)file;
-  // FIXME
+void crex_dump_native_code(const regex_t *regex, FILE *file) {
+  // FIXME: check IO errors in this and other debug functions?
+  fwrite(regex->native_code, 1, regex->native_code_size, file);
 }
 
 #endif
