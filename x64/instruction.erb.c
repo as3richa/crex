@@ -1,10 +1,11 @@
-static int <%= function_name %>(native_code_t* code, <%= param_list %>) {
+MAYBE_UNUSED static int <%= function_name %>(native_code_t* code<%= param_list %>) {
   unsigned char* data = reserve_native_code(code, <%= max_size %>);
 
   if (data == NULL) {
     return 0;
   }
 
+<% if reg_or_extension || rm_reg_param || rm_mem_param %>
   const int rex_w = <%= rex_w ? 1 : 0 %>;
   const int rex_r = <%= reg_param ? "#{reg_param} >> 3u" : 0 %>;
 
@@ -14,6 +15,7 @@ static int <%= function_name %>(native_code_t* code, <%= param_list %>) {
   data += encode_rex_m(data, rex_w, rex_r, <%= rm_mem_param %>);
 <% else %>
   (void)rex_r;
+<% end %>
 <% end %>
 
   static const unsigned char opcode[] = <%= opcode_literal %>;

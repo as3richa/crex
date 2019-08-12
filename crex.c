@@ -13,8 +13,8 @@
 
 #if defined(__x86_64__) && !defined(NO_NATIVE_COMPILER)
 
-#include <unistd.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 // It's spelled MAP_ANON on Darwin
 #ifndef MAP_ANONYMOUS
@@ -1706,7 +1706,7 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
 typedef struct {
   size_t size;
   size_t capacity;
-  unsigned char* buffer;
+  unsigned char *buffer;
 } native_code_t;
 
 static size_t get_page_size(void) {
@@ -1714,14 +1714,14 @@ static size_t get_page_size(void) {
   return (size < 0) ? 4096 : size;
 }
 
-static unsigned char* my_mremap(unsigned char* buffer, size_t old_size, size_t size) {
+static unsigned char *my_mremap(unsigned char *buffer, size_t old_size, size_t size) {
 #ifndef NDEBUG
   const size_t page_size = get_page_size();
   assert(old_size % page_size == 0 && size % page_size == 0);
 #endif
 
   // "Shrink" an existing mapping by unmapping its tail
-  if(size <= old_size) {
+  if (size <= old_size) {
     munmap(buffer + size, old_size - size);
     return buffer;
   }
@@ -1732,12 +1732,12 @@ static unsigned char* my_mremap(unsigned char* buffer, size_t old_size, size_t s
   const size_t delta = size - old_size;
 
   // First, try to "extend" the existing mapping by creating a new mapping immediately following
-  unsigned char* next = mmap(buffer + old_size, delta, prot, flags, -1, 0);
+  unsigned char *next = mmap(buffer + old_size, delta, prot, flags, -1, 0);
 
   // ENOMEM, probably
   if (next == MAP_FAILED) {
     return NULL;
-  } 
+  }
 
   // If in fact the new mapping was created immediately after the old mapping, we're done
   if (next == buffer + old_size) {
@@ -1782,19 +1782,23 @@ typedef struct {
 
 #define INDIRECT_REG(reg) ((indirect_operand_t){0, reg, 0, 0, 0, 0})
 
+#define INDIRECT_RD(reg, displacement) ((indirect_operand_t){0, reg, 0, 0, 0, displacement})
+
 #define INDIRECT_BSXD(base, scale, index, displacement)                                            \
   ((indirect_operand_t){0, base, 1, scale, index, displacement})
 
 #define INDIRECT_RIP(displacement) ((indirect_operand_t){1, 0, 0, 0, 0, displacement})
 
 static unsigned char *reserve_native_code(native_code_t *code, size_t size) {
-  if(code->size + size <= code->capacity) {
+  if (code->size + size <= code->capacity) {
     return code->buffer + code->size;
   }
 
-  unsigned char* buffer = my_mremap(code->buffer, code->capacity, 2 * code->capacity);
+  assert(code->size + size <= 2 * code->capacity);
 
-  if(buffer == MAP_FAILED) {
+  unsigned char *buffer = my_mremap(code->buffer, code->capacity, 2 * code->capacity);
+
+  if (buffer == MAP_FAILED) {
     return NULL;
   }
 
@@ -1912,12 +1916,129 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
 
 #include "build/x64.h"
 
-WARN_UNUSED_RESULT static status_t compile_to_native(unsigned char** result, size_t* size, unsigned char* bytecode, size_t n_instructions) {
-  (void)result;
-  (void)size;
-  (void)bytecode;
-  (void)n_instructions;
-  return CREX_OK;
+#define X_RESULT RDX
+#define X_VISITED RBX
+
+WARN_UNUSED_RESULT static unsigned char *compile_to_native(status_t *status,
+                                                           size_t *size,
+                                                           unsigned char *bytecode,
+                                                           size_t bytecode_size,
+                                                           size_t n_instructions) {
+  native_code_t native_code;
+  native_code.size = 0;
+  native_code.capacity = get_page_size();
+  native_code.buffer = my_mremap(NULL, 0, native_code.capacity);
+
+#define ASM0(id)                                                                                   \
+  do {                                                                                             \
+    if (!id(&native_code)) {                                                                       \
+      my_mremap(native_code.buffer, native_code.capacity, 0);                                      \
+      return NULL;                                                                                 \
+    }                                                                                              \
+  } while (0)
+
+#define ASM1(id, x)                                                                                \
+  do {                                                                                             \
+    if (!id(&native_code, x)) {                                                                    \
+      my_mremap(native_code.buffer, native_code.capacity, 0);                                      \
+      return NULL;                                                                                 \
+    }                                                                                              \
+  } while (0)
+
+#define ASM2(id, x, y)                                                                             \
+  do {                                                                                             \
+    if (!id(&native_code, x, y)) {                                                                 \
+      my_mremap(native_code.buffer, native_code.capacity, 0);                                      \
+      return NULL;                                                                                 \
+    }                                                                                              \
+  } while (0)
+
+#define BRANCH(instr)                                                                               \
+  instr;                                                                                          \
+  size_t branch_origin = native_code.size
+
+#define BRANCH_TARGET()                                                                            \
+  do {                                                                                             \
+    assert(native_code.size - branch_origin <= 127);                                               \
+    native_code.buffer[branch_origin - 1] = native_code.size - branch_origin;                      \
+  } while (0)
+
+  for (size_t i = 0, instr_index = 0; i < bytecode_size; instr_index++) {
+    const unsigned char byte = bytecode[i++];
+
+    const unsigned char opcode = VM_OPCODE(byte);
+    const size_t operand_size = VM_OPERAND_SIZE(byte);
+
+    const size_t operand = deserialize_operand(bytecode + i, operand_size);
+    i += operand_size;
+    (void)operand; // FIXME
+
+    if (n_instructions <= 64) {
+      assert(instr_index <= 64);
+      ASM2(bts64_reg_u8, X_VISITED, instr_index);
+    } else {
+      ASM2(bts32_mem_u8, INDIRECT_RD(X_VISITED, 4 * (instr_index / 32)), instr_index % 32);
+    }
+
+    BRANCH(ASM1(jnc_i8, 0));
+    ASM0(ret);
+    BRANCH_TARGET();
+
+    switch (opcode) {
+    case VM_CHARACTER:
+      break;
+
+    case VM_CHAR_CLASS:
+      break;
+
+    case VM_BUILTIN_CHAR_CLASS:
+      break;
+
+    case VM_ANCHOR_BOF:
+      break;
+
+    case VM_ANCHOR_BOL:
+      break;
+
+    case VM_ANCHOR_EOF:
+      break;
+
+    case VM_ANCHOR_EOL:
+      break;
+
+    case VM_ANCHOR_WORD_BOUNDARY:
+      break;
+
+    case VM_ANCHOR_NOT_WORD_BOUNDARY:
+      break;
+
+    case VM_JUMP:
+      break;
+
+    case VM_SPLIT_PASSIVE:
+      break;
+
+    case VM_SPLIT_EAGER:
+      break;
+
+    case VM_SPLIT_BACKWARDS_PASSIVE:
+      break;
+
+    case VM_SPLIT_BACKWARDS_EAGER:
+      break;
+
+    case VM_WRITE_POINTER:
+      break;
+
+    default:
+      assert(0);
+    }
+  }
+
+  *status = CREX_OK;
+  *size = native_code.size;
+
+  return native_code.buffer;
 }
 
 #endif
@@ -2229,9 +2350,10 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
 
 #ifdef NATIVE_COMPILER
 
-  *status = compile_to_native(&regex->native_code, &regex->native_code_size, regex->bytecode, n_instructions);
+  regex->native_code = compile_to_native(
+      status, &regex->native_code_size, regex->bytecode, regex->size, n_instructions);
 
-  if(*status != CREX_OK) {
+  if (regex->native_code == NULL) {
     FREE(allocator, regex->classes);
     FREE(allocator, regex->bytecode);
     FREE(allocator, regex);
@@ -2900,5 +3022,15 @@ void crex_print_bytecode(const regex_t *regex, FILE *file) {
     }
   }
 }
+
+#ifdef NATIVE_COMPILER
+
+void crex_dump_native_code(const regex_t* regex, FILE* file) {
+  (void)regex;
+  (void)file;
+  // FIXME
+}
+
+#endif
 
 #endif

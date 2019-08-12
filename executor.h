@@ -166,7 +166,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 
         assert(instr_pointer <= regex->size - operand_size);
 
-        size_t operand = deserialize_operand(regex->bytecode + instr_pointer, operand_size);
+        const size_t operand = deserialize_operand(regex->bytecode + instr_pointer, operand_size);
         instr_pointer += operand_size;
 
         if (opcode == VM_CHARACTER) {
