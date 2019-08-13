@@ -2130,13 +2130,13 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
 #include "build/x64.h"
 
 #define X_SCRATCH RAX
+#define X_SCRATCH_2 R9
 #define X_RESULT RDX
 #define X_VISITED RBX
 #define X_CHARACTER RCX
 #define X_PREV_CHARACTER RSI
 #define X_CHAR_CLASSES RDI
 #define X_BUILTIN_CHAR_CLASSES R8
-
 WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_instructions) {
   const size_t page_size = get_page_size();
 
@@ -2176,8 +2176,11 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
     }                                                                                              \
   } while (0)
 
-#define BRANCH(instr)                                                                              \
-  instr;                                                                                           \
+#define BRANCH(id)                                                                                 \
+  if (!id(&native_code, 0)) {                                                                      \
+    my_mremap(native_code.buffer, native_code.capacity, 0);                                        \
+    return CREX_E_NOMEM;                                                                           \
+  }                                                                                                \
   size_t branch_origin = native_code.size
 
 #define BRANCH_TARGET()                                                                            \
@@ -2209,7 +2212,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
         ASM2(bts32_mem_u8, INDIRECT_RD(X_VISITED, 4 * (instr_index / 32)), instr_index % 32);
       }
 
-      BRANCH(ASM1(jnc_i8, 0));
+      BRANCH(jnc_i8);
       ASM0(ret);
       BRANCH_TARGET();
     }
@@ -2219,7 +2222,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
       assert(operand <= 255);
 
       ASM2(cmp64_reg_i8, X_CHARACTER, operand);
-      BRANCH(ASM1(jne_i8, 0));
+      BRANCH(jne_i8);
 
       ASM0(ret);
 
@@ -2233,26 +2236,33 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
       assert(opcode != VM_CHAR_CLASS || operand < regex->n_classes);
       assert(opcode != VM_BUILTIN_CHAR_CLASS || operand < N_BUILTIN_CLASSES);
 
-      // The bitmap bit corresponding to character k can be found in the (k / 32)th dword. Need
-      // movzx because mov doesn't necessarily zero the high-order bits
-      ASM2(movzx8to64_reg_reg, X_SCRATCH, X_CHARACTER);
-      ASM2(shr8_reg_u8, X_SCRATCH, 5);
+      ASM2(cmp64_reg_i8, X_CHARACTER, -1);
+      BRANCH(je_i8);
 
-      const reg_t base_register =
-          (opcode == VM_CHAR_CLASS) ? X_CHAR_CLASSES : X_BUILTIN_CHAR_CLASSES;
+      {
+        // The bitmap bit corresponding to character k can be found in the (k / 32)th dword
+        ASM2(mov64_reg_reg, X_SCRATCH, X_CHARACTER);
+        ASM2(shr8_reg_u8, X_SCRATCH, 5);
 
-      const indirect_operand_t dword =
-          INDIRECT_BSXD(base_register, SCALE_4, X_SCRATCH, 32 * operand);
+        const reg_t base_register =
+            (opcode == VM_CHAR_CLASS) ? X_CHAR_CLASSES : X_BUILTIN_CHAR_CLASSES;
 
-      // bt takes the index operand modulo the operand size, so we don't have to compute it
-      // explicitly
-      ASM2(bt32_mem_reg, dword, X_CHARACTER);
+        const indirect_operand_t dword =
+            INDIRECT_BSXD(base_register, SCALE_4, X_SCRATCH, 32 * operand);
+
+        // bt takes the index operand modulo the operand size, so we don't have to compute it
+        // explicitly
+        ASM2(bt32_mem_reg, dword, X_CHARACTER);
+      }
+
+      BRANCH_TARGET();
+
       break;
     }
 
     case VM_ANCHOR_BOF: {
       ASM2(cmp64_reg_i8, X_PREV_CHARACTER, -1);
-      BRANCH(ASM1(je_i8, 0));
+      BRANCH(je_i8);
 
       ASM0(ret);
 
@@ -2263,11 +2273,11 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
 
     case VM_ANCHOR_BOL: {
       ASM2(cmp64_reg_i8, X_PREV_CHARACTER, -1);
-      BRANCH(ASM1(je_i8, 0));
+      BRANCH(je_i8);
 
       {
         ASM2(cmp64_reg_i8, X_PREV_CHARACTER, '\n');
-        BRANCH(ASM1(je_i8, 0));
+        BRANCH(je_i8);
 
         ASM0(ret);
 
@@ -2281,7 +2291,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
 
     case VM_ANCHOR_EOF: {
       ASM2(cmp64_reg_i8, X_CHARACTER, -1);
-      BRANCH(ASM1(je_i8, 0));
+      BRANCH(je_i8);
 
       ASM0(ret);
 
@@ -2292,11 +2302,11 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
 
     case VM_ANCHOR_EOL: {
       ASM2(cmp64_reg_i8, X_CHARACTER, -1);
-      BRANCH(ASM1(je_i8, 0));
+      BRANCH(je_i8);
 
       {
         ASM2(cmp64_reg_i8, X_CHARACTER, '\n');
-        BRANCH(ASM1(je_i8, 0));
+        BRANCH(je_i8);
 
         ASM0(ret);
 
@@ -2309,10 +2319,47 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
     }
 
     case VM_ANCHOR_WORD_BOUNDARY:
-      break;
+    case VM_ANCHOR_NOT_WORD_BOUNDARY: {
+      ASM2(xor8_reg_reg, X_SCRATCH_2, X_SCRATCH_2);
 
-    case VM_ANCHOR_NOT_WORD_BOUNDARY:
+      if (opcode == VM_ANCHOR_NOT_WORD_BOUNDARY) {
+        ASM1(inc8_reg, X_SCRATCH_2);
+      }
+
+      // D.R.Y.
+      for (size_t i = 0; i <= 1; i++) {
+        const reg_t character = (i == 0) ? X_PREV_CHARACTER : X_CHARACTER;
+
+        ASM2(cmp64_reg_i8, character, -1);
+        BRANCH(je_i8);
+
+        {
+          ASM2(mov64_reg_reg, X_SCRATCH, character);
+          ASM2(shr8_reg_u8, X_SCRATCH, 5);
+
+          const indirect_operand_t dword =
+              INDIRECT_BSXD(X_BUILTIN_CHAR_CLASSES, SCALE_4, X_SCRATCH, 32 * BCC_WORD);
+
+          ASM2(bt32_mem_reg, dword, character);
+          BRANCH(jnc_i8);
+
+          ASM1(inc8_reg, X_SCRATCH_2);
+
+          BRANCH_TARGET();
+        }
+
+        BRANCH_TARGET();
+      }
+
+      ASM2(test8_reg_i8, X_SCRATCH_2, 1);
+      BRANCH(jnz_i8);
+
+      ASM0(ret);
+
+      BRANCH_TARGET();
+
       break;
+    }
 
     case VM_JUMP:
       break;
@@ -2329,8 +2376,9 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
     case VM_SPLIT_BACKWARDS_EAGER:
       break;
 
-    case VM_WRITE_POINTER:
+    case VM_WRITE_POINTER: {
       break;
+    }
 
     default:
       assert(0);
