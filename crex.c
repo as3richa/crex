@@ -2196,19 +2196,19 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
     i += operand_size;
     (void)operand; // FIXME
 
-    if (n_instructions <= 64) {
-      assert(instr_index <= 64);
-
-      if (instr_index <= 32) {
-        ASM2(bts32_reg_u8, X_VISITED, instr_index);
-      } else {
-        ASM2(bts64_reg_u8, X_VISITED, instr_index);
-      }
-    } else {
-      ASM2(bts32_mem_u8, INDIRECT_RD(X_VISITED, 4 * (instr_index / 32)), instr_index % 32);
-    }
-
     {
+      if (n_instructions <= 64) {
+        assert(instr_index <= 64);
+
+        if (instr_index <= 32) {
+          ASM2(bts32_reg_u8, X_VISITED, instr_index);
+        } else {
+          ASM2(bts64_reg_u8, X_VISITED, instr_index);
+        }
+      } else {
+        ASM2(bts32_mem_u8, INDIRECT_RD(X_VISITED, 4 * (instr_index / 32)), instr_index % 32);
+      }
+
       BRANCH(ASM1(jnc_i8, 0));
       ASM0(ret);
       BRANCH_TARGET();
@@ -2217,10 +2217,14 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
     switch (opcode) {
     case VM_CHARACTER: {
       assert(operand <= 255);
-      ASM2(cmp8_reg_u8, X_CHARACTER, operand);
+
+      ASM2(cmp64_reg_i8, X_CHARACTER, operand);
       BRANCH(ASM1(jne_i8, 0));
+
       ASM0(ret);
+
       BRANCH_TARGET();
+
       break;
     }
 
@@ -2246,17 +2250,63 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
       break;
     }
 
-    case VM_ANCHOR_BOF:
-      break;
+    case VM_ANCHOR_BOF: {
+      ASM2(cmp64_reg_i8, X_PREV_CHARACTER, -1);
+      BRANCH(ASM1(je_i8, 0));
 
-    case VM_ANCHOR_BOL:
-      break;
+      ASM0(ret);
 
-    case VM_ANCHOR_EOF:
-      break;
+      BRANCH_TARGET();
 
-    case VM_ANCHOR_EOL:
       break;
+    }
+
+    case VM_ANCHOR_BOL: {
+      ASM2(cmp64_reg_i8, X_PREV_CHARACTER, -1);
+      BRANCH(ASM1(je_i8, 0));
+
+      {
+        ASM2(cmp64_reg_i8, X_PREV_CHARACTER, '\n');
+        BRANCH(ASM1(je_i8, 0));
+
+        ASM0(ret);
+
+        BRANCH_TARGET();
+      }
+
+      BRANCH_TARGET();
+
+      break;
+    }
+
+    case VM_ANCHOR_EOF: {
+      ASM2(cmp64_reg_i8, X_CHARACTER, -1);
+      BRANCH(ASM1(je_i8, 0));
+
+      ASM0(ret);
+
+      BRANCH_TARGET();
+
+      break;
+    }
+
+    case VM_ANCHOR_EOL: {
+      ASM2(cmp64_reg_i8, X_CHARACTER, -1);
+      BRANCH(ASM1(je_i8, 0));
+
+      {
+        ASM2(cmp64_reg_i8, X_CHARACTER, '\n');
+        BRANCH(ASM1(je_i8, 0));
+
+        ASM0(ret);
+
+        BRANCH_TARGET();
+      }
+
+      BRANCH_TARGET();
+
+      break;
+    }
 
     case VM_ANCHOR_WORD_BOUNDARY:
       break;

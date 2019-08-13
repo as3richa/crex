@@ -46,12 +46,6 @@
   params: [delta]
   encoding: [i8]
 
-- name: cmp8
-  opcode: [0x80]
-  extension: 0x07
-  params: [left, right]
-  encoding: [rm_reg, u8]
-
 - name: jne
   opcode: [0x75]
   params: [delta]
@@ -84,3 +78,15 @@
   opcode: [0x0f, 0xb6]
   params: [destination, source]
   encoding: [reg, rm_reg]
+
+- name: cmp64
+  rex_w: true
+  opcode: [0x83]
+  extension: 0x07
+  params: [left, right]
+  encoding: [rm_reg, i8]
+
+- name: je
+  opcode: [0x74]
+  params: [delta]
+  encoding: [i8]
