@@ -32,6 +32,9 @@ typedef crex_status_t status_t;
 #define REPETITION_INFINITY SIZE_MAX
 #define NON_CAPTURING SIZE_MAX
 
+// For brevity
+typedef crex_regex_t regex_t;
+
 /** Character class plumbing **/
 
 #define CHAR_CLASS_BITMAP_SIZE 32
@@ -1701,6 +1704,216 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
   return CREX_OK;
 }
 
+/** Instruction pointer (i.e. size_t) list with custom allocator **/
+
+typedef size_t state_list_handle_t;
+
+#define STATE_LIST_EMPTY (~(state_list_handle_t)0)
+
+typedef struct {
+  context_t *context;
+
+  size_t n_pointers;
+  size_t element_size;
+  size_t max_capacity;
+
+  size_t bump_allocator;
+  state_list_handle_t freelist;
+
+  state_list_handle_t head;
+} state_list_t;
+
+#define LIST_NEXT(list, handle) (*(size_t *)((list)->context->buffer + (handle)))
+#define LIST_INSTR_POINTER(list, handle) (*(size_t *)((list)->context->buffer + (handle) + 1))
+#define LIST_POINTER_BUFFER(list, handle) ((const char **)((list)->context->buffer + (handle) + 2))
+
+static void
+state_list_create(state_list_t *list, context_t *context, size_t n_pointers, size_t max_elements) {
+  list->context = context;
+
+  list->n_pointers = n_pointers;
+  list->element_size = 2 + n_pointers;
+  list->max_capacity = max_elements * list->element_size;
+
+  list->bump_allocator = 0;
+  list->freelist = STATE_LIST_EMPTY;
+
+  list->head = STATE_LIST_EMPTY;
+}
+
+static state_list_handle_t state_list_alloc(state_list_t *list) {
+  state_list_handle_t state;
+
+#ifndef NDEBUG
+  state = STATE_LIST_EMPTY;
+#endif
+
+  if (list->bump_allocator + list->element_size <= list->context->capacity) {
+    state = list->bump_allocator;
+    list->bump_allocator += list->element_size;
+  } else if (list->freelist != STATE_LIST_EMPTY) {
+    state = list->freelist;
+    list->freelist = LIST_NEXT(list, state);
+  } else {
+    assert(list->context->capacity < list->max_capacity);
+
+    size_t capacity = 2 * list->context->capacity + list->element_size;
+
+    if (capacity > list->max_capacity) {
+      capacity = list->max_capacity;
+    }
+
+    allocator_slot_t *buffer =
+        ALLOC(&list->context->allocator, sizeof(allocator_slot_t) * capacity);
+
+    if (buffer == NULL) {
+      return STATE_LIST_EMPTY;
+    }
+
+    safe_memcpy(buffer, list->context->buffer, sizeof(allocator_slot_t) * list->context->capacity);
+
+    FREE(&list->context->allocator, list->context->buffer);
+
+    list->context->buffer = buffer;
+    list->context->capacity = capacity;
+
+    assert(list->bump_allocator + list->element_size <= capacity);
+
+    state = list->bump_allocator;
+    list->bump_allocator += list->element_size;
+  }
+
+  assert(state + list->element_size <= list->context->capacity);
+  assert(state % list->element_size == 0);
+
+  return state;
+}
+
+static int state_list_push_initial_state(state_list_t *list, state_list_handle_t predecessor) {
+  assert(predecessor < list->context->capacity || predecessor == STATE_LIST_EMPTY);
+
+  const state_list_handle_t state = state_list_alloc(list);
+
+  if (state == STATE_LIST_EMPTY) {
+    return 0;
+  }
+
+  LIST_INSTR_POINTER(list, state) = 0;
+
+  const char **pointer_buffer = LIST_POINTER_BUFFER(list, state);
+
+  for (size_t i = 0; i < list->n_pointers; i++) {
+    pointer_buffer[i] = NULL;
+  }
+
+  if (predecessor == STATE_LIST_EMPTY) {
+    LIST_NEXT(list, state) = list->head;
+    list->head = state;
+  } else {
+    LIST_NEXT(list, state) = LIST_NEXT(list, predecessor);
+    LIST_NEXT(list, predecessor) = state;
+  }
+
+  return 1;
+}
+
+static int
+state_list_push_copy(state_list_t *list, state_list_handle_t predecessor, size_t instr_pointer) {
+  assert(predecessor < list->context->capacity);
+
+  const state_list_handle_t state = state_list_alloc(list);
+
+  if (state == STATE_LIST_EMPTY) {
+    return 0;
+  }
+
+  LIST_INSTR_POINTER(list, state) = instr_pointer;
+
+  const char **dest_pointer_buffer = LIST_POINTER_BUFFER(list, state);
+  const char **source_pointer_buffer = LIST_POINTER_BUFFER(list, predecessor);
+  safe_memcpy(dest_pointer_buffer, source_pointer_buffer, sizeof(char *) * list->n_pointers);
+
+  LIST_NEXT(list, state) = LIST_NEXT(list, predecessor);
+  LIST_NEXT(list, predecessor) = state;
+
+  return 1;
+}
+
+static state_list_handle_t state_list_pop(state_list_t *list, state_list_handle_t predecessor) {
+  assert(predecessor < list->context->capacity || predecessor == STATE_LIST_EMPTY);
+
+  const state_list_handle_t state =
+      (predecessor == STATE_LIST_EMPTY) ? list->head : LIST_NEXT(list, predecessor);
+  assert(state < list->context->capacity);
+
+  const state_list_handle_t successor = LIST_NEXT(list, state);
+
+  if (predecessor == STATE_LIST_EMPTY) {
+    list->head = successor;
+  } else {
+    LIST_NEXT(list, predecessor) = successor;
+  }
+
+  LIST_NEXT(list, state) = list->freelist;
+  list->freelist = state;
+
+  return successor;
+}
+
+struct crex_regex {
+  size_t size;
+  size_t n_capturing_groups;
+  size_t n_classes;
+  size_t max_concurrent_states;
+
+  unsigned char *bytecode;
+
+  char_class_t *classes;
+
+  void *allocator_context;
+  void (*free)(void *, void *);
+
+#ifdef NATIVE_COMPILER
+  unsigned char *native_code;
+  size_t native_code_size;
+#endif
+};
+
+static status_t reserve(context_t *context, const regex_t *regex, size_t n_pointers) {
+  const size_t min_visited_size = bitmap_size_for_bits(regex->size);
+
+  if (context->visited_size < min_visited_size) {
+    unsigned char *visited = ALLOC(&context->allocator, min_visited_size);
+
+    if (visited == NULL) {
+      return CREX_E_NOMEM;
+    }
+
+    FREE(&context->allocator, context->visited);
+
+    context->visited_size = min_visited_size;
+    context->visited = visited;
+  }
+
+  const size_t element_size = 2 + n_pointers;
+  const size_t max_capacity = regex->max_concurrent_states * element_size;
+
+  if (context->capacity < max_capacity) {
+    allocator_slot_t *buffer = ALLOC(&context->allocator, sizeof(allocator_slot_t) * max_capacity);
+
+    if (buffer == NULL) {
+      return CREX_E_NOMEM;
+    }
+
+    FREE(&context->allocator, context->buffer);
+
+    context->capacity = max_capacity;
+    context->buffer = buffer;
+  }
+
+  return CREX_OK;
+}
+
 #ifdef NATIVE_COMPILER
 
 typedef struct {
@@ -1916,30 +2129,34 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
 
 #include "build/x64.h"
 
+#define X_SCRATCH RAX
 #define X_RESULT RDX
 #define X_VISITED RBX
+#define X_CHARACTER RCX
+#define X_PREV_CHARACTER RSI
+#define X_CHAR_CLASSES RDI
+#define X_BUILTIN_CHAR_CLASSES R8
 
-WARN_UNUSED_RESULT static unsigned char *compile_to_native(status_t *status,
-                                                           size_t *size,
-                                                           unsigned char *bytecode,
-                                                           size_t bytecode_size,
-                                                           size_t n_instructions) {
+WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_instructions) {
+  const size_t page_size = get_page_size();
+
   native_code_t native_code;
   native_code.size = 0;
-  native_code.capacity = get_page_size();
+
+  // We preallocate the buffer because starting with a single-page allocation simplifies
+  // reallocation slightly
+  native_code.capacity = page_size;
   native_code.buffer = my_mremap(NULL, 0, native_code.capacity);
 
   if (native_code.buffer == NULL) {
-    *status = CREX_E_NOMEM;
-    return NULL;
+    return CREX_E_NOMEM;
   }
 
 #define ASM0(id)                                                                                   \
   do {                                                                                             \
     if (!id(&native_code)) {                                                                       \
       my_mremap(native_code.buffer, native_code.capacity, 0);                                      \
-      *status = CREX_E_NOMEM;                                                                      \
-      return NULL;                                                                                 \
+      return CREX_E_NOMEM;                                                                         \
     }                                                                                              \
   } while (0)
 
@@ -1947,7 +2164,7 @@ WARN_UNUSED_RESULT static unsigned char *compile_to_native(status_t *status,
   do {                                                                                             \
     if (!id(&native_code, x)) {                                                                    \
       my_mremap(native_code.buffer, native_code.capacity, 0);                                      \
-      return NULL;                                                                                 \
+      return CREX_E_NOMEM;                                                                         \
     }                                                                                              \
   } while (0)
 
@@ -1955,7 +2172,7 @@ WARN_UNUSED_RESULT static unsigned char *compile_to_native(status_t *status,
   do {                                                                                             \
     if (!id(&native_code, x, y)) {                                                                 \
       my_mremap(native_code.buffer, native_code.capacity, 0);                                      \
-      return NULL;                                                                                 \
+      return CREX_E_NOMEM;                                                                         \
     }                                                                                              \
   } while (0)
 
@@ -1969,36 +2186,65 @@ WARN_UNUSED_RESULT static unsigned char *compile_to_native(status_t *status,
     native_code.buffer[branch_origin - 1] = native_code.size - branch_origin;                      \
   } while (0)
 
-  for (size_t i = 0, instr_index = 0; i < bytecode_size; instr_index++) {
-    const unsigned char byte = bytecode[i++];
+  for (size_t i = 0, instr_index = 0; i < regex->size; instr_index++) {
+    const unsigned char byte = regex->bytecode[i++];
 
     const unsigned char opcode = VM_OPCODE(byte);
     const size_t operand_size = VM_OPERAND_SIZE(byte);
 
-    const size_t operand = deserialize_operand(bytecode + i, operand_size);
+    const size_t operand = deserialize_operand(regex->bytecode + i, operand_size);
     i += operand_size;
     (void)operand; // FIXME
 
     if (n_instructions <= 64) {
       assert(instr_index <= 64);
-      ASM2(bts64_reg_u8, X_VISITED, instr_index);
+
+      if (instr_index <= 32) {
+        ASM2(bts32_reg_u8, X_VISITED, instr_index);
+      } else {
+        ASM2(bts64_reg_u8, X_VISITED, instr_index);
+      }
     } else {
       ASM2(bts32_mem_u8, INDIRECT_RD(X_VISITED, 4 * (instr_index / 32)), instr_index % 32);
     }
 
-    BRANCH(ASM1(jnc_i8, 0));
-    ASM0(ret);
-    BRANCH_TARGET();
+    {
+      BRANCH(ASM1(jnc_i8, 0));
+      ASM0(ret);
+      BRANCH_TARGET();
+    }
 
     switch (opcode) {
-    case VM_CHARACTER:
+    case VM_CHARACTER: {
+      assert(operand <= 255);
+      ASM2(cmp8_reg_u8, X_CHARACTER, operand);
+      BRANCH(ASM1(jne_i8, 0));
+      ASM0(ret);
+      BRANCH_TARGET();
       break;
+    }
 
     case VM_CHAR_CLASS:
-      break;
+    case VM_BUILTIN_CHAR_CLASS: {
+      assert(opcode != VM_CHAR_CLASS || operand < regex->n_classes);
+      assert(opcode != VM_BUILTIN_CHAR_CLASS || operand < N_BUILTIN_CLASSES);
 
-    case VM_BUILTIN_CHAR_CLASS:
+      // The bitmap bit corresponding to character k can be found in the (k / 32)th dword. Need
+      // movzx because mov doesn't necessarily zero the high-order bits
+      ASM2(movzx8to64_reg_reg, X_SCRATCH, X_CHARACTER);
+      ASM2(shr8_reg_u8, X_SCRATCH, 5);
+
+      const reg_t base_register =
+          (opcode == VM_CHAR_CLASS) ? X_CHAR_CLASSES : X_BUILTIN_CHAR_CLASSES;
+
+      const indirect_operand_t dword =
+          INDIRECT_BSXD(base_register, SCALE_4, X_SCRATCH, 32 * operand);
+
+      // bt takes the index operand modulo the operand size, so we don't have to compute it
+      // explicitly
+      ASM2(bt32_mem_reg, dword, X_CHARACTER);
       break;
+    }
 
     case VM_ANCHOR_BOF:
       break;
@@ -2041,226 +2287,20 @@ WARN_UNUSED_RESULT static unsigned char *compile_to_native(status_t *status,
     }
   }
 
-  *status = CREX_OK;
-  *size = native_code.size;
+  assert(native_code.capacity % page_size == 0);
 
-  return native_code.buffer;
-}
+  const size_t n_pages = native_code.capacity / page_size;
+  const size_t used_pages = (native_code.size + page_size - 1) / page_size;
 
-#endif
+  munmap(native_code.buffer + page_size * used_pages, page_size * (n_pages - used_pages));
 
-/** Instruction pointer (i.e. size_t) list with custom allocator **/
-
-typedef size_t state_list_handle_t;
-
-#define STATE_LIST_EMPTY (~(state_list_handle_t)0)
-
-typedef struct {
-  context_t *context;
-
-  size_t n_pointers;
-  size_t element_size;
-  size_t max_capacity;
-
-  size_t bump_allocator;
-  state_list_handle_t freelist;
-
-  state_list_handle_t head;
-} state_list_t;
-
-#define LIST_NEXT(list, handle) (*(size_t *)((list)->context->buffer + (handle)))
-#define LIST_INSTR_POINTER(list, handle) (*(size_t *)((list)->context->buffer + (handle) + 1))
-#define LIST_POINTER_BUFFER(list, handle) ((const char **)((list)->context->buffer + (handle) + 2))
-
-static void
-state_list_create(state_list_t *list, context_t *context, size_t n_pointers, size_t max_elements) {
-  list->context = context;
-
-  list->n_pointers = n_pointers;
-  list->element_size = 2 + n_pointers;
-  list->max_capacity = max_elements * list->element_size;
-
-  list->bump_allocator = 0;
-  list->freelist = STATE_LIST_EMPTY;
-
-  list->head = STATE_LIST_EMPTY;
-}
-
-static state_list_handle_t state_list_alloc(state_list_t *list) {
-  state_list_handle_t state;
-
-#ifndef NDEBUG
-  state = STATE_LIST_EMPTY;
-#endif
-
-  if (list->bump_allocator + list->element_size <= list->context->capacity) {
-    state = list->bump_allocator;
-    list->bump_allocator += list->element_size;
-  } else if (list->freelist != STATE_LIST_EMPTY) {
-    state = list->freelist;
-    list->freelist = LIST_NEXT(list, state);
-  } else {
-    assert(list->context->capacity < list->max_capacity);
-
-    size_t capacity = 2 * list->context->capacity + list->element_size;
-
-    if (capacity > list->max_capacity) {
-      capacity = list->max_capacity;
-    }
-
-    allocator_slot_t *buffer =
-        ALLOC(&list->context->allocator, sizeof(allocator_slot_t) * capacity);
-
-    if (buffer == NULL) {
-      return STATE_LIST_EMPTY;
-    }
-
-    safe_memcpy(buffer, list->context->buffer, sizeof(allocator_slot_t) * list->context->capacity);
-
-    FREE(&list->context->allocator, list->context->buffer);
-
-    list->context->buffer = buffer;
-    list->context->capacity = capacity;
-
-    assert(list->bump_allocator + list->element_size <= capacity);
-
-    state = list->bump_allocator;
-    list->bump_allocator += list->element_size;
-  }
-
-  assert(state + list->element_size <= list->context->capacity);
-  assert(state % list->element_size == 0);
-
-  return state;
-}
-
-static int state_list_push_initial_state(state_list_t *list, state_list_handle_t predecessor) {
-  assert(predecessor < list->context->capacity || predecessor == STATE_LIST_EMPTY);
-
-  const state_list_handle_t state = state_list_alloc(list);
-
-  if (state == STATE_LIST_EMPTY) {
-    return 0;
-  }
-
-  LIST_INSTR_POINTER(list, state) = 0;
-
-  const char **pointer_buffer = LIST_POINTER_BUFFER(list, state);
-
-  for (size_t i = 0; i < list->n_pointers; i++) {
-    pointer_buffer[i] = NULL;
-  }
-
-  if (predecessor == STATE_LIST_EMPTY) {
-    LIST_NEXT(list, state) = list->head;
-    list->head = state;
-  } else {
-    LIST_NEXT(list, state) = LIST_NEXT(list, predecessor);
-    LIST_NEXT(list, predecessor) = state;
-  }
-
-  return 1;
-}
-
-static int
-state_list_push_copy(state_list_t *list, state_list_handle_t predecessor, size_t instr_pointer) {
-  assert(predecessor < list->context->capacity);
-
-  const state_list_handle_t state = state_list_alloc(list);
-
-  if (state == STATE_LIST_EMPTY) {
-    return 0;
-  }
-
-  LIST_INSTR_POINTER(list, state) = instr_pointer;
-
-  const char **dest_pointer_buffer = LIST_POINTER_BUFFER(list, state);
-  const char **source_pointer_buffer = LIST_POINTER_BUFFER(list, predecessor);
-  safe_memcpy(dest_pointer_buffer, source_pointer_buffer, sizeof(char *) * list->n_pointers);
-
-  LIST_NEXT(list, state) = LIST_NEXT(list, predecessor);
-  LIST_NEXT(list, predecessor) = state;
-
-  return 1;
-}
-
-static state_list_handle_t state_list_pop(state_list_t *list, state_list_handle_t predecessor) {
-  assert(predecessor < list->context->capacity || predecessor == STATE_LIST_EMPTY);
-
-  const state_list_handle_t state =
-      (predecessor == STATE_LIST_EMPTY) ? list->head : LIST_NEXT(list, predecessor);
-  assert(state < list->context->capacity);
-
-  const state_list_handle_t successor = LIST_NEXT(list, state);
-
-  if (predecessor == STATE_LIST_EMPTY) {
-    list->head = successor;
-  } else {
-    LIST_NEXT(list, predecessor) = successor;
-  }
-
-  LIST_NEXT(list, state) = list->freelist;
-  list->freelist = state;
-
-  return successor;
-}
-
-struct crex_regex {
-  size_t size;
-  size_t n_capturing_groups;
-  size_t n_classes;
-  size_t max_concurrent_states;
-
-  unsigned char *bytecode;
-
-  char_class_t *classes;
-
-  void *allocator_context;
-  void (*free)(void *, void *);
-
-#ifdef NATIVE_COMPILER
-  unsigned char *native_code;
-  size_t native_code_size;
-#endif
-};
-
-// For brevity
-typedef crex_regex_t regex_t;
-
-static status_t reserve(context_t *context, const regex_t *regex, size_t n_pointers) {
-  const size_t min_visited_size = bitmap_size_for_bits(regex->size);
-
-  if (context->visited_size < min_visited_size) {
-    unsigned char *visited = ALLOC(&context->allocator, min_visited_size);
-
-    if (visited == NULL) {
-      return CREX_E_NOMEM;
-    }
-
-    FREE(&context->allocator, context->visited);
-
-    context->visited_size = min_visited_size;
-    context->visited = visited;
-  }
-
-  const size_t element_size = 2 + n_pointers;
-  const size_t max_capacity = regex->max_concurrent_states * element_size;
-
-  if (context->capacity < max_capacity) {
-    allocator_slot_t *buffer = ALLOC(&context->allocator, sizeof(allocator_slot_t) * max_capacity);
-
-    if (buffer == NULL) {
-      return CREX_E_NOMEM;
-    }
-
-    FREE(&context->allocator, context->buffer);
-
-    context->capacity = max_capacity;
-    context->buffer = buffer;
-  }
+  regex->native_code = native_code.buffer;
+  regex->native_code_size = native_code.size;
 
   return CREX_OK;
 }
+
+#endif
 
 /** Public API **/
 
@@ -2356,10 +2396,9 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
 
 #ifdef NATIVE_COMPILER
 
-  regex->native_code = compile_to_native(
-      status, &regex->native_code_size, regex->bytecode, regex->size, n_instructions);
+  *status = compile_to_native(regex, n_instructions);
 
-  if (regex->native_code == NULL) {
+  if (*status != CREX_OK) {
     FREE(allocator, regex->classes);
     FREE(allocator, regex->bytecode);
     FREE(allocator, regex);

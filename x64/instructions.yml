@@ -45,3 +45,42 @@
   opcode: [0x73]
   params: [delta]
   encoding: [i8]
+
+- name: cmp8
+  opcode: [0x80]
+  extension: 0x07
+  params: [left, right]
+  encoding: [rm_reg, u8]
+
+- name: jne
+  opcode: [0x75]
+  params: [delta]
+  encoding: [i8]
+
+- name: mov8
+  opcode: [0x88]
+  params: [destination, source]
+  encoding: [rm_reg, reg]
+
+- name: bts32
+  opcode: [0x0f, 0xba]
+  extension: 0x05
+  params: [bitmap, index]
+  encoding: [rm_reg, u8]
+
+- name: shr8
+  opcode: [0xc0]
+  extension: 0x05
+  params: [value, shift]
+  encoding: [rm_reg, u8]
+
+- name: bt32
+  opcode: [0x0f, 0xa3]
+  params: [bitmap, index]
+  encoding: [rm_mem, reg]
+
+- name: movzx8to64
+  rex_w: true
+  opcode: [0x0f, 0xb6]
+  params: [destination, source]
+  encoding: [reg, rm_reg]

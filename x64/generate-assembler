@@ -4,12 +4,12 @@ require 'erb'
 require 'yaml'
 
 TYPES = {
-  i8: 'int',
+  i8: 'char',
   i32: 'long',
   reg: 'reg_t',
   rm_mem: 'indirect_operand_t',
   rm_reg: 'reg_t',
-  u8: 'size_t',
+  u8: 'unsigned char',
   u32: 'size_t',
 }.freeze
 
