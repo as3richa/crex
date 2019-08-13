@@ -44,13 +44,6 @@
   params: [bitmap, index]
   encoding: [rm_mem, reg]
 
-- name: cmp64
-  rex_w: true
-  opcode: [0x83]
-  extension: 0x07
-  params: [left, right]
-  encoding: [rm_reg, i8]
-
 - name: je
   opcode: [0x74]
   params: [delta]
@@ -83,3 +76,35 @@
   extension: 0x00
   params: [left, right]
   encoding: [rm_reg, i8]
+
+- name: jae
+  opcode: [0x73]
+  params: [delta]
+  encoding: [i8]
+
+- name: cmp64
+  rex_w: true
+  opcode: [0x83]
+  extension: 0x07
+  params: [left, right]
+  encoding: [rm_reg, i8]
+
+- name: cmp64
+  rex_w: true
+  opcode: [0x83]
+  extension: 0x07
+  params: [left, right]
+  encoding: [rm_reg, u8]
+
+- name: cmp64
+  rex_w: true
+  opcode: [0x81]
+  extension: 0x07
+  params: [left, right]
+  encoding: [rm_reg, u32]
+
+- name: mov64
+  rex_w: true
+  opcode: [0x89]
+  params: [destination, source]
+  encoding: [rm_mem, reg]

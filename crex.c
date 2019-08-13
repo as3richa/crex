@@ -2137,6 +2137,11 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
 #define X_PREV_CHARACTER RSI
 #define X_CHAR_CLASSES RDI
 #define X_BUILTIN_CHAR_CLASSES R8
+#define X_LIST_BUFFER R10
+#define X_STATE R11
+#define X_STR R13
+#define X_N_POINTERS RBP
+
 WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_instructions) {
   const size_t page_size = get_page_size();
 
@@ -2377,6 +2382,22 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
       break;
 
     case VM_WRITE_POINTER: {
+      assert(operand < 2 * regex->n_capturing_groups);
+
+      // FIXME: this imposes a low bound on n_capturing_groups. Need some way to surface this in the API
+
+      if (operand <= 255) {
+        ASM2(cmp64_reg_u8, X_N_POINTERS, operand);
+      } else {
+        ASM2(cmp64_reg_u32, X_N_POINTERS, operand);
+      }
+
+      BRANCH(jae_i8);
+
+      ASM2(mov64_mem_reg, INDIRECT_BSXD(X_LIST_BUFFER, SCALE_1, X_STATE, 2 + operand), X_STR);
+
+      BRANCH_TARGET();
+
       break;
     }
 
