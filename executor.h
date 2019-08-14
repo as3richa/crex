@@ -17,7 +17,6 @@
 
 PUBLIC status_t
 NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t size) {
-
 #ifdef MATCH_BOOLEAN
   const size_t n_pointers = 0;
 #elif defined(MATCH_LOCATION)
@@ -37,14 +36,31 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
   state_list_t list;
   state_list_init(&list, context, n_pointers);
 
-  const size_t visited_size = bitmap_size_for_bits(regex->size);
-  handle_t visited_handle = internal_allocator_alloc(&list.allocator, visited_size);
+  const size_t flags_size = bitmap_size_for_bits(regex->n_flags);
+  const handle_t flags = internal_allocator_alloc(&list.allocator, flags_size);
 
-#define VISITED (unsigned char *)(context->buffer + visited_handle)
-
-  if (visited_handle == HANDLE_NULL) {
+  if (flags == HANDLE_NULL) {
     return CREX_E_NOMEM;
   }
+
+#define FLAGS (unsigned char *)(context->buffer + flags)
+
+#ifndef NDEBUG
+  // The compiler statically guarantees that no instruction can ever be executed twice, via
+  // VM_TEST_AND_SET_FLAG. Moreover, it does so much more efficiently than the naive solution
+  // (tracking every instruction in a bitmap). In development, we can check the compiler's
+  // correctness by also tracking execution naively
+
+  const size_t visited_size = bitmap_size_for_bits(regex->size);
+  const handle_t visited = internal_allocator_alloc(&list.allocator, visited_size);
+
+  if (visited == HANDLE_NULL) {
+    return CREX_E_NOMEM;
+  }
+
+#define VISITED (unsigned char *)(context->buffer + visited)
+
+#endif
 
   const char *eof = str + size;
   int prev_character = -1;
@@ -52,7 +68,11 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
   for (;;) {
     const int character = (str == eof) ? -1 : (unsigned char)(*str);
 
+    bitmap_clear(FLAGS, flags_size);
+
+#ifndef NDEBUG
     bitmap_clear(VISITED, visited_size);
+#endif
 
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
     if (list.head == HANDLE_NULL && match_found) {
@@ -141,18 +161,15 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #endif
         }
 
-        if (bitmap_test_and_set(VISITED, instr_pointer)) {
-          keep = 0;
-          break;
-        }
-
         const unsigned char byte = regex->bytecode[instr_pointer++];
 
         const unsigned char opcode = VM_OPCODE(byte);
         const size_t operand_size = VM_OPERAND_SIZE(byte);
 
-        assert(instr_pointer <= regex->size - operand_size);
+        // FIMXE: think harder about this
+        assert(opcode == VM_TEST_AND_SET_FLAG || !bitmap_test_and_set(VISITED, instr_pointer - 1));
 
+        assert(instr_pointer <= regex->size - operand_size);
         const size_t operand = deserialize_operand(regex->bytecode + instr_pointer, operand_size);
         instr_pointer += operand_size;
 
@@ -237,10 +254,8 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
           assert(instr_pointer <= regex->size);
           assert(split_pointer <= regex->size);
 
-          if (!bitmap_test(VISITED, split_pointer)) {
-            if (!state_list_push_copy(&list, state, split_pointer)) {
-              return CREX_E_NOMEM;
-            }
+          if (!state_list_push_copy(&list, state, split_pointer)) {
+            return CREX_E_NOMEM;
           }
 
           break;
@@ -265,9 +280,16 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
           break;
         }
 
-        case VM_TEST_AND_SET_FLAG:
-          // FIXME
+        case VM_TEST_AND_SET_FLAG: {
+          assert(operand < regex->n_flags);
+
+          if (bitmap_test_and_set(FLAGS, operand)) {
+            keep = 0;
+            break;
+          }
+
           break;
+        }
 
         default:
           assert(0);
@@ -312,10 +334,10 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #endif
 
   return CREX_OK;
-
-#undef VISITED
 }
 
+#undef FLAGS
+#undef VISITED
 #undef MATCH_BOOLEAN
 #undef MATCH_LOCATION
 #undef MATCH_GROUPS

@@ -750,7 +750,7 @@ static status_t lex_char_class(char_classes_t *classes,
   return CREX_OK;
 }
 
-size_t parse_size(const char *begin, const char *end) {
+WARN_UNUSED_RESULT static size_t parse_size(const char *begin, const char *end) {
   size_t result = 0;
 
   for (const char *it = begin; it != end; it++) {
@@ -1611,7 +1611,7 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
         size_t delta_size;
 
         for (delta_size = 1; delta_size <= 4; delta_size *= 2) {
-          delta = child.size + 1 + delta_size;
+          delta = (1 + child_flag_size) + child.size + (1 + delta_size);
 
           if (size_for_operand(delta) <= delta_size) {
             break;
@@ -1622,7 +1622,8 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
         trailing_split_delta_size = delta_size;
       }
 
-      const size_t leading_split_delta = child.size + 1 + trailing_split_delta_size;
+      const size_t leading_split_delta =
+          (1 + child_flag_size) + child.size + (1 + trailing_split_delta_size);
       const size_t leading_split_delta_size = size_for_operand(leading_split_delta);
 
       *(bytecode++) = VM_OP(leading_split_opcode, leading_split_delta_size);
@@ -2177,7 +2178,7 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
 #define X_STR R13
 #define X_N_POINTERS RBP
 
-WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_instructions) {
+WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
   const size_t page_size = get_page_size();
 
   native_code_t native_code;
@@ -2237,25 +2238,6 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
 
     const size_t operand = deserialize_operand(regex->bytecode + i, operand_size);
     i += operand_size;
-    (void)operand; // FIXME
-
-    {
-      if (n_instructions <= 64) {
-        assert(instr_index <= 64);
-
-        if (instr_index <= 32) {
-          ASM2(bts32_reg_u8, X_VISITED, instr_index);
-        } else {
-          ASM2(bts64_reg_u8, X_VISITED, instr_index);
-        }
-      } else {
-        ASM2(bts32_mem_u8, INDIRECT_RD(X_VISITED, 4 * (instr_index / 32)), instr_index % 32);
-      }
-
-      BRANCH(jnc_i8);
-      ASM0(ret);
-      BRANCH_TARGET();
-    }
 
     switch (opcode) {
     case VM_CHARACTER: {
@@ -2437,6 +2419,27 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
       break;
     }
 
+    case VM_TEST_AND_SET_FLAG: {
+      assert(operand < regex->n_flags);
+
+      if (regex->n_flags <= 64) {
+        if (operand <= 32) {
+          ASM2(bts32_reg_u8, X_VISITED, instr_index);
+        } else {
+          ASM2(bts64_reg_u8, X_VISITED, instr_index);
+        }
+      } else {
+        const size_t dword = 4 * (instr_index / 32);
+        ASM2(bts32_mem_u8, INDIRECT_RD(X_VISITED, dword), instr_index % 32);
+      }
+
+      BRANCH(jnc_i8);
+      ASM0(ret);
+      BRANCH_TARGET();
+
+      break;
+    }
+
     default:
       assert(0);
     }
@@ -2552,7 +2555,7 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
 
 #ifdef NATIVE_COMPILER
 
-  *status = compile_to_native(regex, n_instructions);
+  *status = compile_to_native(regex);
 
   if (*status != CREX_OK) {
     FREE(allocator, regex->classes);

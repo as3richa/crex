@@ -84,8 +84,6 @@ void metered_free(void *context, void *pointer) {
 
   allocator->frees++;
 
-  free(pointer);
-
   for (size_t index = 0; index < allocator->quota; index++) {
     if (allocator->pointers[index] == pointer) {
       allocator->pointers[index] = NULL;
@@ -94,6 +92,8 @@ void metered_free(void *context, void *pointer) {
   }
 
   DIE("free called with an un-alloced pointer");
+
+  free(pointer);
 }
 
 #define N_PATTERNS 5

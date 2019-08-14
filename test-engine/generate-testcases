@@ -85,5 +85,11 @@ Dir.glob(File.join(__dir__, '*.rb')) do |path|
   require_relative(filename)
 end
 
-emit(File.open(ARGV[0], 'w'))
+begin
+  emit(File.open(ARGV[0], 'w'))
+rescue StandardError
+  File.delete(ARGV[0])
+  raise
+end
+
 File.write(ARGV[1], "#{ARGV[0]}: #{deps.join(' ')}\n")
