@@ -160,16 +160,12 @@ static const allocator_t default_allocator = {NULL, default_alloc, default_free}
 
 typedef union {
   size_t size;
-  char *pointer;
-} allocator_slot_t;
+  void *pointer;
+} size_or_pointer_t;
 
 struct crex_context {
-  size_t visited_size;
-  unsigned char *visited;
-
-  allocator_slot_t *buffer;
+  size_or_pointer_t *buffer;
   size_t capacity;
-
   allocator_t allocator;
 };
 
@@ -1755,100 +1751,111 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
   return CREX_OK;
 }
 
-/** Instruction pointer (i.e. size_t) list with custom allocator **/
+typedef size_t handle_t;
 
-typedef size_t state_list_handle_t;
-
-#define STATE_LIST_EMPTY (~(state_list_handle_t)0)
+#define HANDLE_NULL (~(size_t)0)
 
 typedef struct {
   context_t *context;
+  size_t bump_pointer;
+  size_t freelist;
+} internal_allocator_t;
 
+static void internal_allocator_init(internal_allocator_t *allocator, context_t *context) {
+  allocator->context = context;
+  allocator->bump_pointer = 0;
+  allocator->freelist = HANDLE_NULL;
+}
+
+WARN_UNUSED_RESULT static handle_t internal_allocator_alloc(internal_allocator_t *allocator,
+                                                            size_t size) {
+  const size_t alignment = sizeof(size_or_pointer_t);
+  const size_t quadwords = (size + alignment - 1) / alignment;
+
+  context_t *context = allocator->context;
+
+  if (allocator->bump_pointer + quadwords <= context->capacity) {
+    const handle_t result = allocator->bump_pointer;
+    allocator->bump_pointer += quadwords;
+
+    return result;
+  }
+
+  if (allocator->freelist != HANDLE_NULL) {
+    const handle_t result = allocator->freelist;
+    allocator->freelist = *(handle_t *)(context->buffer + allocator->freelist);
+
+    return result;
+  }
+
+  // FIXME: consider capping capacity based on an analytical bound
+  const size_t capacity = 2 * context->capacity + quadwords;
+  size_or_pointer_t *buffer = ALLOC(&context->allocator, sizeof(size_or_pointer_t) * capacity);
+
+  if (buffer == NULL) {
+    return HANDLE_NULL;
+  }
+
+  safe_memcpy(buffer, context->buffer, sizeof(size_or_pointer_t) * allocator->bump_pointer);
+  FREE(&context->allocator, context->buffer);
+
+  context->buffer = buffer;
+  context->capacity = capacity;
+
+  assert(allocator->bump_pointer + quadwords <= context->capacity);
+
+  const handle_t result = allocator->bump_pointer;
+  allocator->bump_pointer += quadwords;
+
+  return result;
+}
+
+static void internal_allocator_free(internal_allocator_t *allocator, handle_t handle) {
+  const context_t *context = allocator->context;
+
+  *(handle_t *)(context->buffer + handle) = allocator->freelist;
+  allocator->freelist = handle;
+}
+
+typedef struct {
   size_t n_pointers;
-  size_t element_size;
-  size_t max_capacity;
-
-  size_t bump_allocator;
-  state_list_handle_t freelist;
-
-  state_list_handle_t head;
+  handle_t head;
+  internal_allocator_t allocator;
 } state_list_t;
 
-#define LIST_NEXT(list, handle) (*(size_t *)((list)->context->buffer + (handle)))
-#define LIST_INSTR_POINTER(list, handle) (*(size_t *)((list)->context->buffer + (handle) + 1))
-#define LIST_POINTER_BUFFER(list, handle) ((const char **)((list)->context->buffer + (handle) + 2))
+#define LIST_BUFFER(list) ((list)->allocator.context->buffer)
 
-static void
-state_list_create(state_list_t *list, context_t *context, size_t n_pointers, size_t max_elements) {
-  list->context = context;
+#define LIST_NEXT(list, handle) (*(handle_t *)(LIST_BUFFER(list) + (handle)))
 
+#define LIST_INSTR_POINTER(list, handle) (*(size_t *)(LIST_BUFFER(list) + (handle) + 1))
+
+#define LIST_POINTER_BUFFER(list, handle) ((const char **)(LIST_BUFFER(list) + (handle) + 2))
+
+static void state_list_init(state_list_t *list, context_t *context, size_t n_pointers) {
   list->n_pointers = n_pointers;
-  list->element_size = 2 + n_pointers;
-  list->max_capacity = max_elements * list->element_size;
-
-  list->bump_allocator = 0;
-  list->freelist = STATE_LIST_EMPTY;
-
-  list->head = STATE_LIST_EMPTY;
+  list->head = HANDLE_NULL;
+  internal_allocator_init(&list->allocator, context);
 }
 
-static state_list_handle_t state_list_alloc(state_list_t *list) {
-  state_list_handle_t state;
-
-#ifndef NDEBUG
-  state = STATE_LIST_EMPTY;
-#endif
-
-  if (list->bump_allocator + list->element_size <= list->context->capacity) {
-    state = list->bump_allocator;
-    list->bump_allocator += list->element_size;
-  } else if (list->freelist != STATE_LIST_EMPTY) {
-    state = list->freelist;
-    list->freelist = LIST_NEXT(list, state);
-  } else {
-    assert(list->context->capacity < list->max_capacity);
-
-    size_t capacity = 2 * list->context->capacity + list->element_size;
-
-    if (capacity > list->max_capacity) {
-      capacity = list->max_capacity;
-    }
-
-    allocator_slot_t *buffer =
-        ALLOC(&list->context->allocator, sizeof(allocator_slot_t) * capacity);
-
-    if (buffer == NULL) {
-      return STATE_LIST_EMPTY;
-    }
-
-    safe_memcpy(buffer, list->context->buffer, sizeof(allocator_slot_t) * list->context->capacity);
-
-    FREE(&list->context->allocator, list->context->buffer);
-
-    list->context->buffer = buffer;
-    list->context->capacity = capacity;
-
-    assert(list->bump_allocator + list->element_size <= capacity);
-
-    state = list->bump_allocator;
-    list->bump_allocator += list->element_size;
-  }
-
-  assert(state + list->element_size <= list->context->capacity);
-  assert(state % list->element_size == 0);
-
-  return state;
+static handle_t state_list_alloc(state_list_t *list) {
+  const size_t size = sizeof(size_or_pointer_t) * (2 + list->n_pointers);
+  return internal_allocator_alloc(&list->allocator, size);
 }
 
-static int state_list_push_initial_state(state_list_t *list, state_list_handle_t predecessor) {
-  assert(predecessor < list->context->capacity || predecessor == STATE_LIST_EMPTY);
+static handle_t state_list_push_initial_state(state_list_t *list, handle_t predecessor) {
+  assert(predecessor < list->allocator.context->capacity || predecessor == HANDLE_NULL);
 
-  const state_list_handle_t state = state_list_alloc(list);
-
-  if (state == STATE_LIST_EMPTY) {
-    return 0;
+  if (predecessor != HANDLE_NULL) {
+    assert(LIST_NEXT(list, predecessor) == HANDLE_NULL);
   }
 
+  const handle_t state = state_list_alloc(list);
+
+  if (state == HANDLE_NULL) {
+    return HANDLE_NULL;
+  }
+
+  LIST_NEXT(list, state) = HANDLE_NULL;
   LIST_INSTR_POINTER(list, state) = 0;
 
   const char **pointer_buffer = LIST_POINTER_BUFFER(list, state);
@@ -1857,24 +1864,22 @@ static int state_list_push_initial_state(state_list_t *list, state_list_handle_t
     pointer_buffer[i] = NULL;
   }
 
-  if (predecessor == STATE_LIST_EMPTY) {
-    LIST_NEXT(list, state) = list->head;
+  if (predecessor == HANDLE_NULL) {
     list->head = state;
   } else {
-    LIST_NEXT(list, state) = LIST_NEXT(list, predecessor);
+    assert(LIST_NEXT(list, predecessor) == HANDLE_NULL);
     LIST_NEXT(list, predecessor) = state;
   }
 
-  return 1;
+  return state;
 }
 
-static int
-state_list_push_copy(state_list_t *list, state_list_handle_t predecessor, size_t instr_pointer) {
-  assert(predecessor < list->context->capacity);
+static int state_list_push_copy(state_list_t *list, handle_t predecessor, size_t instr_pointer) {
+  assert(predecessor < list->allocator.context->capacity);
 
-  const state_list_handle_t state = state_list_alloc(list);
+  const handle_t state = state_list_alloc(list);
 
-  if (state == STATE_LIST_EMPTY) {
+  if (state == HANDLE_NULL) {
     return 0;
   }
 
@@ -1890,23 +1895,22 @@ state_list_push_copy(state_list_t *list, state_list_handle_t predecessor, size_t
   return 1;
 }
 
-static state_list_handle_t state_list_pop(state_list_t *list, state_list_handle_t predecessor) {
-  assert(predecessor < list->context->capacity || predecessor == STATE_LIST_EMPTY);
+static handle_t state_list_pop(state_list_t *list, handle_t predecessor) {
+  assert(predecessor < list->allocator.context->capacity || predecessor == HANDLE_NULL);
 
-  const state_list_handle_t state =
-      (predecessor == STATE_LIST_EMPTY) ? list->head : LIST_NEXT(list, predecessor);
-  assert(state < list->context->capacity);
+  const handle_t state = (predecessor == HANDLE_NULL) ? list->head : LIST_NEXT(list, predecessor);
 
-  const state_list_handle_t successor = LIST_NEXT(list, state);
+  assert(state < list->allocator.context->capacity);
 
-  if (predecessor == STATE_LIST_EMPTY) {
+  const handle_t successor = LIST_NEXT(list, state);
+
+  if (predecessor == HANDLE_NULL) {
     list->head = successor;
   } else {
     LIST_NEXT(list, predecessor) = successor;
   }
 
-  LIST_NEXT(list, state) = list->freelist;
-  list->freelist = state;
+  internal_allocator_free(&list->allocator, state);
 
   return successor;
 }
@@ -1932,37 +1936,10 @@ struct crex_regex {
 };
 
 static status_t reserve(context_t *context, const regex_t *regex, size_t n_pointers) {
-  const size_t min_visited_size = bitmap_size_for_bits(regex->size);
-
-  if (context->visited_size < min_visited_size) {
-    unsigned char *visited = ALLOC(&context->allocator, min_visited_size);
-
-    if (visited == NULL) {
-      return CREX_E_NOMEM;
-    }
-
-    FREE(&context->allocator, context->visited);
-
-    context->visited_size = min_visited_size;
-    context->visited = visited;
-  }
-
-  const size_t element_size = 2 + n_pointers;
-  const size_t max_capacity = regex->max_concurrent_states * element_size;
-
-  if (context->capacity < max_capacity) {
-    allocator_slot_t *buffer = ALLOC(&context->allocator, sizeof(allocator_slot_t) * max_capacity);
-
-    if (buffer == NULL) {
-      return CREX_E_NOMEM;
-    }
-
-    FREE(&context->allocator, context->buffer);
-
-    context->capacity = max_capacity;
-    context->buffer = buffer;
-  }
-
+  // FIXME: come back and reimplement this once I've done the math
+  (void)context;
+  (void)regex;
+  (void)n_pointers;
   return CREX_OK;
 }
 
@@ -2515,6 +2492,7 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
   }
 
   bytecode_t bytecode;
+  regex->n_flags = 0;
 
   *status = compile(&bytecode, &regex->n_flags, tree, allocator);
 
@@ -2595,13 +2573,9 @@ PUBLIC context_t *crex_create_context_with_allocator(crex_status_t *status,
     return NULL;
   }
 
-  context->allocator = *allocator;
-
-  context->visited_size = 0;
-  context->visited = NULL;
-
   context->buffer = NULL;
   context->capacity = 0;
+  context->allocator = *allocator;
 
   return context;
 }
@@ -2619,7 +2593,6 @@ PUBLIC void crex_destroy_regex(regex_t *regex) {
 
 PUBLIC void crex_destroy_context(context_t *context) {
   const allocator_t *allocator = &context->allocator;
-  FREE(allocator, context->visited);
   FREE(allocator, context->buffer);
   FREE(allocator, context);
 }

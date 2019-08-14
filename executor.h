@@ -17,23 +17,6 @@
 
 PUBLIC status_t
 NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t size) {
-  unsigned char *visited;
-
-  const size_t visited_size = bitmap_size_for_bits(regex->size);
-
-  if (context->visited_size < visited_size) {
-    visited = ALLOC(&context->allocator, visited_size);
-
-    if (visited == NULL) {
-      return CREX_E_NOMEM;
-    }
-
-    FREE(&context->allocator, context->visited);
-    context->visited = visited;
-    context->visited_size = visited_size;
-  } else {
-    visited = context->visited;
-  }
 
 #ifdef MATCH_BOOLEAN
   const size_t n_pointers = 0;
@@ -52,7 +35,14 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #endif
 
   state_list_t list;
-  state_list_create(&list, context, n_pointers, regex->max_concurrent_states);
+  state_list_init(&list, context, n_pointers);
+
+  const size_t visited_size = bitmap_size_for_bits(regex->size);
+  handle_t visited_handle = internal_allocator_alloc(&list.allocator, visited_size);
+
+  if (visited_handle == HANDLE_NULL) {
+    return CREX_E_NOMEM;
+  }
 
   const char *eof = str + size;
   int prev_character = -1;
@@ -60,21 +50,27 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
   for (;;) {
     const int character = (str == eof) ? -1 : (unsigned char)(*str);
 
-    bitmap_clear(visited, visited_size);
+    {
+      // FIXME: factor this out
+      unsigned char *visited = (unsigned char *)(context->buffer + visited_handle);
+      bitmap_clear(visited, visited_size);
+    }
 
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-    if (list.head == STATE_LIST_EMPTY && match_found) {
+    if (list.head == HANDLE_NULL && match_found) {
       return CREX_OK;
     }
 #endif
 
     int initial_state_pushed = 0;
 
-    state_list_handle_t state = list.head;
-    state_list_handle_t predecessor = STATE_LIST_EMPTY;
+    handle_t state = list.head;
+    handle_t predecessor = HANDLE_NULL;
 
     for (;;) {
-      if (state == STATE_LIST_EMPTY) {
+      assert(predecessor == HANDLE_NULL || LIST_NEXT(&list, predecessor) == state);
+
+      if (state == HANDLE_NULL) {
         if (initial_state_pushed) {
           break;
         }
@@ -85,15 +81,10 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
         }
 #endif
 
-        if (!state_list_push_initial_state(&list, predecessor)) {
-          return CREX_E_NOMEM;
-        }
+        state = state_list_push_initial_state(&list, predecessor);
 
-        // FIXME: this is nonsense
-        if (predecessor == STATE_LIST_EMPTY) {
-          state = list.head;
-        } else {
-          state = LIST_NEXT(&list, predecessor);
+        if (state == HANDLE_NULL) {
+          return CREX_E_NOMEM;
         }
 
         initial_state_pushed = 1;
@@ -142,9 +133,9 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
           keep = 0;
 
-          state_list_handle_t tail = LIST_NEXT(&list, state);
+          handle_t tail = LIST_NEXT(&list, state);
 
-          while (tail != STATE_LIST_EMPTY) {
+          while (tail != HANDLE_NULL) {
             tail = state_list_pop(&list, state);
           }
 
@@ -152,12 +143,17 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #endif
         }
 
-        if (bitmap_test(visited, instr_pointer)) {
-          keep = 0;
-          break;
-        }
+        {
+          // FIXME: factor this out
+          unsigned char *visited = (unsigned char *)(context->buffer + visited_handle);
 
-        bitmap_set(visited, instr_pointer);
+          if (bitmap_test(visited, instr_pointer)) {
+            keep = 0;
+            break;
+          }
+
+          bitmap_set(visited, instr_pointer);
+        }
 
         const unsigned char byte = regex->bytecode[instr_pointer++];
 
@@ -249,6 +245,9 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 
           assert(instr_pointer <= regex->size);
           assert(split_pointer <= regex->size);
+
+          // FIXME: factor this out
+          unsigned char *visited = (unsigned char *)(context->buffer + visited_handle);
 
           if (!bitmap_test(visited, split_pointer)) {
             if (!state_list_push_copy(&list, state, split_pointer)) {
