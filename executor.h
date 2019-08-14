@@ -278,6 +278,10 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
           break;
         }
 
+        case VM_TEST_AND_SET_FLAG:
+          // FIXME
+          break;
+
         default:
           assert(0);
         }

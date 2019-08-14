@@ -1,5 +1,4 @@
-// For MAP_ANONYMOUS
-#define _GNU_SOURCE
+#define _GNU_SOURCE // For MAP_ANONYMOUS
 
 #include <assert.h>
 #include <ctype.h>
@@ -1543,9 +1542,9 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
     size_t max_size = lower_bound * child.size;
 
     if (upper_bound == REPETITION_INFINITY) {
-      max_size += 1 + 4 + child.size + 1 + 4;
+      max_size += (1 + 4) + (1 + 4) + child.size + (1 + 4) + (1 + 4);
     } else {
-      max_size += (upper_bound - lower_bound) * (1 + 4 + child.size);
+      max_size += (upper_bound - lower_bound) * ((1 + 4) + child.size) + (1 + 4);
     }
 
     result->bytecode = ALLOC(allocator, max_size);
@@ -1557,22 +1556,29 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
 
     unsigned char *bytecode = result->bytecode;
 
+    // <child.bytecode>
+    // <child.bytecode>
+    // ...
+    // <child.bytecode> [lower_bound times]
+    // ...
+
     for (size_t i = 0; i < lower_bound; i++) {
       safe_memcpy(bytecode, child.bytecode, child.size);
       bytecode += child.size;
     }
 
     if (upper_bound == REPETITION_INFINITY) {
-      /*
-       * ...
-       * VM_SPLIT_{PASSIVE,EAGER} end
-       * child:
-       * <child bytecode>
-       * VM_SPLIT_{EAGER,PASSIVE} child
-       * end:
-       */
+      //   ...
+      //   VM_SPLIT_{PASSIVE,EAGER} end
+      // child:
+      //   VM_TEST_AND_SET_FLAG child_flag
+      //   <child.bytecode>
+      //   VM_SPLIT_{EAGER,PASSIVE} child
+      // end:
+      //   VM_TEST_AND_SET_FLAG end_flag
 
-      unsigned char leading_split_opcode, trailing_split_opcode;
+      unsigned char leading_split_opcode;
+      unsigned char trailing_split_opcode;
 
       if (tree->type == PT_GREEDY_REPETITION) {
         leading_split_opcode = VM_SPLIT_PASSIVE;
@@ -1581,6 +1587,12 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
         leading_split_opcode = VM_SPLIT_EAGER;
         trailing_split_opcode = VM_SPLIT_BACKWARDS_PASSIVE;
       }
+
+      const size_t child_flag = (*n_flags)++;
+      const size_t child_flag_size = size_for_operand(child_flag);
+
+      const size_t end_flag = (*n_flags)++;
+      const size_t end_flag_size = size_for_operand(end_flag);
 
       size_t trailing_split_delta;
       size_t trailing_split_delta_size;
@@ -1594,49 +1606,52 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
 
       {
         size_t delta;
-        size_t operand_size;
+        size_t delta_size;
 
-        for (operand_size = 1; operand_size <= 4; operand_size *= 2) {
-          delta = child.size + 1 + operand_size;
+        for (delta_size = 1; delta_size <= 4; delta_size *= 2) {
+          delta = child.size + 1 + delta_size;
 
-          if (size_for_operand(delta) <= operand_size) {
+          if (size_for_operand(delta) <= delta_size) {
             break;
           }
         }
 
         trailing_split_delta = delta;
-        trailing_split_delta_size = operand_size;
+        trailing_split_delta_size = delta_size;
       }
 
       const size_t leading_split_delta = child.size + 1 + trailing_split_delta_size;
       const size_t leading_split_delta_size = size_for_operand(leading_split_delta);
 
       *(bytecode++) = VM_OP(leading_split_opcode, leading_split_delta_size);
-
       serialize_operand(bytecode, leading_split_delta, leading_split_delta_size);
       bytecode += leading_split_delta_size;
+
+      *(bytecode++) = VM_OP(VM_TEST_AND_SET_FLAG, child_flag_size);
+      serialize_operand(bytecode, child_flag, child_flag_size);
+      bytecode += child_flag_size;
 
       safe_memcpy(bytecode, child.bytecode, child.size);
       bytecode += child.size;
 
       *(bytecode++) = VM_OP(trailing_split_opcode, trailing_split_delta_size);
-
       serialize_operand(bytecode, trailing_split_delta, trailing_split_delta_size);
       bytecode += trailing_split_delta_size;
 
+      *(bytecode++) = VM_OP(VM_TEST_AND_SET_FLAG, end_flag_size);
+      serialize_operand(bytecode, end_flag, end_flag_size);
+      bytecode += end_flag_size;
+
       result->size = bytecode - result->bytecode;
     } else {
-      /*
-       * ...
-       * VM_SPLIT_{PASSIVE,EAGER} end
-       * <child bytecode>
-       * VM_SPLIT_{PASSIVE,EAGER} end
-       * <child bytecode>
-       * ...
-       * VM_SPLIT_{PASSIVE,EAGER} end
-       * <child bytecode>
-       * end:
-       */
+      //   ...
+      //   VM_SPLIT_{PASSIVE,EAGER} end
+      //   <child.bytecode>
+      //   VM_SPLIT_{PASSIVE,EAGER} end
+      //   <child.bytecode>
+      //   ... [(uppper_bound - lower_bound) times]
+      // end:
+      //   VM_TEST_AND_SET_FLAG flag
 
       const unsigned char split_opcode =
           (tree->type == PT_GREEDY_REPETITION) ? VM_SPLIT_PASSIVE : VM_SPLIT_EAGER;
@@ -1646,24 +1661,30 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
       // later splits first (i.e. by filling the buffer from right to left), we can pick the correct
       // size a priori, and then perform a single copy to account for any saved space
 
-      // In general, this optimization leaves an unbounded amount of memory allocated but unused at
+      // In general, this optimization leaves a linear amount of memory allocated but unused at
       // the end of the buffer; however, because the top level parsetree is necessarily a PT_GROUP,
       // we always free it before yielding the final compiled regex
 
       unsigned char *end = result->bytecode + max_size;
       unsigned char *begin = end;
 
+      const size_t flag = (*n_flags)++;
+      const size_t flag_size = size_for_operand(flag);
+
+      begin -= flag_size;
+      serialize_operand(begin, flag, flag_size);
+      *(--begin) = VM_OP(VM_TEST_AND_SET_FLAG, flag_size);
+
       for (size_t i = 0; i < upper_bound - lower_bound; i++) {
         begin -= child.size;
         safe_memcpy(begin, child.bytecode, child.size);
 
-        const long delta = end - begin;
-        const size_t operand_size = size_for_operand(delta);
+        const size_t delta = (end - (1 + flag_size)) - begin;
+        const size_t delta_size = size_for_operand(delta);
 
-        begin -= operand_size;
-        serialize_operand(begin, delta, operand_size);
-
-        *(--begin) = VM_OP(split_opcode, operand_size);
+        begin -= delta_size;
+        serialize_operand(begin, delta, delta_size);
+        *(--begin) = VM_OP(split_opcode, delta_size);
       }
 
       assert(bytecode <= begin);
@@ -1708,7 +1729,6 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
     }
 
     unsigned char *bytecode = result->bytecode;
-
     *(bytecode++) = VM_OP(VM_WRITE_POINTER, leading_size);
 
     serialize_operand(bytecode, leading_index, leading_size);
@@ -1718,7 +1738,6 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
     bytecode += child.size;
 
     *(bytecode++) = VM_OP(VM_WRITE_POINTER, trailing_size);
-
     serialize_operand(bytecode, trailing_index, trailing_size);
     bytecode += trailing_size;
 
@@ -2873,6 +2892,9 @@ const char *opcode_to_str(unsigned char opcode) {
   case VM_WRITE_POINTER:
     return "VM_WRITE_POINTER";
 
+  case VM_TEST_AND_SET_FLAG:
+    return "VM_TEST_AND_SET_FLAG";
+
   default:
     assert(0);
     return NULL;
@@ -3140,7 +3162,7 @@ void crex_print_bytecode(const regex_t *regex, FILE *file) {
   unsigned char *bytecode = regex->bytecode;
 
   for (;;) {
-    const size_t i = bytecode - regex->bytecode;
+    size_t i = bytecode - regex->bytecode;
     assert(i <= regex->size);
 
     fprintf(file, "%05zd", i);
@@ -3153,11 +3175,12 @@ void crex_print_bytecode(const regex_t *regex, FILE *file) {
     const unsigned char byte = *(bytecode++);
 
     const unsigned char opcode = VM_OPCODE(byte);
-
     const size_t operand_size = VM_OPERAND_SIZE(byte);
 
     const size_t operand = deserialize_operand(bytecode, operand_size);
     bytecode += operand_size;
+
+    i += (1 + operand_size);
 
     fprintf(file, " %s", opcode_to_str(opcode));
 
@@ -3209,7 +3232,8 @@ void crex_print_bytecode(const regex_t *regex, FILE *file) {
       break;
     }
 
-    case VM_WRITE_POINTER: {
+    case VM_WRITE_POINTER:
+    case VM_TEST_AND_SET_FLAG: {
       fprintf(file, " %zu\n", operand);
       break;
     }
