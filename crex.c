@@ -1206,7 +1206,10 @@ enum {
   VM_SPLIT_EAGER,
   VM_SPLIT_BACKWARDS_PASSIVE,
   VM_SPLIT_BACKWARDS_EAGER,
-  VM_WRITE_POINTER
+  VM_WRITE_POINTER,
+  VM_TEST_SET_FLAG,
+  VM_TEST_FLAG,
+  VM_SET_FLAG
 };
 
 #define VM_OP(opcode, operand_size) ((opcode) | ((operand_size) << 5))
@@ -1419,7 +1422,39 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
 
     break;
 
-  case PT_CONCATENATION:
+  case PT_CONCATENATION: {
+    bytecode_t left, right;
+
+    status_t status = compile(&left, tree->data.children[0], allocator);
+
+    if (status != CREX_OK) {
+      return status;
+    }
+
+    status = compile(&right, tree->data.children[1], allocator);
+
+    if (status != CREX_OK) {
+      FREE(allocator, left.bytecode);
+      return status;
+    }
+
+    result->size = left.size + right.size;
+    result->bytecode = ALLOC(allocator, result->size);
+
+    if(result->bytecode == NULL) {
+      FREE(allocator, left.bytecode);
+      FREE(allocator, right.bytecode);
+      return CREX_E_NOMEM;
+    }
+
+    safe_memcpy(result->bytecode, left.bytecode, left.size);
+    safe_memcpy(result->bytecode + left.size, right.bytecode, right.size);
+
+    FREE(allocator, left.bytecode);
+    FREE(allocator, right.bytecode);
+
+    break;
+  }
   case PT_ALTERNATION: {
     bytecode_t left, right;
 
@@ -1436,13 +1471,7 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
       return status;
     }
 
-    size_t max_size;
-
-    if (tree->type == PT_CONCATENATION) {
-      max_size = left.size + right.size;
-    } else {
-      max_size = 1 + 4 + left.size + 1 + 4 + right.size;
-    }
+    const size_t max_size = (1 + 4) + left.size + (1 + 4) + right.size;
 
     unsigned char *bytecode = ALLOC(allocator, max_size);
 
@@ -1454,38 +1483,29 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
 
     result->bytecode = bytecode;
 
-    if (tree->type == PT_CONCATENATION) {
-      safe_memcpy(bytecode, left.bytecode, left.size);
-      bytecode += left.size;
+    const size_t jump_delta = right.size;
+    const size_t jump_operand_size = size_for_operand(jump_delta);
 
-      safe_memcpy(bytecode, right.bytecode, right.size);
+    const size_t split_delta = left.size + 1 + jump_operand_size;
+    const size_t split_operand_size = size_for_operand(split_delta);
 
-      result->size = left.size + right.size;
-    } else {
-      const size_t jump_delta = right.size;
-      const size_t jump_operand_size = size_for_operand(jump_delta);
+    *(bytecode++) = VM_OP(VM_SPLIT_PASSIVE, split_operand_size);
 
-      const size_t split_delta = left.size + 1 + jump_operand_size;
-      const size_t split_operand_size = size_for_operand(split_delta);
+    serialize_operand(bytecode, split_delta, split_operand_size);
+    bytecode += split_operand_size;
 
-      *(bytecode++) = VM_OP(VM_SPLIT_PASSIVE, split_operand_size);
+    safe_memcpy(bytecode, left.bytecode, left.size);
+    bytecode += left.size;
 
-      serialize_operand(bytecode, split_delta, split_operand_size);
-      bytecode += split_operand_size;
+    *(bytecode++) = VM_OP(VM_JUMP, jump_operand_size);
 
-      safe_memcpy(bytecode, left.bytecode, left.size);
-      bytecode += left.size;
+    serialize_operand(bytecode, jump_delta, jump_operand_size);
+    bytecode += jump_operand_size;
 
-      *(bytecode++) = VM_OP(VM_JUMP, jump_operand_size);
+    safe_memcpy(bytecode, right.bytecode, right.size);
+    bytecode += right.size;
 
-      serialize_operand(bytecode, jump_delta, jump_operand_size);
-      bytecode += jump_operand_size;
-
-      safe_memcpy(bytecode, right.bytecode, right.size);
-      bytecode += right.size;
-
-      result->size = bytecode - result->bytecode;
-    }
+    result->size = bytecode - result->bytecode;
 
     FREE(allocator, left.bytecode);
     FREE(allocator, right.bytecode);
