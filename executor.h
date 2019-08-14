@@ -40,6 +40,8 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
   const size_t visited_size = bitmap_size_for_bits(regex->size);
   handle_t visited_handle = internal_allocator_alloc(&list.allocator, visited_size);
 
+#define VISITED (unsigned char *)(context->buffer + visited_handle)
+
   if (visited_handle == HANDLE_NULL) {
     return CREX_E_NOMEM;
   }
@@ -50,11 +52,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
   for (;;) {
     const int character = (str == eof) ? -1 : (unsigned char)(*str);
 
-    {
-      // FIXME: factor this out
-      unsigned char *visited = (unsigned char *)(context->buffer + visited_handle);
-      bitmap_clear(visited, visited_size);
-    }
+    bitmap_clear(VISITED, visited_size);
 
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
     if (list.head == HANDLE_NULL && match_found) {
@@ -143,16 +141,9 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #endif
         }
 
-        {
-          // FIXME: factor this out
-          unsigned char *visited = (unsigned char *)(context->buffer + visited_handle);
-
-          if (bitmap_test(visited, instr_pointer)) {
-            keep = 0;
-            break;
-          }
-
-          bitmap_set(visited, instr_pointer);
+        if (bitmap_test_and_set(VISITED, instr_pointer)) {
+          keep = 0;
+          break;
         }
 
         const unsigned char byte = regex->bytecode[instr_pointer++];
@@ -246,10 +237,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
           assert(instr_pointer <= regex->size);
           assert(split_pointer <= regex->size);
 
-          // FIXME: factor this out
-          unsigned char *visited = (unsigned char *)(context->buffer + visited_handle);
-
-          if (!bitmap_test(visited, split_pointer)) {
+          if (!bitmap_test(VISITED, split_pointer)) {
             if (!state_list_push_copy(&list, state, split_pointer)) {
               return CREX_E_NOMEM;
             }
@@ -324,6 +312,8 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #endif
 
   return CREX_OK;
+
+#undef VISITED
 }
 
 #undef MATCH_BOOLEAN

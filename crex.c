@@ -117,22 +117,28 @@ static builtin_char_class_t builtin_classes[] = {
 
 #define BCC_TEST(index, character) bitmap_test(builtin_classes[index].bitmap, (character))
 
-static void bitmap_set(unsigned char *bitmap, size_t index) {
+static int bitmap_test(const unsigned char *bitmap, size_t index) {
+  return (bitmap[index >> 3u] >> (index & 7u)) & 1u;
+}
+
+static int bitmap_test_and_set(unsigned char *bitmap, size_t index) {
+  const int result = (bitmap[index >> 3u] >> (index & 7u)) & 1u;
   bitmap[index >> 3u] |= 1u << (index & 7u);
+  return result;
+}
+
+static void bitmap_set(unsigned char *bitmap, size_t index) {
+  (void)bitmap_test_and_set(bitmap, index);
+}
+
+static void bitmap_clear(unsigned char *bitmap, size_t size) {
+  memset(bitmap, 0, size);
 }
 
 static void bitmap_union(unsigned char *bitmap, const unsigned char *other_bitmap, size_t size) {
   while (size--) {
     bitmap[size] |= other_bitmap[size];
   }
-}
-
-static int bitmap_test(const unsigned char *bitmap, size_t index) {
-  return (bitmap[index >> 3u] >> (index & 7u)) & 1u;
-}
-
-static void bitmap_clear(unsigned char *bitmap, size_t size) {
-  memset(bitmap, 0, size);
 }
 
 static size_t bitmap_size_for_bits(size_t bits) {
