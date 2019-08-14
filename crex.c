@@ -1207,9 +1207,7 @@ enum {
   VM_SPLIT_BACKWARDS_PASSIVE,
   VM_SPLIT_BACKWARDS_EAGER,
   VM_WRITE_POINTER,
-  VM_TEST_SET_FLAG,
-  VM_TEST_FLAG,
-  VM_SET_FLAG
+  VM_TEST_AND_SET_FLAG
 };
 
 #define VM_OP(opcode, operand_size) ((opcode) | ((operand_size) << 5))
@@ -1369,7 +1367,7 @@ static size_t deserialize_operand_le(void *source, size_t size) {
 }
 
 WARN_UNUSED_RESULT static status_t
-compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
+compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_t *allocator) {
   switch (tree->type) {
   case PT_EMPTY:
     result->size = 0;
@@ -1425,13 +1423,13 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
   case PT_CONCATENATION: {
     bytecode_t left, right;
 
-    status_t status = compile(&left, tree->data.children[0], allocator);
+    status_t status = compile(&left, n_flags, tree->data.children[0], allocator);
 
     if (status != CREX_OK) {
       return status;
     }
 
-    status = compile(&right, tree->data.children[1], allocator);
+    status = compile(&right, n_flags, tree->data.children[1], allocator);
 
     if (status != CREX_OK) {
       FREE(allocator, left.bytecode);
@@ -1441,7 +1439,7 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
     result->size = left.size + right.size;
     result->bytecode = ALLOC(allocator, result->size);
 
-    if(result->bytecode == NULL) {
+    if (result->bytecode == NULL) {
       FREE(allocator, left.bytecode);
       FREE(allocator, right.bytecode);
       return CREX_E_NOMEM;
@@ -1455,23 +1453,32 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
 
     break;
   }
+
   case PT_ALTERNATION: {
     bytecode_t left, right;
 
-    status_t status = compile(&left, tree->data.children[0], allocator);
+    status_t status = compile(&left, n_flags, tree->data.children[0], allocator);
 
     if (status != CREX_OK) {
       return status;
     }
 
-    status = compile(&right, tree->data.children[1], allocator);
+    status = compile(&right, n_flags, tree->data.children[1], allocator);
 
     if (status != CREX_OK) {
       FREE(allocator, left.bytecode);
       return status;
     }
 
-    const size_t max_size = (1 + 4) + left.size + (1 + 4) + right.size;
+    //   VM_SPLIT_PASSIVE right
+    //   <left.bytecode>
+    //   VM_JUMP end
+    // right:
+    //   <right.bytecode>
+    // end:
+    //   VM_TEST_AND_SET_FLAG <flag>
+
+    const size_t max_size = (1 + 4) + left.size + (1 + 4) + right.size + (1 + 4);
 
     unsigned char *bytecode = ALLOC(allocator, max_size);
 
@@ -1484,26 +1491,31 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
     result->bytecode = bytecode;
 
     const size_t jump_delta = right.size;
-    const size_t jump_operand_size = size_for_operand(jump_delta);
+    const size_t jump_delta_size = size_for_operand(jump_delta);
 
-    const size_t split_delta = left.size + 1 + jump_operand_size;
-    const size_t split_operand_size = size_for_operand(split_delta);
+    const size_t split_delta = left.size + 1 + jump_delta_size;
+    const size_t split_delta_size = size_for_operand(split_delta);
 
-    *(bytecode++) = VM_OP(VM_SPLIT_PASSIVE, split_operand_size);
+    const size_t flag = (*n_flags)++;
+    const size_t flag_size = size_for_operand(flag);
 
-    serialize_operand(bytecode, split_delta, split_operand_size);
-    bytecode += split_operand_size;
+    *(bytecode++) = VM_OP(VM_SPLIT_PASSIVE, split_delta_size);
+    serialize_operand(bytecode, split_delta, split_delta_size);
+    bytecode += split_delta_size;
 
     safe_memcpy(bytecode, left.bytecode, left.size);
     bytecode += left.size;
 
-    *(bytecode++) = VM_OP(VM_JUMP, jump_operand_size);
-
-    serialize_operand(bytecode, jump_delta, jump_operand_size);
-    bytecode += jump_operand_size;
+    *(bytecode++) = VM_OP(VM_JUMP, jump_delta_size);
+    serialize_operand(bytecode, jump_delta, jump_delta_size);
+    bytecode += jump_delta_size;
 
     safe_memcpy(bytecode, right.bytecode, right.size);
     bytecode += right.size;
+
+    *(bytecode++) = VM_OP(VM_TEST_AND_SET_FLAG, flag_size);
+    serialize_operand(bytecode, flag, flag_size);
+    bytecode += flag_size;
 
     result->size = bytecode - result->bytecode;
 
@@ -1517,7 +1529,7 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
   case PT_LAZY_REPETITION: {
     bytecode_t child;
 
-    status_t status = compile(&child, tree->data.repetition.child, allocator);
+    status_t status = compile(&child, n_flags, tree->data.repetition.child, allocator);
 
     if (status != CREX_OK) {
       return status;
@@ -1571,7 +1583,7 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
       }
 
       size_t trailing_split_delta;
-      size_t trailing_split_operand_size;
+      size_t trailing_split_delta_size;
 
       // Because the source address for a jump or split is the address immediately after the
       // operand, in the case of a backwards split, the magnitude of the delta changes with the
@@ -1593,24 +1605,24 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
         }
 
         trailing_split_delta = delta;
-        trailing_split_operand_size = operand_size;
+        trailing_split_delta_size = operand_size;
       }
 
-      const size_t leading_split_delta = child.size + 1 + trailing_split_operand_size;
-      const size_t leading_split_operand_size = size_for_operand(leading_split_delta);
+      const size_t leading_split_delta = child.size + 1 + trailing_split_delta_size;
+      const size_t leading_split_delta_size = size_for_operand(leading_split_delta);
 
-      *(bytecode++) = VM_OP(leading_split_opcode, leading_split_operand_size);
+      *(bytecode++) = VM_OP(leading_split_opcode, leading_split_delta_size);
 
-      serialize_operand(bytecode, leading_split_delta, leading_split_operand_size);
-      bytecode += leading_split_operand_size;
+      serialize_operand(bytecode, leading_split_delta, leading_split_delta_size);
+      bytecode += leading_split_delta_size;
 
       safe_memcpy(bytecode, child.bytecode, child.size);
       bytecode += child.size;
 
-      *(bytecode++) = VM_OP(trailing_split_opcode, trailing_split_operand_size);
+      *(bytecode++) = VM_OP(trailing_split_opcode, trailing_split_delta_size);
 
-      serialize_operand(bytecode, trailing_split_delta, trailing_split_operand_size);
-      bytecode += trailing_split_operand_size;
+      serialize_operand(bytecode, trailing_split_delta, trailing_split_delta_size);
+      bytecode += trailing_split_delta_size;
 
       result->size = bytecode - result->bytecode;
     } else {
@@ -1671,11 +1683,11 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
 
   case PT_GROUP: {
     if (tree->data.group.index == NON_CAPTURING) {
-      return compile(result, tree->data.group.child, allocator);
+      return compile(result, n_flags, tree->data.group.child, allocator);
     }
 
     bytecode_t child;
-    status_t status = compile(&child, tree->data.group.child, allocator);
+    status_t status = compile(&child, n_flags, tree->data.group.child, allocator);
 
     if (status != CREX_OK) {
       return status;
@@ -1684,10 +1696,10 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
     const size_t leading_index = 2 * tree->data.group.index;
     const size_t trailing_index = leading_index + 1;
 
-    const size_t leading_operand_size = size_for_operand(leading_index);
-    const size_t trailing_operand_size = size_for_operand(trailing_index);
+    const size_t leading_size = size_for_operand(leading_index);
+    const size_t trailing_size = size_for_operand(trailing_index);
 
-    result->size = 1 + leading_operand_size + child.size + 1 + trailing_operand_size;
+    result->size = 1 + leading_size + child.size + 1 + trailing_size;
     result->bytecode = ALLOC(allocator, result->size);
 
     if (result->bytecode == NULL) {
@@ -1697,18 +1709,18 @@ compile(bytecode_t *result, parsetree_t *tree, const allocator_t *allocator) {
 
     unsigned char *bytecode = result->bytecode;
 
-    *(bytecode++) = VM_OP(VM_WRITE_POINTER, leading_operand_size);
+    *(bytecode++) = VM_OP(VM_WRITE_POINTER, leading_size);
 
-    serialize_operand(bytecode, leading_index, leading_operand_size);
-    bytecode += leading_operand_size;
+    serialize_operand(bytecode, leading_index, leading_size);
+    bytecode += leading_size;
 
     safe_memcpy(bytecode, child.bytecode, child.size);
     bytecode += child.size;
 
-    *(bytecode++) = VM_OP(VM_WRITE_POINTER, trailing_operand_size);
+    *(bytecode++) = VM_OP(VM_WRITE_POINTER, trailing_size);
 
-    serialize_operand(bytecode, trailing_index, trailing_operand_size);
-    bytecode += trailing_operand_size;
+    serialize_operand(bytecode, trailing_index, trailing_size);
+    bytecode += trailing_size;
 
     assert(result->size == (size_t)(bytecode - result->bytecode));
 
@@ -1885,6 +1897,7 @@ struct crex_regex {
   size_t n_capturing_groups;
   size_t n_classes;
   size_t max_concurrent_states;
+  size_t n_flags; // FIXME: need to update load/dump API
 
   unsigned char *bytecode;
 
@@ -2404,7 +2417,8 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, size_t n_in
     case VM_WRITE_POINTER: {
       assert(operand < 2 * regex->n_capturing_groups);
 
-      // FIXME: this imposes a low bound on n_capturing_groups. Need some way to surface this in the API
+      // FIXME: this imposes a low bound on n_capturing_groups. Need some way to surface this in the
+      // API
 
       if (operand <= 255) {
         ASM2(cmp64_reg_u8, X_N_POINTERS, operand);
@@ -2483,7 +2497,7 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
 
   bytecode_t bytecode;
 
-  *status = compile(&bytecode, tree, allocator);
+  *status = compile(&bytecode, &regex->n_flags, tree, allocator);
 
   destroy_parsetree(tree, allocator);
 
