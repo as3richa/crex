@@ -153,9 +153,13 @@ static void bitmap_union(unsigned char *bitmap, const unsigned char *other_bitma
   }
 }
 
+#ifndef NATIVE_COMPILER
+
 static size_t bitmap_size_for_bits(size_t bits) {
   return (bits + 7) / 8;
 }
+
+#endif
 
 /** Allocator **/
 
@@ -1768,6 +1772,8 @@ compile(bytecode_t *result, size_t *n_flags, parsetree_t *tree, const allocator_
   return CREX_OK;
 }
 
+#ifndef NATIVE_COMPILER
+
 typedef size_t handle_t;
 
 #define HANDLE_NULL (~(size_t)0)
@@ -1931,6 +1937,8 @@ static handle_t state_list_pop(state_list_t *list, handle_t predecessor) {
 
   return successor;
 }
+
+#endif
 
 struct crex_regex {
   size_t size;
@@ -2270,7 +2278,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     case VM_CHARACTER: {
       assert(operand <= 0xffu);
 
-      if((operand & (1u << 7)) == 0) {
+      if ((operand & (1u << 7)) == 0) {
         ASM2(cmp32_reg_i8, X_CHARACTER, operand);
       } else {
         ASM2(cmp32_reg_i32, X_CHARACTER, operand);
@@ -2641,8 +2649,59 @@ PUBLIC void crex_destroy_context(context_t *context) {
   FREE(allocator, context);
 }
 
+#ifndef NATIVE_COMPILER
+
 #define MATCH_BOOLEAN
 #include "executor.h" // crex_is_match
+
+#define MATCH_LOCATION
+#include "executor.h" // crex_find
+
+#define MATCH_GROUPS
+#include "executor.h" // crex_match_groups
+
+#else
+
+typedef status_t (*native_function_t)(void*, context_t*, const char*, const char*, size_t);
+
+WARN_UNUSED_RESULT static status_t call_regex_native_code(void *result,
+                                                    crex_context_t *context,
+                                                    const crex_regex_t *regex,
+                                                    const char *str,
+                                                    size_t size,
+                                                    size_t n_pointers) {
+#pragma GCC diagnostic ignored "-Wpedantic"
+  const native_function_t function = (native_function_t)(regex->native_code);
+#pragma GCC diagnostic pop
+
+  return (*function)(result, context, str, str + size, n_pointers);
+}
+
+PUBLIC crex_status_t crex_is_match(int *is_match,
+                                   crex_context_t *context,
+                                   const crex_regex_t *regex,
+                                   const char *str,
+                                   size_t size) {
+  return call_regex_native_code(is_match, context, regex, str, size, 0);
+}
+
+PUBLIC crex_status_t crex_find(crex_match_t *match,
+                               crex_context_t *context,
+                               const crex_regex_t *regex,
+                               const char *str,
+                               size_t size) {
+  return call_regex_native_code(match, context, regex, str, size, 2);
+}
+
+PUBLIC crex_status_t crex_match_groups(crex_match_t *matches,
+                                       crex_context_t *context,
+                                       const crex_regex_t *regex,
+                                       const char *str,
+                                       size_t size) {
+  return call_regex_native_code(matches, context, regex, str, size, 2 * regex->n_capturing_groups);
+}
+
+#endif
 
 PUBLIC status_t crex_is_match_str(int *is_match,
                                   context_t *context,
@@ -2651,18 +2710,12 @@ PUBLIC status_t crex_is_match_str(int *is_match,
   return crex_is_match(is_match, context, regex, str, strlen(str));
 }
 
-#define MATCH_LOCATION
-#include "executor.h" // crex_find
-
 PUBLIC status_t crex_find_str(match_t *match,
                               context_t *context,
                               const regex_t *regex,
                               const char *str) {
   return crex_find(match, context, regex, str, strlen(str));
 }
-
-#define MATCH_GROUPS
-#include "executor.h" // crex_match_groups
 
 PUBLIC status_t crex_match_groups_str(match_t *matches,
                                       context_t *context,
