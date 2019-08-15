@@ -2175,18 +2175,35 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
 
 #include "build/x64.h"
 
-#define X_SCRATCH RAX
-#define X_SCRATCH_2 R9
-#define X_RESULT RDX
-#define X_VISITED RBX
-#define X_CHARACTER RCX
-#define X_PREV_CHARACTER RSI
-#define X_CHAR_CLASSES RDI
-#define X_BUILTIN_CHAR_CLASSES R8
-#define X_LIST_BUFFER R10
-#define X_STATE R11
-#define X_STR R13
-#define X_N_POINTERS RBP
+#define X_SCRATCH RDI
+#define X_SCRATCH_2 RSI
+
+#define X_CHAR_CLASSES RAX
+#define X_BUILTIN_CHAR_CLASSES RBX
+
+#define X_N_POINTERS RCX
+
+#define X_STR RDX
+
+#define X_BUFFER R8
+
+#define X_PUSH_COPY R9
+#define X_CAPACITY R10
+#define X_BUMP_POINTER R11
+
+#define X_FLAGS R12
+
+#define X_CHARACTER R13
+#define X_PREV_CHARACTER R14
+
+#define X_STATE R15
+
+// RESULT
+// FREELIST
+// ALLOC
+// FREE
+// ALLOCATOR_CONTEXT
+// EOF
 
 WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
   const size_t page_size = get_page_size();
@@ -2240,7 +2257,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     native_code.buffer[branch_origin - 1] = native_code.size - branch_origin;                      \
   } while (0)
 
-  for (size_t i = 0, instr_index = 0; i < regex->size; instr_index++) {
+  for (size_t i = 0; i < regex->size;) {
     const unsigned char byte = regex->bytecode[i++];
 
     const unsigned char opcode = VM_OPCODE(byte);
@@ -2251,14 +2268,23 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
 
     switch (opcode) {
     case VM_CHARACTER: {
-      assert(operand <= 255);
+      assert(operand <= 0xffu);
 
-      ASM2(cmp64_reg_i8, X_CHARACTER, operand);
-      BRANCH(jne_i8);
+      if((operand & (1u << 7)) == 0) {
+        ASM2(cmp32_reg_i8, X_CHARACTER, operand);
+      } else {
+        ASM2(cmp32_reg_i32, X_CHARACTER, operand);
+      }
 
-      ASM0(ret);
+      ASM0(stc);
+
+      BRANCH(je_i8);
+
+      ASM0(clc);
 
       BRANCH_TARGET();
+
+      ASM0(ret);
 
       break;
     }
@@ -2411,18 +2437,15 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     case VM_WRITE_POINTER: {
       assert(operand < 2 * regex->n_capturing_groups);
 
-      // FIXME: this imposes a low bound on n_capturing_groups. Need some way to surface this in the
-      // API
-
-      if (operand <= 255) {
-        ASM2(cmp64_reg_u8, X_N_POINTERS, operand);
+      if (operand < 128) {
+        ASM2(cmp32_reg_i8, X_N_POINTERS, operand);
       } else {
-        ASM2(cmp64_reg_u32, X_N_POINTERS, operand);
+        ASM2(cmp32_reg_u32, X_N_POINTERS, operand);
       }
 
-      BRANCH(jae_i8);
+      BRANCH(jbe_i8);
 
-      ASM2(mov64_mem_reg, INDIRECT_BSXD(X_LIST_BUFFER, SCALE_1, X_STATE, 2 + operand), X_STR);
+      ASM2(mov64_mem_reg, INDIRECT_BSXD(X_BUFFER, SCALE_1, X_STATE, 2 + operand), X_STR);
 
       BRANCH_TARGET();
 
@@ -2434,17 +2457,19 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
 
       if (regex->n_flags <= 64) {
         if (operand <= 32) {
-          ASM2(bts32_reg_u8, X_VISITED, instr_index);
+          ASM2(bts32_reg_u8, X_FLAGS, operand);
         } else {
-          ASM2(bts64_reg_u8, X_VISITED, instr_index);
+          ASM2(bts64_reg_u8, X_FLAGS, operand);
         }
       } else {
-        const size_t dword = 4 * (instr_index / 32);
-        ASM2(bts32_mem_u8, INDIRECT_RD(X_VISITED, dword), instr_index % 32);
+        const size_t dword = 4 * (operand / 32);
+        ASM2(bts32_mem_u8, INDIRECT_RD(X_FLAGS, dword), operand % 32);
       }
 
       BRANCH(jnc_i8);
+
       ASM0(ret);
+
       BRANCH_TARGET();
 
       break;
