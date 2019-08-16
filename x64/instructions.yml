@@ -3,134 +3,171 @@
   rex_w: true
   opcode: [0x0f, 0xba]
   extension: 0x05
-  params: [bitstring, index]
   encoding: [rm_reg, u8]
 
 - name: bts32
   opcode: [0x0f, 0xba]
   extension: 0x05
-  params: [bitstring, index]
   encoding: [rm_mem, u8]
 
 - name: ret
   opcode: [0xc3]
-  params: []
   encoding: []
 
 - name: jnc
   opcode: [0x73]
-  params: [delta]
   encoding: [i8]
 
 - name: jne
   opcode: [0x75]
-  params: [delta]
   encoding: [i8]
 
 - name: bts32
   opcode: [0x0f, 0xba]
   extension: 0x05
-  params: [bitmap, index]
   encoding: [rm_reg, u8]
 
 - name: shr8
   opcode: [0xc0]
   extension: 0x05
-  params: [value, shift]
   encoding: [rm_reg, u8]
 
 - name: bt32
   opcode: [0x0f, 0xa3]
-  params: [bitmap, index]
   encoding: [rm_mem, reg]
 
 - name: je
   opcode: [0x74]
-  params: [delta]
   encoding: [i8]
 
 - name: mov64
   rex_w: true
   opcode: [0x8b]
-  params: [destination, source]
   encoding: [reg, rm_reg]
 
 - name: jnz
   opcode: [0x75]
-  params: [delta]
   encoding: [i8]
 
 - name: inc8
   opcode: [0xfe]
   extension: 0x00
-  params: [operand]
   encoding: [rm_reg]
 
 - name: xor8
   opcode: [0x32]
-  params: [left, right]
   encoding: [reg, rm_reg]
 
 - name: test8
   opcode: [0xf6]
   extension: 0x00
-  params: [left, right]
   encoding: [rm_reg, i8]
 
 - name: jae
   opcode: [0x73]
-  params: [delta]
   encoding: [i8]
 
 - name: cmp64
   rex_w: true
   opcode: [0x83]
   extension: 0x07
-  params: [left, right]
   encoding: [rm_reg, i8]
 
 - name: cmp64
   rex_w: true
   opcode: [0x81]
   extension: 0x07
-  params: [left, right]
   encoding: [rm_reg, i32]
 
 - name: mov64
   rex_w: true
   opcode: [0x89]
-  params: [destination, source]
   encoding: [rm_mem, reg]
 
 - name: cmp32
   opcode: [0x80]
   extension: 0x07
-  params: [left, right]
   encoding: [rm_reg, i8]
 
 - name: cmp32
   opcode: [0x81]
   extension: 0x07
-  params: [left, right]
   encoding: [rm_reg, i32]
 
 - name: cmp32
   opcode: [0x81]
   extension: 0x07
-  params: [left, right]
   encoding: [rm_reg, u32]
 
 - name: clc
   opcode: [0xf8]
-  params: []
   encoding: []
 
 - name: stc
   opcode: [0xf9]
-  params: []
   encoding: []
 
 - name: jbe
   opcode: [0x76]
-  params: [delta]
   encoding: [i8]
+
+- name: inc32
+  opcode: [0xff]
+  extension: 0x00
+  encoding: [rm_reg]
+
+- name: shr32
+  opcode: [0xc1]
+  extension: 0x07
+  encoding: [rm_reg]
+
+- name: xor32
+  opcode: [0x31]
+  encoding: [rm_reg, reg]
+
+- name: sete8
+  opcode: [0x0f, 0x94]
+  encoding: [rm_reg]
+
+- name: mov32
+  opcode: [0x8b]
+  encoding: [reg, rm_reg]
+
+- name: setc8
+  opcode: [0x0f, 0x92]
+  encoding: [rm_reg]
+
+- name: shr32
+  opcode: [0xc1]
+  extension: 0x05
+  encoding: [rm_reg, u8]
+
+- name: mov32 
+  opcode: [0xc7]
+  extension: 0x00
+  encoding: [rm_reg, i32]
+
+- name: mov8
+  opcode: [0xc6]
+  extension: 0x00
+  encoding: [rm_reg, i8]
+
+- name: push64
+  opcode: [0x00, 0x00]
+  encoding: [reg]
+  special: |
+    if(reg >> 3u) {
+      *(data++) = REX(0, 0, 0, 1);
+    }
+
+    *(data ++) = 0x58 + (reg & 7u);
+
+- name: pop64
+  opcode: [0x00, 0x00]
+  encoding: [reg]
+  special: |
+    if(reg >> 3u) {
+      *(data++) = REX(0, 0, 0, 1);
+    }
+
+    *(data ++) = 0x58 + (reg & 7u);

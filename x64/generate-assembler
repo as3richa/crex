@@ -13,7 +13,7 @@ TYPES = {
   u32: 'size_t',
 }.freeze
 
-if ARGV.length != 2
+if ARGV.size != 2
   $stderr.puts("usage: #{$0} <output file> <dependency file>")
   exit(1)
 end
@@ -43,74 +43,82 @@ file.puts(preamble)
 
 first = true
 
-instructions.each do |name:, opcode:, params:, encoding:, rex_w: false, extension: nil|
+instructions.each do |name:, opcode:, encoding:, rex_w: false, extension: nil, special: nil|
   function_name = ([name] + encoding.map { |enc| enc.gsub('rm_', '') }).join('_')
 
-  if params.empty?
-    param_list = nil
+  param_list = if encoding.empty?
+    nil
   else
-    param_types = encoding.map { |enc| TYPES.fetch(enc.to_sym) }
-    param_list = param_types.zip(params).map { |type, name| "#{type} #{name}"}.join(', ')
-    param_list = ", #{param_list}"
+    types = encoding.map { |enc| TYPES.fetch(enc.to_sym) }
+
+    names = encoding.map do |enc|
+      case enc
+      when 'i8', 'i32', 'u8', 'u32'
+        'immediate'
+      else
+        enc
+      end
+    end
+
+    ', ' + types.zip(names).map { |type, name| "#{type} #{name}"}.join(', ')
   end
 
   opcode_literal = '{' + opcode.map { |byte| "0x#{byte.to_s(16)}" }.join(', ') + '}'
 
-  reg_param = nil
+  reg = false
+  rm_mem = false
+  rm_reg = false
+  immediate = false
 
-  rm_mem_param = nil
-  rm_reg_param = nil
+  immediate_size = nil
+  immediate_unsigned = nil
 
-  imm_param = nil
-  imm_size = nil
-  imm_unsigned = nil
-
-  encoding.zip(params).each do |enc, name|
+  encoding.each do |enc|
     case enc
     when 'reg'
-      reg_param = name
+      reg = true
     when 'rm_mem'
-      rm_mem_param = name
+      rm_mem = true
     when 'rm_reg'
-      rm_reg_param = name
+      rm_reg = true
     when 'i8'
-      imm_param = name
-      imm_size = 1
-      imm_unsigned = false
+      immediate = true
+      immediate_size = 1
+      immediate_unsigned = false
     when 'i32'
-      imm_param = name
-      imm_size = 4
-      imm_unsigned = false
+      immediate = true
+      immediate_size = 4
+      immediate_unsigned = false
     when 'u8'
-      imm_param = name
-      imm_size = 1
-      imm_unsigned = true
+      immediate = true
+      immediate_size = 1
+      immediate_unsigned = true
     when 'u32'
-      imm_param = name
-      imm_size = 4
-      imm_unsigned = true
+      immediate = true
+      immediate_size = 4
+      immediate_unsigned = true
     else
       raise "bad operand encoding: #{enc}"
     end
   end
 
-  reg_or_extension = if reg_param
-    reg_param
-  elsif extension
-    "0x#{extension.to_s(16)}"
+  reg_or_extension = (reg && 'reg') || (extension && "0x#{extension.to_s(16)}") || 0
+
+  if special
+    max_size = opcode.size
+  else
+    # Possible REX byte, opcode
+    max_size = 1 + opcode.size
+
+    # ModRM byte if requried
+    max_size += 1 if reg || rm_mem || rm_reg || extension
+
+    # Possible SIB and displacement
+    max_size += 5 if rm_mem
+
+    # Immediate
+    max_size += immediate_size if immediate
   end
-
-  # Possible REX byte, opcode
-  max_size = 1 + opcode.length
-
-  # ModRM byte if requried
-  max_size += 1 if reg_param || rm_mem_param || rm_reg_param || extension
-
-  # Possible SIB and displacement
-  max_size += 5 if rm_mem_param
-
-  # Immediate
-  max_size += imm_size if imm_size
 
   code = template.result(binding)
   while code.gsub!("\n\n\n", "\n\n"); end

@@ -5,36 +5,46 @@ MAYBE_UNUSED static int <%= function_name %>(native_code_t* code<%= param_list %
     return 0;
   }
 
-<% if reg_or_extension || rm_reg_param || rm_mem_param %>
-  const int rex_w = <%= rex_w ? 1 : 0 %>;
-  const int rex_r = <%= reg_param ? "#{reg_param} >> 3u" : 0 %>;
+<% if special %>
 
-<% if rm_reg_param %>
-  data += encode_rex_r(data, rex_w, rex_r, <%= rm_reg_param %>);
-<% elsif rm_mem_param %>
-  data += encode_rex_m(data, rex_w, rex_r, <%= rm_mem_param %>);
+<%= special.split("\n").map { |line| "  #{line}" }.join("\n") %>
+
 <% else %>
-  (void)rex_r;
+
+<% if reg || extension || rm_reg || rm_mem %>
+  const int rex_w = <%= rex_w ? 1 : 0 %>;
+  const int rex_r = <%= reg ? "reg >> 3u" : 0 %>;
+
+<% if rm_reg %>
+  data += encode_rex_r(data, rex_w, rex_r, rm_reg);
+<% elsif rm_mem %>
+  data += encode_rex_m(data, rex_w, rex_r, rm_mem);
+<% else %>
+  data += encode_rex_r(data, rex_w, rex_r, 0);
 <% end %>
+
 <% end %>
 
   static const unsigned char opcode[] = <%= opcode_literal %>;
   memcpy(data, opcode, sizeof(opcode));
   data += sizeof(opcode);
 
-<% if rm_reg_param %>
-  data += encode_mod_reg_rm_r(data, <%= reg_or_extension %>, <%= rm_reg_param %>);
-<% elsif rm_mem_param %>
-  data += encode_mod_reg_rm_m(data, <%= reg_or_extension %>, <%= rm_mem_param %>);
+<% if rm_reg %>
+  data += encode_mod_reg_rm_r(data, <%= reg_or_extension %>, rm_reg);
+<% elsif rm_mem %>
+  data += encode_mod_reg_rm_m(data, <%= reg_or_extension %>, rm_mem);
 <% end %>
 
-<% if imm_param %>
-<% if imm_unsigned %>
-  serialize_operand_le(data, <%= imm_param %>, <%= imm_size %>);
+<% if immediate %>
+<% if immediate_unsigned %>
+  serialize_operand_le(data, immediate, <%= immediate_size %>);
 <% else %>
-  copy_displacement(data, <%= imm_param %>, <%= imm_size %>);
+  copy_displacement(data, immediate, <%= immediate_size %>);
 <% end %>
-  data += <%= imm_size %>;
+
+  data += <%= immediate_size %>;
+<% end %>
+
 <% end %>
 
   resize(code, data);
