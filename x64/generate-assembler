@@ -11,6 +11,7 @@ TYPES = {
   rm_reg: 'reg_t',
   u8: 'unsigned char',
   u32: 'size_t',
+  u64: 'uint64_t',
 }.freeze
 
 if ARGV.size != 2
@@ -53,7 +54,7 @@ instructions.each do |name:, opcode:, encoding:, rex_w: false, extension: nil, s
 
     names = encoding.map do |enc|
       case enc
-      when 'i8', 'i32', 'u8', 'u32'
+      when 'i8', 'i32', 'u8', 'u32', 'u64'
         'immediate'
       else
         enc
@@ -96,6 +97,10 @@ instructions.each do |name:, opcode:, encoding:, rex_w: false, extension: nil, s
     when 'u32'
       immediate = true
       immediate_size = 4
+      immediate_unsigned = true
+    when 'u64'
+      immediate = true
+      immediate_size = 8
       immediate_unsigned = true
     else
       raise "bad operand encoding: #{enc}"

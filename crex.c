@@ -129,18 +129,8 @@ static class_name_t builtin_class_names[N_NAMED_BUILTIN_CLASSES] = {{"alnum", 5}
 
 #define BCC_TEST(index, character) bitmap_test(builtin_classes[index].bitmap, (character))
 
-static int bitmap_test(const unsigned char *bitmap, size_t index) {
-  return (bitmap[index >> 3u] >> (index & 7u)) & 1u;
-}
-
-static int bitmap_test_and_set(unsigned char *bitmap, size_t index) {
-  const int result = (bitmap[index >> 3u] >> (index & 7u)) & 1u;
-  bitmap[index >> 3u] |= 1u << (index & 7u);
-  return result;
-}
-
 static void bitmap_set(unsigned char *bitmap, size_t index) {
-  (void)bitmap_test_and_set(bitmap, index);
+  bitmap[index >> 3u] |= 1u << (index & 7u);
 }
 
 static void bitmap_clear(unsigned char *bitmap, size_t size) {
@@ -153,13 +143,19 @@ static void bitmap_union(unsigned char *bitmap, const unsigned char *other_bitma
   }
 }
 
-#ifndef NATIVE_COMPILER
+static int bitmap_test(const unsigned char *bitmap, size_t index) {
+  return (bitmap[index >> 3u] >> (index & 7u)) & 1u;
+}
+
+static int bitmap_test_and_set(unsigned char *bitmap, size_t index) {
+  const int result = bitmap_test(bitmap, index);
+  bitmap_set(bitmap, index);
+  return result;
+}
 
 static size_t bitmap_size_for_bits(size_t bits) {
   return (bits + 7) / 8;
 }
-
-#endif
 
 /** Allocator **/
 
@@ -1346,6 +1342,19 @@ static void serialize_operand_le(void *destination, size_t operand, size_t size)
     break;
   }
 
+  case 8: {
+    assert(operand <= UINT64_MAX);
+    bytes[0] = operand & 0xffu;
+    bytes[1] = (operand >> 8u) & 0xffu;
+    bytes[2] = (operand >> 16u) & 0xffu;
+    bytes[3] = (operand >> 24u) & 0xffu;
+    bytes[4] = (operand >> 32u) & 0xffu;
+    bytes[5] = (operand >> 40u) & 0xffu;
+    bytes[6] = (operand >> 48u) & 0xffu;
+    bytes[7] = (operand >> 56u) & 0xffu;
+    break;
+  }
+
   default:
     assert(0);
   }
@@ -2183,35 +2192,29 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
 
 #include "build/x64.h"
 
-#define X_SCRATCH RDI
-#define X_SCRATCH_2 RSI
+#define X_SCRATCH RAX
+#define X_SCRATCH_2 RDI
 
-#define X_CHAR_CLASSES RAX
+#define X_CHAR_CLASSES R9
 #define X_BUILTIN_CHAR_CLASSES RBX
 
-#define X_N_POINTERS RCX
+#define X_BUFFER RCX
 
 #define X_STR RDX
 
-#define X_BUFFER R8
+#define X_N_POINTERS R8
 
-#define X_PUSH_COPY R9
 #define X_CAPACITY R10
 #define X_BUMP_POINTER R11
+#define X_FREELIST R12
 
-#define X_FLAGS R12
+#define X_FLAGS R13
 
-#define X_CHARACTER R13
-#define X_PREV_CHARACTER R14
+#define X_CHARACTER R14
+#define X_PREV_CHARACTER R15
 
-#define X_STATE R15
-
-// RESULT
-// FREELIST
-// ALLOC
-// FREE
-// ALLOCATOR_CONTEXT
-// EOF
+#define X_STATE RBP
+#define X_PREDECESSOR RSI
 
 WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
   const size_t page_size = get_page_size();
@@ -2219,8 +2222,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
   native_code_t native_code;
   native_code.size = 0;
 
-  // We preallocate the buffer because starting with a single-page allocation simplifies
-  // reallocation slightly
+  // Preallocate some space, because it simplifies reallocation slightly
   native_code.capacity = page_size;
   native_code.buffer = my_mremap(NULL, 0, native_code.capacity);
 
@@ -2252,11 +2254,100 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     }                                                                                              \
   } while (0)
 
+  // Prologue
+  {
+    // Assume the SysV x64 calling convention
+
+    // RBX, RBP, and R12 through R15 are callee-saved registers
+    ASM1(push64_reg, RBX);
+    ASM1(push64_reg, RBP);
+    ASM1(push64_reg, R12);
+    ASM1(push64_reg, R13);
+    ASM1(push64_reg, R14);
+    ASM1(push64_reg, R15);
+
+    // We have parameters:
+    // - RDI: result pointer  (int* or match_t*)
+    // - RSI: context pointer (context_t*)
+    // - RDX: str             (const char*)
+    // - RCX: eof             (const char*)
+    // - R8:  n_pointers      (size_t)
+    // - R9:  classes         (const unsigned char*)
+
+    // str, n_pointers, and classes should already be in the correct place
+    assert(X_STR == RDX);
+    assert(X_N_POINTERS == R8);
+    assert(X_CHAR_CLASSES == R9);
+
+    // Save result pointer
+    ASM1(push64_reg, RDI);
+
+    // Unpack the allocator from the context onto the stack
+    const size_t allocator_offset = offsetof(context_t, allocator);
+    ASM1(push64_mem, INDIRECT_RD(RSI, allocator_offset + offsetof(allocator_t, context)));
+    ASM1(push64_mem, INDIRECT_RD(RSI, allocator_offset + offsetof(allocator_t, alloc)));
+    ASM1(push64_mem, INDIRECT_RD(RSI, allocator_offset + offsetof(allocator_t, free)));
+
+    // Save eof pointer
+    ASM1(push64_reg, RCX);
+
+    // Spill space
+    ASM2(sub64_reg_i8, RSP, 8);
+
+    // Unpack the buffer and capacity from the context
+    ASM2(lea64_reg_mem, X_BUFFER, INDIRECT_RD(RSI, offsetof(context_t, buffer)));
+    ASM2(lea64_reg_mem, X_CAPACITY, INDIRECT_RD(RSI, offsetof(context_t, capacity)));
+
+    const uint64_t builtin_classes_uint = (uint64_t)builtin_classes;
+
+    if (builtin_classes_uint <= 0xffffffffLU) {
+      ASM2(mov32_reg_u32, X_BUILTIN_CHAR_CLASSES, builtin_classes_uint);
+    } else {
+      ASM2(mov64_reg_u64, X_BUILTIN_CHAR_CLASSES, builtin_classes_uint);
+    }
+
+    ASM2(xor32_reg_reg, X_BUMP_POINTER, X_BUMP_POINTER);
+    ASM2(mov32_reg_i32, X_FREELIST, -1);
+
+    if (regex->n_flags <= 64) {
+      ASM2(xor32_reg_reg, X_FLAGS, X_FLAGS);
+    } else {
+      const size_t n_qwords = (regex->n_flags + 63) / 64;
+
+      // FIXME: allocate
+      ASM2(xor32_reg_reg, X_FLAGS, X_FLAGS);
+
+      for (size_t i = 0; i < n_qwords; i++) {
+        ASM2(mov64_mem_i32, INDIRECT_RD(X_FLAGS, 8 * i), 0);
+      }
+    }
+
+    ASM2(mov32_reg_i32, X_PREV_CHARACTER, -1);
+
+    ASM2(mov32_reg_i32, X_STATE, -1);
+  }
+
+  // Executor main loop
+  // FIXME
+
+  // Epilogue
+  {
+    // Discard local stack frame
+    ASM2(add64_reg_i8, RSP, 8 * 6);
+
+    // Restore callee-saved registers
+    ASM1(pop64_reg, R15);
+    ASM1(pop64_reg, R14);
+    ASM1(pop64_reg, R13);
+    ASM1(pop64_reg, R12);
+    ASM1(pop64_reg, RBP);
+    ASM1(pop64_reg, RBX);
+
+    ASM0(ret);
+  }
+
 #define BRANCH(id)                                                                                 \
-  if (!id(&native_code, 0)) {                                                                      \
-    my_mremap(native_code.buffer, native_code.capacity, 0);                                        \
-    return CREX_E_NOMEM;                                                                           \
-  }                                                                                                \
+  ASM1(id, 0);                                                                                     \
   size_t branch_origin = native_code.size
 
 #define BRANCH_TARGET()                                                                            \
@@ -2265,21 +2356,8 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     native_code.buffer[branch_origin - 1] = native_code.size - branch_origin;                      \
   } while (0)
 
-  // RBX, RBP, and R12 through R15 are calllee-saved registers. We use all of them except RBP
-  ASM1(push64_reg, RBX);
-  ASM1(push64_reg, R12);
-  ASM1(push64_reg, R13);
-  ASM1(push64_reg, R14);
-  ASM1(push64_reg, R15);
-
-  // FIXME: put this somewhere sane
-  ASM1(pop64_reg, R15);
-  ASM1(pop64_reg, R14);
-  ASM1(pop64_reg, R13);
-  ASM1(pop64_reg, R12);
-  ASM1(pop64_reg, RBX);
-
   for (size_t i = 0; i < regex->size;) {
+
     const unsigned char byte = regex->bytecode[i++];
 
     const unsigned char opcode = VM_OPCODE(byte);
@@ -2684,14 +2762,14 @@ PUBLIC void crex_destroy_context(context_t *context) {
 
 #else
 
-typedef status_t (*native_function_t)(void*, context_t*, const char*, const char*, size_t);
+typedef status_t (*native_function_t)(void *, context_t *, const char *, const char *, size_t);
 
 WARN_UNUSED_RESULT static status_t call_regex_native_code(void *result,
-                                                    crex_context_t *context,
-                                                    const crex_regex_t *regex,
-                                                    const char *str,
-                                                    size_t size,
-                                                    size_t n_pointers) {
+                                                          crex_context_t *context,
+                                                          const crex_regex_t *regex,
+                                                          const char *str,
+                                                          size_t size,
+                                                          size_t n_pointers) {
 #pragma GCC diagnostic ignored "-Wpedantic"
   const native_function_t function = (native_function_t)(regex->native_code);
 #pragma GCC diagnostic pop
