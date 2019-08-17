@@ -2220,7 +2220,7 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
 #define R_STATE RBP
 #define R_PREDECESSOR RSI
 
-#define M_RESULT INDIRECT_RD(RSP, 46)
+#define M_RESULT INDIRECT_RD(RSP, 56)
 #define M_ALLOCATOR_CONTEXT INDIRECT_RD(RSP, 48)
 #define M_ALLOC INDIRECT_RD(RSP, 40)
 #define M_FREE INDIRECT_RD(RSP, 32)
