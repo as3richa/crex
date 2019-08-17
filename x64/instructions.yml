@@ -192,3 +192,24 @@
 - name: mov32
   opcode: [0x8b]
   encoding: [reg, rm_mem]
+
+- name: inc64
+  rex_w: true
+  opcode: [0xff]
+  extension: 0x00
+  encoding: [rm_reg]
+
+- name: cmovne64
+  rex_w: true
+  opcode: [0x0f, 0x45]
+  encoding: [reg, rm_mem]
+
+- name: cmovne64
+  rex_w: true
+  opcode: [0x0f, 0x45]
+  encoding: [reg, rm_reg]
+
+- name: cmp64
+  rex_w: true
+  opcode: [0x3b]
+  encoding: [reg, rm_mem]
