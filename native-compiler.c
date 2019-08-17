@@ -98,7 +98,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     ASM1(id, -(int)(native_code.size + 2 - branch_origin));                                        \
   } while (0)
 
-#define BACKWARDS_BRANCH_TARGET() size_t branch_origin = native_code.size;
+#define BACKWARDS_BRANCH_TARGET() size_t branch_origin = native_code.size
 
   // Prologue
   {
@@ -217,7 +217,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
 
       ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
 
-      if ((operand & (1u << 7)) == 0) {
+      if ((operand & (1u << 7u)) == 0) {
         ASM2(cmp32_reg_i8, R_CHARACTER, operand);
       } else {
         ASM2(cmp32_reg_i32, R_CHARACTER, operand);

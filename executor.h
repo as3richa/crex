@@ -30,14 +30,16 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #endif
 
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-  int match_found = 0;
+  handle_t matched_state = HANDLE_NULL;
 #endif
 
   state_list_t list;
   state_list_init(&list, context, n_pointers);
 
+  internal_allocator_t *allocator = &list.allocator;
+
   const size_t flags_size = bitmap_size_for_bits(regex->n_flags);
-  const handle_t flags = internal_allocator_alloc(&list.allocator, flags_size);
+  const handle_t flags = internal_allocator_alloc(allocator, flags_size);
 
   if (flags == HANDLE_NULL) {
     return CREX_E_NOMEM;
@@ -52,7 +54,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
   // correctness by also tracking execution naively
 
   const size_t visited_size = bitmap_size_for_bits(regex->size);
-  const handle_t visited = internal_allocator_alloc(&list.allocator, visited_size);
+  const handle_t visited = internal_allocator_alloc(allocator, visited_size);
 
   if (visited == HANDLE_NULL) {
     return CREX_E_NOMEM;
@@ -75,8 +77,8 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #endif
 
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-    if (list.head == HANDLE_NULL && match_found) {
-      return CREX_OK;
+    if (list.head == HANDLE_NULL && matched_state != HANDLE_NULL) {
+      break;
     }
 #endif
 
@@ -94,7 +96,8 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
         }
 
 #if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-        if (match_found) {
+        // Don't push the initial state if we've already found a match
+        if (matched_state != HANDLE_NULL) {
           break;
         }
 #endif
@@ -118,43 +121,28 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #ifdef MATCH_BOOLEAN
           *is_match = 1;
           return CREX_OK;
-#elif defined(MATCH_LOCATION)
-          match_found = 1;
-
-          const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
-
-          if (pointer_buffer[0] == NULL || pointer_buffer[1] == NULL) {
-            match->begin = NULL;
-            match->end = NULL;
-          } else {
-            match->begin = pointer_buffer[0];
-            match->end = pointer_buffer[1];
+#else
+          // Deallocate the previously-matched state, if any
+          if (matched_state != HANDLE_NULL) {
+            internal_allocator_free(allocator, matched_state);
           }
-#elif defined(MATCH_GROUPS)
-          match_found = 1;
 
-          const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
+          matched_state = state;
 
-          for (size_t i = 0; i < regex->n_capturing_groups; i++) {
-            if (pointer_buffer[0] == NULL || pointer_buffer[1] == NULL) {
-              matches[i].begin = NULL;
-              matches[i].end = NULL;
-            } else {
-              matches[i].begin = pointer_buffer[0];
-              matches[i].end = pointer_buffer[1];
-            }
-
-            pointer_buffer += 2;
-          }
-#endif
-
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-          keep = 0;
+          // We can safely discard any successor of state, because any match coming from a successor
+          // would be of lower priority. We can't deallocate state itself, however, because we'll
+          // need to copy its pointers later
 
           handle_t tail = LIST_NEXT(&list, state);
 
           while (tail != HANDLE_NULL) {
             tail = state_list_pop(&list, state);
+          }
+
+          if (predecessor == HANDLE_NULL) {
+            list.head = HANDLE_NULL;
+          } else {
+            LIST_NEXT(&list, predecessor) = HANDLE_NULL;
           }
 
           break;
@@ -317,20 +305,42 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
     str++;
   }
 
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
-
-  if (!match_found) {
-#if defined(MATCH_LOCATION)
+#ifdef MATCH_LOCATION
+  if (matched_state == HANDLE_NULL) {
     match->begin = NULL;
     match->end = NULL;
-#else
+  } else {
+    const char **pointer_buffer = LIST_POINTER_BUFFER(&list, matched_state);
+
+    if (pointer_buffer[0] == NULL || pointer_buffer[1] == NULL) {
+      match->begin = NULL;
+      match->end = NULL;
+    } else {
+      match->begin = pointer_buffer[0];
+      match->end = pointer_buffer[1];
+    }
+  }
+#elif defined(MATCH_GROUPS)
+  if (matched_state == HANDLE_NULL) {
     for (size_t i = 0; i < regex->n_capturing_groups; i++) {
       matches[i].begin = NULL;
       matches[i].end = NULL;
     }
-#endif
-  }
+  } else {
+    const char **pointer_buffer = LIST_POINTER_BUFFER(&list, matched_state);
 
+    for (size_t i = 0; i < regex->n_capturing_groups; i++) {
+      if (pointer_buffer[0] == NULL || pointer_buffer[1] == NULL) {
+        matches[i].begin = NULL;
+        matches[i].end = NULL;
+      } else {
+        matches[i].begin = pointer_buffer[0];
+        matches[i].end = pointer_buffer[1];
+      }
+
+      pointer_buffer += 2;
+    }
+  }
 #endif
 
   return CREX_OK;
