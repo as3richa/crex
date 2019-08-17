@@ -421,13 +421,13 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     }
   }
 
+  // Match found
   {
     ASM2(cmp32_reg_i8, R_N_POINTERS, 0);
     BRANCH(je_i8);
 
     {
-      // n_pointers != 0, i.e. we're doing a find or group search; stash the current state in
-      // M_MATCHED_STATE
+      // n_pointers != 0, i.e. we're doing a find or group search
 
       ASM2(mov64_reg_mem, R_SCRATCH, M_MATCHED_STATE);
 
@@ -444,20 +444,39 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
       // Let M_MATCHED_STATE := R_STATE
       ASM2(mov64_mem_reg, M_MATCHED_STATE, R_STATE);
 
+      // Deallocate any successors to R_STATE (because any matches therein would be of lower
+      // priority)
+      {
+        ASM2(mov64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_STATE, 0));
+
+        ASM2(cmp64_reg_i8, R_SCRATCH, -1);
+        BRANCH(je_i8);
+
+        {
+          BACKWARDS_BRANCH_TARGET();
+
+          // Chain the successor onto the front of the freelist
+          ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH, 0), R_FREELIST);
+          ASM2(mov64_reg_reg, R_FREELIST, R_SCRATCH);
+
+          ASM2(cmp64_reg_i8, R_SCRATCH, -1);
+          BACKWARDS_BRANCH(jne_i8);
+        }
+
+        BRANCH_TARGET();
+      }
+
       // Remove R_STATE from the list of active states
 
-      // Let R_SCRATCH := M_NEXT_OF_PRED if R_STATE has a predecessor, M_HEAD otherwise. Two leas
-      // and a cmov benchmarked better than the branching version
+      // If R_PREDECESSOR is HANDLE_NULL, let R_SCRATCH be the address of M_HEAD; otherwise, let
+      // R_SCRATCH be the address of the next pointer of R_PREDECESSOR
       ASM2(lea64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_PREDECESSOR, 0));
       ASM2(lea64_reg_mem, R_SCRATCH_2, M_HEAD);
       ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
       ASM2(cmovne64_reg_reg, R_SCRATCH, R_SCRATCH_2);
 
-      // Let R_SCRATCH_2 be the successor of R_STATE
-      ASM2(mov64_reg_mem, R_SCRATCH_2, M_DEREF_HANDLE(R_STATE, 0));
-
-      // Let the successor of R_STATE's predecessor be R_STATE's successor
-      ASM2(mov64_mem_reg, INDIRECT_REG(R_SCRATCH), R_SCRATCH_2);
+      // Point the above at HANDLE_NULL
+      ASM2(mov64_mem_i32, INDIRECT_REG(R_SCRATCH), -1);
 
       // FIXME: return something meaningful
       ASM0(ret);

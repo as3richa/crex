@@ -213,3 +213,7 @@
   rex_w: true
   opcode: [0x3b]
   encoding: [reg, rm_mem]
+
+- name: jne
+  opcode: [0x75]
+  encoding: [i8]
