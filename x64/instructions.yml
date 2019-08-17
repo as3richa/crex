@@ -163,3 +163,32 @@
   opcode: [0x83]
   extension: 0x05
   encoding: [rm_reg, i8]
+
+- name: push64
+  opcode: [0x6a]
+  encoding: [i8]
+
+- name: mov64
+  rex_w: true
+  opcode: [0x8b]
+  encoding: [reg, rm_mem]
+
+- name: cmp64
+  rex_w: true
+  opcode: [0x83]
+  extension: 0x07
+  encoding: [rm_reg, i8]
+
+- name: mov64 
+  rex_w: true
+  opcode: [0x89]
+  encoding: [rm_reg, reg]
+
+- name: mov32 
+  opcode: [0xc7]
+  extension: 0x00
+  encoding: [rm_mem, i32]
+
+- name: mov32
+  opcode: [0x8b]
+  encoding: [reg, rm_mem]

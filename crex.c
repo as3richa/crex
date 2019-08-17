@@ -494,16 +494,16 @@ int lex_escape_code(token_t *token, const char **pattern, const char *eof) {
         return CREX_E_BAD_ESCAPE;
       }
 
-      const char hex_byte = *((*pattern)++);
+      const char heR_byte = *((*pattern)++);
 
       int digit;
 
-      if ('0' <= hex_byte && hex_byte <= '9') {
-        digit = hex_byte - '0';
-      } else if ('a' <= hex_byte && hex_byte <= 'f') {
-        digit = hex_byte - 'a' + 0xa;
-      } else if ('A' <= hex_byte && hex_byte <= 'F') {
-        digit = hex_byte - 'A' + 0xa;
+      if ('0' <= heR_byte && heR_byte <= '9') {
+        digit = heR_byte - '0';
+      } else if ('a' <= heR_byte && heR_byte <= 'f') {
+        digit = heR_byte - 'a' + 0xa;
+      } else if ('A' <= heR_byte && heR_byte <= 'F') {
+        digit = heR_byte - 'A' + 0xa;
       } else {
         return CREX_E_BAD_ESCAPE;
       }
@@ -2192,29 +2192,42 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
 
 #include "build/x64.h"
 
-#define X_SCRATCH RAX
-#define X_SCRATCH_2 RDI
+#define R_SCRATCH RAX
+#define R_SCRATCH_2 RDI
 
-#define X_CHAR_CLASSES R9
-#define X_BUILTIN_CHAR_CLASSES RBX
+#define R_CHAR_CLASSES R9
+#define R_BUILTIN_CHAR_CLASSES RBX
 
-#define X_BUFFER RCX
+#define R_BUFFER RCX
 
-#define X_STR RDX
+#define R_STR RDX
 
-#define X_N_POINTERS R8
+#define R_N_POINTERS R8
 
-#define X_CAPACITY R10
-#define X_BUMP_POINTER R11
-#define X_FREELIST R12
+#define R_CAPACITY R10
+#define R_BUMP_POINTER R11
+#define R_FREELIST R12
 
-#define X_FLAGS R13
+#define R_FLAGS R13
 
-#define X_CHARACTER R14
-#define X_PREV_CHARACTER R15
+#define R_CHARACTER R14
+#define R_PREV_CHARACTER R15
 
-#define X_STATE RBP
-#define X_PREDECESSOR RSI
+#define R_STATE RBP
+#define R_PREDECESSOR RSI
+
+#define M_RESULT INDIRECT_RD(RSP, 46)
+#define M_ALLOCATOR_CONTEXT INDIRECT_RD(RSP, 48)
+#define M_ALLOC INDIRECT_RD(RSP, 40)
+#define M_FREE INDIRECT_RD(RSP, 32)
+#define M_EOF INDIRECT_RD(RSP, 24)
+#define M_MATCHED_STATE INDIRECT_RD(RSP, 16)
+#define M_SPILL INDIRECT_RD(RSP, 8)
+#define M_HEAD INDIRECT_RD(RSP, 0)
+
+#define STACK_FRAME_SIZE 64
+
+#define M_DEREF_HANDLE(reg, offset) INDIRECT_BSXD(R_BUFFER, SCALE_1, reg, offset)
 
 WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
   const size_t page_size = get_page_size();
@@ -2275,9 +2288,9 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     // - R9:  classes         (const unsigned char*)
 
     // str, n_pointers, and classes should already be in the correct place
-    assert(X_STR == RDX);
-    assert(X_N_POINTERS == R8);
-    assert(X_CHAR_CLASSES == R9);
+    assert(R_STR == RDX);
+    assert(R_N_POINTERS == R8);
+    assert(R_CHAR_CLASSES == R9);
 
     // Save result pointer
     ASM1(push64_reg, RDI);
@@ -2294,37 +2307,40 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     // Spill space
     ASM2(sub64_reg_i8, RSP, 8);
 
+    // Matching state
+    ASM1(push64_i8, -1);
+
     // Unpack the buffer and capacity from the context
-    ASM2(lea64_reg_mem, X_BUFFER, INDIRECT_RD(RSI, offsetof(context_t, buffer)));
-    ASM2(lea64_reg_mem, X_CAPACITY, INDIRECT_RD(RSI, offsetof(context_t, capacity)));
+    ASM2(lea64_reg_mem, R_BUFFER, INDIRECT_RD(RSI, offsetof(context_t, buffer)));
+    ASM2(lea64_reg_mem, R_CAPACITY, INDIRECT_RD(RSI, offsetof(context_t, capacity)));
 
     const uint64_t builtin_classes_uint = (uint64_t)builtin_classes;
 
     if (builtin_classes_uint <= 0xffffffffLU) {
-      ASM2(mov32_reg_u32, X_BUILTIN_CHAR_CLASSES, builtin_classes_uint);
+      ASM2(mov32_reg_u32, R_BUILTIN_CHAR_CLASSES, builtin_classes_uint);
     } else {
-      ASM2(mov64_reg_u64, X_BUILTIN_CHAR_CLASSES, builtin_classes_uint);
+      ASM2(mov64_reg_u64, R_BUILTIN_CHAR_CLASSES, builtin_classes_uint);
     }
 
-    ASM2(xor32_reg_reg, X_BUMP_POINTER, X_BUMP_POINTER);
-    ASM2(mov32_reg_i32, X_FREELIST, -1);
+    ASM2(xor32_reg_reg, R_BUMP_POINTER, R_BUMP_POINTER);
+    ASM2(mov32_reg_i32, R_FREELIST, -1);
 
     if (regex->n_flags <= 64) {
-      ASM2(xor32_reg_reg, X_FLAGS, X_FLAGS);
+      ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
     } else {
       const size_t n_qwords = (regex->n_flags + 63) / 64;
 
       // FIXME: allocate
-      ASM2(xor32_reg_reg, X_FLAGS, X_FLAGS);
+      ASM2(mov32_reg_i32, R_FLAGS, -1);
 
       for (size_t i = 0; i < n_qwords; i++) {
-        ASM2(mov64_mem_i32, INDIRECT_RD(X_FLAGS, 8 * i), 0);
+        ASM2(mov64_mem_i32, M_DEREF_HANDLE(R_FLAGS, 8 * i), 0);
       }
     }
 
-    ASM2(mov32_reg_i32, X_PREV_CHARACTER, -1);
+    ASM2(mov32_reg_i32, R_PREV_CHARACTER, -1);
 
-    ASM2(mov32_reg_i32, X_STATE, -1);
+    ASM2(mov32_reg_i32, R_STATE, -1);
   }
 
   // Executor main loop
@@ -2332,10 +2348,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
 
   // Epilogue
   {
-    // Discard local stack frame
-    ASM2(add64_reg_i8, RSP, 8 * 6);
-
-    // Restore callee-saved registers
+    ASM2(add64_reg_i8, RSP, STACK_FRAME_SIZE);
     ASM1(pop64_reg, R15);
     ASM1(pop64_reg, R14);
     ASM1(pop64_reg, R13);
@@ -2370,16 +2383,16 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     case VM_CHARACTER: {
       assert(operand <= 0xffu);
 
-      ASM2(xor32_reg_reg, X_SCRATCH, X_SCRATCH);
+      ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
 
       if ((operand & (1u << 7)) == 0) {
-        ASM2(cmp32_reg_i8, X_CHARACTER, operand);
+        ASM2(cmp32_reg_i8, R_CHARACTER, operand);
       } else {
-        ASM2(cmp32_reg_i32, X_CHARACTER, operand);
+        ASM2(cmp32_reg_i32, R_CHARACTER, operand);
       }
 
-      // X_SCRATCH := 1 if X_CHARACTER == operand
-      ASM1(sete8_reg, X_SCRATCH);
+      // R_SCRATCH := 1 if R_CHARACTER == operand
+      ASM1(sete8_reg, R_SCRATCH);
 
       // FIXME: jmp?
       ASM0(ret);
@@ -2392,23 +2405,23 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
       assert(opcode != VM_CHAR_CLASS || operand < regex->n_classes);
       assert(opcode != VM_BUILTIN_CHAR_CLASS || operand < N_BUILTIN_CLASSES);
 
-      ASM2(xor32_reg_reg, X_SCRATCH, X_SCRATCH);
+      ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
 
       // Short-circuit for EOF
-      ASM2(cmp32_reg_i8, X_CHARACTER, -1);
+      ASM2(cmp32_reg_i8, R_CHARACTER, -1);
       BRANCH(je_i8);
 
       // The bitmap bit corresponding to character k can be found in the (k / 32)th dword
-      ASM2(mov32_reg_reg, X_SCRATCH_2, X_CHARACTER);
-      ASM2(shr32_reg_u8, X_SCRATCH_2, 5);
+      ASM2(mov32_reg_reg, R_SCRATCH_2, R_CHARACTER);
+      ASM2(shr32_reg_u8, R_SCRATCH_2, 5);
 
-      const reg_t base = (opcode == VM_CHAR_CLASS) ? X_CHAR_CLASSES : X_BUILTIN_CHAR_CLASSES;
+      const reg_t base = (opcode == VM_CHAR_CLASS) ? R_CHAR_CLASSES : R_BUILTIN_CHAR_CLASSES;
 
       // The kth character class is at offset 32 * k from the base pointer
-      ASM2(bt32_mem_reg, INDIRECT_BSXD(base, SCALE_4, X_SCRATCH_2, 32 * operand), X_CHARACTER);
+      ASM2(bt32_mem_reg, INDIRECT_BSXD(base, SCALE_4, R_SCRATCH_2, 32 * operand), R_CHARACTER);
 
-      // X_SCRATCH := 1 if the bit corresponding to X_CHARACTER is set
-      ASM1(setc8_reg, X_SCRATCH);
+      // R_SCRATCH := 1 if the bit corresponding to R_CHARACTER is set
+      ASM1(setc8_reg, R_SCRATCH);
 
       BRANCH_TARGET();
 
@@ -2418,10 +2431,10 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     }
 
     case VM_ANCHOR_BOF: {
-      ASM2(cmp32_reg_i8, X_PREV_CHARACTER, -1);
+      ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
       BRANCH(je_i8);
 
-      ASM2(xor32_reg_reg, X_SCRATCH, X_SCRATCH);
+      ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
       ASM0(ret);
 
       BRANCH_TARGET();
@@ -2430,14 +2443,14 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     }
 
     case VM_ANCHOR_BOL: {
-      ASM2(cmp32_reg_i8, X_PREV_CHARACTER, -1);
+      ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
       BRANCH(je_i8);
 
       {
-        ASM2(cmp32_reg_i8, X_PREV_CHARACTER, '\n');
+        ASM2(cmp32_reg_i8, R_PREV_CHARACTER, '\n');
         BRANCH(je_i8);
 
-        ASM2(xor32_reg_reg, X_SCRATCH, X_SCRATCH);
+        ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
         ASM0(ret);
 
         BRANCH_TARGET();
@@ -2449,10 +2462,10 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     }
 
     case VM_ANCHOR_EOF: {
-      ASM2(cmp32_reg_i8, X_CHARACTER, -1);
+      ASM2(cmp32_reg_i8, R_CHARACTER, -1);
       BRANCH(je_i8);
 
-      ASM2(xor32_reg_reg, X_SCRATCH, X_SCRATCH);
+      ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
       ASM0(ret);
 
       BRANCH_TARGET();
@@ -2461,14 +2474,14 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     }
 
     case VM_ANCHOR_EOL: {
-      ASM2(cmp32_reg_i8, X_CHARACTER, -1);
+      ASM2(cmp32_reg_i8, R_CHARACTER, -1);
       BRANCH(je_i8);
 
       {
-        ASM2(cmp32_reg_i8, X_CHARACTER, '\n');
+        ASM2(cmp32_reg_i8, R_CHARACTER, '\n');
         BRANCH(je_i8);
 
-        ASM2(xor32_reg_reg, X_SCRATCH, X_SCRATCH);
+        ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
         ASM0(ret);
 
         BRANCH_TARGET();
@@ -2482,29 +2495,29 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     case VM_ANCHOR_WORD_BOUNDARY:
     case VM_ANCHOR_NOT_WORD_BOUNDARY: {
       if (opcode == VM_ANCHOR_WORD_BOUNDARY) {
-        ASM2(xor32_reg_reg, X_SCRATCH_2, X_SCRATCH_2);
+        ASM2(xor32_reg_reg, R_SCRATCH_2, R_SCRATCH_2);
       } else {
-        ASM2(mov8_reg_i8, X_SCRATCH_2, 1);
+        ASM2(mov8_reg_i8, R_SCRATCH_2, 1);
       }
 
       // D.R.Y.
       for (size_t k = 0; k <= 1; k++) {
-        const reg_t character = (k == 0) ? X_PREV_CHARACTER : X_CHARACTER;
+        const reg_t character = (k == 0) ? R_PREV_CHARACTER : R_CHARACTER;
 
         ASM2(cmp32_reg_i8, character, -1);
         BRANCH(je_i8);
 
         {
-          ASM2(mov32_reg_reg, X_SCRATCH, character);
-          ASM2(shr32_reg_u8, X_SCRATCH, 5);
+          ASM2(mov32_reg_reg, R_SCRATCH, character);
+          ASM2(shr32_reg_u8, R_SCRATCH, 5);
 
           const indirect_operand_t dword =
-              INDIRECT_BSXD(X_BUILTIN_CHAR_CLASSES, SCALE_4, X_SCRATCH, 32 * BCC_WORD);
+              INDIRECT_BSXD(R_BUILTIN_CHAR_CLASSES, SCALE_4, R_SCRATCH, 32 * BCC_WORD);
 
           ASM2(bt32_mem_reg, dword, character);
           BRANCH(jnc_i8);
 
-          ASM1(inc32_reg, X_SCRATCH_2);
+          ASM1(inc32_reg, R_SCRATCH_2);
 
           BRANCH_TARGET();
         }
@@ -2512,7 +2525,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
         BRANCH_TARGET();
       }
 
-      ASM2(test8_reg_i8, X_SCRATCH_2, 1);
+      ASM2(test8_reg_i8, R_SCRATCH_2, 1);
       BRANCH(jnz_i8);
 
       ASM0(ret);
@@ -2523,32 +2536,25 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     }
 
     case VM_JUMP:
-      break;
-
     case VM_SPLIT_PASSIVE:
-      break;
-
     case VM_SPLIT_EAGER:
-      break;
-
     case VM_SPLIT_BACKWARDS_PASSIVE:
-      break;
-
-    case VM_SPLIT_BACKWARDS_EAGER:
-      break;
+    case VM_SPLIT_BACKWARDS_EAGER: {
+      assert(0);
+    }
 
     case VM_WRITE_POINTER: {
       assert(operand < 2 * regex->n_capturing_groups);
 
       if (operand < 128) {
-        ASM2(cmp32_reg_i8, X_N_POINTERS, operand);
+        ASM2(cmp32_reg_i8, R_N_POINTERS, operand);
       } else {
-        ASM2(cmp32_reg_u32, X_N_POINTERS, operand);
+        ASM2(cmp32_reg_u32, R_N_POINTERS, operand);
       }
 
       BRANCH(jbe_i8);
 
-      ASM2(mov64_mem_reg, INDIRECT_BSXD(X_BUFFER, SCALE_1, X_STATE, 2 + operand), X_STR);
+      ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_STATE, 2 + operand), R_STR);
 
       BRANCH_TARGET();
 
@@ -2560,13 +2566,13 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
 
       if (regex->n_flags <= 64) {
         if (operand <= 32) {
-          ASM2(bts32_reg_u8, X_FLAGS, operand);
+          ASM2(bts32_reg_u8, R_FLAGS, operand);
         } else {
-          ASM2(bts64_reg_u8, X_FLAGS, operand);
+          ASM2(bts64_reg_u8, R_FLAGS, operand);
         }
       } else {
         const size_t offset = 4 * (operand / 4);
-        ASM2(bts32_mem_u8, INDIRECT_RD(X_FLAGS, offset), operand % 32);
+        ASM2(bts32_mem_u8, M_DEREF_HANDLE(R_FLAGS, offset), operand % 32);
       }
 
       BRANCH(jnc_i8);
@@ -2583,10 +2589,65 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     }
   }
 
-  // Need a 32-bit move to clobber any high-order bits
-  ASM2(mov32_reg_i32, X_SCRATCH, 2);
+  {
+    ASM2(cmp32_reg_i8, R_N_POINTERS, 0);
+    BRANCH(je_i8);
 
-  ASM0(ret);
+    {
+      // n_pointers != 0, i.e. we're doing a find or group search; stash the current state in
+      // M_MATCHED_STATE
+
+      ASM2(mov64_reg_mem, R_SCRATCH, M_MATCHED_STATE);
+
+      // Deallocate the current M_MATCHED_STATE, if any
+      ASM2(cmp64_reg_i8, R_SCRATCH, -1);
+      BRANCH(je_i8);
+
+      // Chain the previous M_MATCHED_STATE onto the front of the freelist
+      ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH, 0), R_FREELIST);
+      ASM2(mov64_reg_reg, R_FREELIST, R_SCRATCH);
+
+      BRANCH_TARGET();
+
+      // Let M_MATCHED_STATE := R_STATE
+      ASM2(mov64_mem_reg, M_MATCHED_STATE, R_STATE);
+
+      // Remove R_STATE from the list of active states
+
+      // Let R_SCRATCH := M_NEXT_OF_PRED if R_STATE has a predecessor, M_HEAD otherwise. Two leas
+      // and a cmov benchmarked better than the branching version
+      ASM2(lea64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_PREDECESSOR, 0));
+      ASM2(lea64_reg_mem, R_SCRATCH_2, M_HEAD);
+      ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
+
+      // Let R_SCRATCH_2 be the successor of R_STATE
+      ASM2(mov64_reg_mem, R_SCRATCH_2, M_DEREF_HANDLE(R_STATE, 0));
+
+      // Let the successor of R_STATE's predecessor be R_STATE's successor
+      ASM2(mov64_mem_reg, INDIRECT_REG(R_SCRATCH), R_SCRATCH_2);
+
+      // FIXME: return something meaningful
+      ASM0(ret);
+    }
+
+    BRANCH_TARGET();
+
+    // n_pointers == 0, i.e. we're performing a boolean search; M_RESULT is
+    // (the address on the stack of) a pointer to an int
+    ASM2(mov32_reg_mem, R_SCRATCH_2, M_RESULT);
+
+    // 64-bit int isn't totally implausible
+    if (sizeof(int) == 4) {
+      ASM2(mov32_mem_i32, INDIRECT_REG(R_SCRATCH_2), 0);
+    } else {
+      assert(sizeof(int) == 8);
+      ASM2(mov64_mem_i32, INDIRECT_REG(R_SCRATCH_2), 0);
+    }
+
+    // Short-circuit by jumping directly to the function epilogue
+    ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
+    // FIXME: jump
+  }
 
   assert(native_code.capacity % page_size == 0);
 
