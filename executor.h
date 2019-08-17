@@ -43,7 +43,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
     return CREX_E_NOMEM;
   }
 
-#define FLAGS (unsigned char *)(context->buffer + flags)
+#define FLAGS (context->buffer + flags)
 
 #ifndef NDEBUG
   // The compiler statically guarantees that no instruction can ever be executed twice, via
@@ -58,7 +58,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
     return CREX_E_NOMEM;
   }
 
-#define VISITED (unsigned char *)(context->buffer + visited)
+#define VISITED (context->buffer + visited)
 
 #endif
 

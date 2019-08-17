@@ -182,7 +182,7 @@ typedef union {
 } size_or_pointer_t;
 
 struct crex_context {
-  size_or_pointer_t *buffer;
+  unsigned char *buffer;
   size_t capacity;
   allocator_t allocator;
 };
@@ -1802,13 +1802,13 @@ static void internal_allocator_init(internal_allocator_t *allocator, context_t *
 WARN_UNUSED_RESULT static handle_t internal_allocator_alloc(internal_allocator_t *allocator,
                                                             size_t size) {
   const size_t alignment = sizeof(size_or_pointer_t);
-  const size_t quadwords = (size + alignment - 1) / alignment;
+  size = alignment * ((size + alignment - 1) / alignment);
 
   context_t *context = allocator->context;
 
-  if (allocator->bump_pointer + quadwords <= context->capacity) {
+  if (allocator->bump_pointer + size <= context->capacity) {
     const handle_t result = allocator->bump_pointer;
-    allocator->bump_pointer += quadwords;
+    allocator->bump_pointer += size;
 
     return result;
   }
@@ -1821,29 +1821,31 @@ WARN_UNUSED_RESULT static handle_t internal_allocator_alloc(internal_allocator_t
   }
 
   // FIXME: consider capping capacity based on an analytical bound
-  const size_t capacity = 2 * context->capacity + quadwords;
-  size_or_pointer_t *buffer = ALLOC(&context->allocator, sizeof(size_or_pointer_t) * capacity);
+  const size_t capacity = 2 * context->capacity + size;
+  unsigned char *buffer = ALLOC(&context->allocator, capacity);
 
   if (buffer == NULL) {
     return HANDLE_NULL;
   }
 
-  safe_memcpy(buffer, context->buffer, sizeof(size_or_pointer_t) * allocator->bump_pointer);
+  safe_memcpy(buffer, context->buffer, allocator->bump_pointer);
   FREE(&context->allocator, context->buffer);
 
   context->buffer = buffer;
   context->capacity = capacity;
 
-  assert(allocator->bump_pointer + quadwords <= context->capacity);
+  assert(allocator->bump_pointer + size <= context->capacity);
 
   const handle_t result = allocator->bump_pointer;
-  allocator->bump_pointer += quadwords;
+  allocator->bump_pointer += size;
 
   return result;
 }
 
 static void internal_allocator_free(internal_allocator_t *allocator, handle_t handle) {
   const context_t *context = allocator->context;
+
+  assert(handle % sizeof(size_or_pointer_t) == 0);
 
   *(handle_t *)(context->buffer + handle) = allocator->freelist;
   allocator->freelist = handle;
@@ -1859,9 +1861,11 @@ typedef struct {
 
 #define LIST_NEXT(list, handle) (*(handle_t *)(LIST_BUFFER(list) + (handle)))
 
-#define LIST_INSTR_POINTER(list, handle) (*(size_t *)(LIST_BUFFER(list) + (handle) + 1))
+#define LIST_INSTR_POINTER(list, handle)                                                           \
+  (*(size_t *)(LIST_BUFFER(list) + (handle) + sizeof(size_or_pointer_t)))
 
-#define LIST_POINTER_BUFFER(list, handle) ((const char **)(LIST_BUFFER(list) + (handle) + 2))
+#define LIST_POINTER_BUFFER(list, handle)                                                          \
+  ((const char **)(LIST_BUFFER(list) + (handle) + 2 * sizeof(size_or_pointer_t)))
 
 static void state_list_init(state_list_t *list, context_t *context, size_t n_pointers) {
   list->n_pointers = n_pointers;
