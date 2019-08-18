@@ -162,7 +162,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
 
         // Push all the non-scratch caller-saved registers
         for (reg_t reg = RAX; reg <= R15; reg++) {
-          if (CALLEE_SAVED(reg) || reg == R_SCRATCH || reg == R_SCRATCH_2) {
+          if (CALLEE_SAVED(reg) || reg == R_SCRATCH || reg == R_SCRATCH_2 || reg == RSP) {
             continue;
           }
 
@@ -236,7 +236,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
 
         // Restore saved registers. Careful of underflow
         for (reg_t reg = R15; reg >= RAX; reg--) {
-          if (!CALLEE_SAVED(reg) && reg != R_SCRATCH && reg != R_SCRATCH_2) {
+          if (!CALLEE_SAVED(reg) && reg != R_SCRATCH && reg != R_SCRATCH_2 && reg != RSP) {
             ASM1(pop64_reg, reg);
             stack_offset -= 8;
           }
@@ -253,21 +253,17 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     assert(stack_offset == 8);
   }
 
-  regex->native_code = native_code.buffer;
-  regex->native_code_size = native_code.size;
-  return CREX_OK; // FIXME :)
-
   // Prologue
   {
     // Assume the SysV x64 calling convention
 
-    // RBX, RBP, and R12 through R15 are callee-saved registers
-    ASM1(push64_reg, RBX);
-    ASM1(push64_reg, RBP);
-    ASM1(push64_reg, R12);
-    ASM1(push64_reg, R13);
-    ASM1(push64_reg, R14);
-    ASM1(push64_reg, R15);
+    // Push callee-saved registers
+    for (reg_t reg = RAX; reg <= R15; reg++) {
+      if (!CALLEE_SAVED(reg)) {
+        continue;
+      }
+      ASM1(push64_reg, reg);
+    }
 
     // We have parameters:
     // - RDI: result pointer  (int* or match_t*)
@@ -349,12 +345,17 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
   // Epilogue
   {
     ASM2(add64_reg_i8, RSP, STACK_FRAME_SIZE);
-    ASM1(pop64_reg, R15);
-    ASM1(pop64_reg, R14);
-    ASM1(pop64_reg, R13);
-    ASM1(pop64_reg, R12);
-    ASM1(pop64_reg, RBP);
-    ASM1(pop64_reg, RBX);
+
+    // Pop calle-saved registers; careful of overflow
+    for (reg_t reg = R15;; reg--) {
+      if (CALLEE_SAVED(reg)) {
+        ASM1(pop64_reg, reg);
+      }
+
+      if (reg == RAX) {
+        break;
+      }
+    }
 
     ASM0(ret);
   }
