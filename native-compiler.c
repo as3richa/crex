@@ -8,50 +8,45 @@
 #define R_CHAR_CLASSES R9
 #define R_BUILTIN_CHAR_CLASSES RBX
 
-#define R_BUFFER RCX
+#define R_BUFFER R15
 
 #define R_STR RDX
 
 #define R_N_POINTERS R8
 
-#define R_CAPACITY R10
-#define R_BUMP_POINTER R11
-#define R_FREELIST R12
+#define R_CAPACITY R12
+#define R_BUMP_POINTER R13
+#define R_FREELIST R10
 
-#define R_FLAGS R13
+#define R_FLAGS R11
 
 #define R_CHARACTER R14
-#define R_PREV_CHARACTER R15
+#define R_PREV_CHARACTER RCX
 
 #define R_STATE RBP
 #define R_PREDECESSOR RSI
 
-#define M_RESULT INDIRECT_RD(RSP, 56)
-#define M_ALLOCATOR_CONTEXT INDIRECT_RD(RSP, 48)
-#define M_ALLOC INDIRECT_RD(RSP, 40)
-#define M_FREE INDIRECT_RD(RSP, 32)
-#define M_EOF INDIRECT_RD(RSP, 24)
-#define M_MATCHED_STATE INDIRECT_RD(RSP, 16)
-#define M_SPILL INDIRECT_RD(RSP, 8)
+#define M_RESULT INDIRECT_RD(RSP, 48)
+#define M_ALLOCATOR_CONTEXT INDIRECT_RD(RSP, 40)
+#define M_ALLOC INDIRECT_RD(RSP, 32)
+#define M_FREE INDIRECT_RD(RSP, 24)
+#define M_EOF INDIRECT_RD(RSP, 16)
+#define M_MATCHED_STATE INDIRECT_RD(RSP, 8)
 #define M_HEAD INDIRECT_RD(RSP, 0)
 
-#define STACK_FRAME_SIZE 64
+#define STACK_FRAME_SIZE 56
 
 #define M_DEREF_HANDLE(reg, offset) INDIRECT_BSXD(R_BUFFER, SCALE_1, reg, offset)
 
-WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
-  const size_t page_size = get_page_size();
+#define DISPLACED(mem, disp)                                                                       \
+  ((indirect_operand_t){(mem).rip_relative,                                                        \
+                        (mem).base,                                                                \
+                        (mem).has_index,                                                           \
+                        (mem).scale,                                                               \
+                        (mem).index,                                                               \
+                        (mem).displacement + disp})
 
-  native_code_t native_code;
-  native_code.size = 0;
-
-  // Preallocate some space, because it simplifies reallocation slightly
-  native_code.capacity = page_size;
-  native_code.buffer = my_mremap(NULL, 0, native_code.capacity);
-
-  if (native_code.buffer == NULL) {
-    return CREX_E_NOMEM;
-  }
+#define CALLEE_SAVED(reg) (reg == RBX || reg == RBP || (R12 <= reg && reg <= R15))
 
 #define ASM0(id)                                                                                   \
   do {                                                                                             \
@@ -77,10 +72,10 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
     }                                                                                              \
   } while (0)
 
-  // The vast majority of branches in the (typical) compiled program are used for simple control
-  // flow and boolean logic within a single VM instruction or self-contained loop; moreover, these
-  // branches can always be expressed with an 8-bit operand. For this class of branch, we can save
-  // some cycles and complexity by just building them with local variables and macros
+// The vast majority of branches in the (typical) compiled program are used for simple control
+// flow and boolean logic within a single VM instruction or self-contained loop; moreover, these
+// branches can always be expressed with an 8-bit operand. For this class of branch, we can save
+// some cycles and complexity by just building them with local variables and macros
 
 #define BRANCH(id)                                                                                 \
   ASM1(id, 0);                                                                                     \
@@ -99,6 +94,168 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
   } while (0)
 
 #define BACKWARDS_BRANCH_TARGET() size_t branch_origin = native_code.size
+
+WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
+  const size_t page_size = get_page_size();
+
+  native_code_t native_code;
+  native_code.size = 0;
+
+  // Preallocate some space, because it simplifies reallocation slightly
+  native_code.capacity = page_size;
+  native_code.buffer = my_mremap(NULL, 0, native_code.capacity);
+
+  if (native_code.buffer == NULL) {
+    return CREX_E_NOMEM;
+  }
+
+  // WIP fragment of allocation (FIXME)
+  if (1) {
+    // The macros for the various stack variables are written assuming the stack is in the same
+    // state as immediately following the prologue. However, because we reach this function body via
+    // a call, we need to take into account the return address that was pushed onto the stack, as
+    // well as the pushes we make within the body of the function. We could avoid this burden by
+    // just using RBP to track the base of the stack frame, but then we lose a register
+    size_t stack_offset = 8;
+
+    // State-push operations enter here; compute the size of a state block
+    ASM2(mov64_reg_reg, R_SCRATCH, R_N_POINTERS);
+    ASM2(add64_reg_i8, R_SCRATCH, 2);
+    ASM2(shl64_reg_i8, R_SCRATCH, 3);
+
+    // General allocations (i.e. for the flag bitmap) enter here, and provide their own size
+    // parameter in R_SCRATCH
+
+    // Try bump allocation first
+    ASM2(add64_reg_reg, R_SCRATCH, R_BUMP_POINTER);
+
+    ASM2(cmp64_reg_reg, R_SCRATCH, R_CAPACITY);
+    BRANCH(ja_i8);
+
+    // Fastest path: bump allocation succeeded. Increment R_BUMP_POINTER and yield the old value
+    ASM2(xchg64_reg_reg, R_SCRATCH, R_BUMP_POINTER);
+    ASM0(ret);
+
+    BRANCH_TARGET();
+
+    {
+      // Check the freelist next
+      ASM2(cmp64_reg_i8, R_FREELIST, -1);
+      BRANCH(je_i8);
+
+      // Remove and return the freelist head
+      ASM2(mov64_reg_reg, R_SCRATCH, R_FREELIST);
+      ASM2(mov64_reg_mem, R_FREELIST, DISPLACED(M_DEREF_HANDLE(R_FREELIST, 0), stack_offset));
+      ASM0(ret);
+
+      BRANCH_TARGET();
+
+      {
+        // Slowest path: need to allocate a new, larger buffer, copy the data from the old buffer,
+        // and free the old buffer
+
+        // By ensuring that R_{BUFFER,CAPACITY,BUMP_POINTER} are preserved across function calls
+        // we can save some pushes and pops
+        assert(CALLEE_SAVED(R_BUFFER));
+        assert(CALLEE_SAVED(R_CAPACITY));
+        assert(CALLEE_SAVED(R_BUMP_POINTER));
+
+        // Push all the non-scratch caller-saved registers
+        for (reg_t reg = RAX; reg <= R15; reg++) {
+          if (CALLEE_SAVED(reg) || reg == R_SCRATCH || reg == R_SCRATCH_2) {
+            continue;
+          }
+
+          ASM1(push64_reg, reg);
+          stack_offset += 8;
+        }
+
+        // The required buffer size that we calculated on the fast path is still in R_SCRATCH.
+        // We need to spill this in order to update R_BUMP_POINTER and R_CAPACITY after the calls
+        ASM1(push64_reg, R_SCRATCH);
+        stack_offset += 8;
+
+        // Allocate twice as much space as is required
+        ASM1(shl164_reg, R_SCRATCH);
+
+        // Call the allocator's alloc function, with the first parameter being the allocator context
+        // and the second being the requested capacity
+        ASM2(mov64_reg_mem, RDI, DISPLACED(M_ALLOCATOR_CONTEXT, stack_offset));
+        ASM2(mov64_reg_reg, RSI, R_SCRATCH);
+        ASM1(call64_mem, DISPLACED(M_ALLOC, stack_offset));
+
+        // Sanity check
+        const size_t null_int = (size_t)NULL;
+        assert(null_int <= 127);
+
+        // If the allocation failed, set the return value to HANDLE_NULL and jump to the function
+        // epilogue
+        ASM2(mov64_reg_i32, R_SCRATCH_2, -1);
+        ASM2(cmp64_reg_i8, R_SCRATCH, null_int);
+        ASM2(cmove64_reg_reg, R_SCRATCH, R_SCRATCH_2);
+        BRANCH(je_i8);
+
+        {
+          // Stash the new buffer in R_CAPACITY, because R_CAPACITY is stale and R_SCRATCH gets
+          // clobbered by the call to memcpy
+          ASM2(mov64_reg_reg, R_CAPACITY, R_SCRATCH);
+
+          // Call memcpy, with the first parameter being the new buffer, the second being the old
+          // buffer, and the third being the total space allocated in the old buffer (i.e.
+          // R_BUMP_POINTER)
+          ASM2(mov64_reg_reg, RDI, R_SCRATCH);
+          ASM2(mov64_reg_reg, RSI, R_BUFFER);
+          ASM2(mov64_reg_reg, RDX, R_BUMP_POINTER);
+          ASM2(mov64_reg_u64, R_SCRATCH, (size_t)memcpy);
+          ASM1(call64_reg, R_SCRATCH);
+
+          // Call the allocator's free function, with the first parameter being the allocator
+          // context and the second being the the old buffer
+          ASM2(mov64_reg_mem, RDI, DISPLACED(M_ALLOCATOR_CONTEXT, stack_offset));
+          ASM2(mov64_reg_reg, RSI, R_BUFFER);
+          ASM1(call64_mem, DISPLACED(M_FREE, stack_offset));
+
+          // Copy the new buffer out of R_CAPACITY
+          ASM2(mov64_reg_reg, R_BUFFER, R_CAPACITY);
+
+          // The result is the old value of R_BUMP_POINTER
+          ASM2(mov64_reg_reg, R_SCRATCH, R_BUMP_POINTER);
+
+          // Update R_BUMP_POINTER and R_CAPACITY with the information we previously spilled. We use
+          // mov rather than pop because it simplifies the control flow
+          ASM2(mov64_reg_mem, R_BUMP_POINTER, INDIRECT_REG(RSP));
+          ASM2(mov64_reg_reg, R_CAPACITY, R_BUMP_POINTER);
+          ASM1(shl164_reg, R_CAPACITY);
+        }
+
+        BRANCH_TARGET();
+
+        // Discard spilled information
+        ASM2(add64_reg_i8, RSP, 8);
+        stack_offset -= 8;
+
+        // Restore saved registers. Careful of underflow
+        for (reg_t reg = R15; reg >= RAX; reg--) {
+          if (!CALLEE_SAVED(reg) && reg != R_SCRATCH && reg != R_SCRATCH_2) {
+            ASM1(pop64_reg, reg);
+            stack_offset -= 8;
+          }
+
+          if (reg == RAX) {
+            break;
+          }
+        }
+
+        ASM0(ret);
+      }
+    }
+
+    assert(stack_offset == 8);
+  }
+
+  regex->native_code = native_code.buffer;
+  regex->native_code_size = native_code.size;
+  return CREX_OK; // FIXME :)
 
   // Prologue
   {

@@ -217,3 +217,55 @@
 - name: jne
   opcode: [0x75]
   encoding: [i8]
+
+- name: shl64
+  rex_w: true
+  opcode: [0xc1]
+  extension: 0x04
+  encoding: [rm_reg, i8]
+
+- name: add64
+  rex_w: true
+  opcode: [0x03]
+  encoding: [reg, rm_reg]
+
+- name: cmp64
+  rex_w: true
+  opcode: [0x3b]
+  encoding: [reg, rm_reg]
+
+- name: ja
+  opcode: [0x77]
+  encoding: [i8]
+
+- name: xchg64
+  rex_w: true
+  opcode: [0x87]
+  encoding: [reg, rm_reg]
+
+- name: shl164
+  rex_w: true
+  opcode: [0xd1]
+  extension: 0x04
+  encoding: [rm_reg]
+
+- name: call64
+  opcode: [0xff]
+  extension: 0x02
+  encoding: [rm_mem]
+
+- name: call64
+  opcode: [0xff]
+  extension: 0x02
+  encoding: [rm_reg]
+
+- name: cmove64
+  rex_w: true
+  opcode: [0x0f, 0x44]
+  encoding: [reg, rm_reg]
+
+- name: mov64 
+  rex_w: true
+  opcode: [0xc7]
+  extension: 0x00
+  encoding: [rm_reg, i32]

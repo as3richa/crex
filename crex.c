@@ -2155,17 +2155,23 @@ encode_mod_reg_rm_m(unsigned char *data, size_t reg_or_extension, indirect_opera
   }
 
   if (rm.has_index || rm.base == RSP) {
-    // Can't use RSP as the index register in a SIB byte
-    assert(rm.index != RSP);
+    size_t index;
+
+    if (rm.has_index) {
+      assert(rm.index != RSP);
+      index = rm.index & 7u;
+    } else {
+      index = RSP;
+    }
 
     *(data++) = MOD_REG_RM(mod, reg_or_extension & 7u, 0x04);
-    *(data++) = SIB(rm.scale, rm.index & 7u, rm.base & 7u);
+    *(data++) = SIB(rm.scale, index, rm.base & 7u);
     copy_displacement(data, rm.displacement, displacement_size);
 
     return 2 + displacement_size;
   }
 
-  *(data++) = MOD_REG_RM(mod, reg_or_extension & 7u, rm.base);
+  *(data++) = MOD_REG_RM(mod, reg_or_extension & 7u, rm.base & 7u);
   copy_displacement(data, rm.displacement, displacement_size);
 
   return 1 + displacement_size;
