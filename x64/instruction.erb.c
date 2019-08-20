@@ -1,5 +1,5 @@
-MAYBE_UNUSED static int <%= function_name %>(native_code_t* code<%= param_list %>) {
-  unsigned char* data = reserve_native_code(code, <%= max_size %>);
+MAYBE_UNUSED static int <%= function_name %>(assembler_t* assembler<%= param_list %>) {
+  unsigned char* data = reserve_native_code(assembler, <%= max_size %>);
 
   if (data == NULL) {
     return 0;
@@ -47,7 +47,7 @@ MAYBE_UNUSED static int <%= function_name %>(native_code_t* code<%= param_list %
 
 <% end %>
 
-  resize(code, data);
+  resize(assembler, data);
 
   return 1;
 }
