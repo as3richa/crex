@@ -1,405 +1,462 @@
 #ifdef NATIVE_COMPILER
 
-typedef struct {
-  size_t size;
-  size_t capacity;
-  unsigned char *buffer;
-
-  size_t n_labels;
-  size_t *label_values;
-
-  size_t n_label_uses;
-  size_t label_uses_capacity;
-  size_t *label_uses;
-} assembler_t;
+#include "x64-encoding.c"
 
 typedef size_t label_t;
 
-WARN_UNUSED_RESULT static int assembler_init(assembler_t *assembler, size_t n_labels) {
-  assembler->size = 0;
-  assembler->capacity = 0;
-  assembler->buffer = NULL;
+typedef enum { LUT_DEFINITION, LUT_CALL, LUT_JUMP, LUT_LEA } label_use_type_t;
 
-  assembler->n_labels = n_labels;
-  assembler->label_values = malloc(sizeof(size_t) * n_labels); // FIXME: allocator
+typedef struct {
+  label_use_type_t type : 3;
 
-  if (assembler->label_values == NULL) {
+  // For lea
+  reg_t reg : 4;
+
+  // For jmp
+  unsigned int is_short : 1;
+
+  size_t offset;
+  label_t label;
+} label_use_t;
+
+typedef struct {
+  size_t size;
+  size_t capacity;
+  unsigned char *code;
+
+  struct {
+    size_t size;
+    size_t capacity;
+    label_use_t *uses;
+  } label_uses;
+
+  size_t page_size;
+} assembler_t;
+
+WARN_UNUSED_RESULT static int
+resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *allocator);
+
+static void create_assembler(assembler_t *as) {
+  as->size = 0;
+  as->capacity = 0;
+  as->code = NULL;
+
+  as->label_uses.size = 0;
+  as->label_uses.capacity = 0;
+  as->label_uses.uses = NULL;
+
+  const long page_size = sysconf(_SC_PAGESIZE);
+  as->page_size = (page_size <= 0) ? 4096 : page_size;
+}
+
+static void destroy_assembler(assembler_t *as, const allocator_t *allocator) {
+  FREE(allocator, as->label_uses.uses);
+  munmap(as->code, as->capacity);
+}
+
+WARN_UNUSED_RESULT static unsigned char *
+finalize_assembler(size_t *size, assembler_t *as, size_t n_flags, const allocator_t *allocator) {
+
+  assert(as->size <= as->capacity);
+  assert(as->capacity % as->page_size == 0);
+
+  if (!resolve_assembler_labels(as, n_flags, allocator)) {
+    FREE(allocator, as->label_uses.uses);
+    return NULL;
+  }
+
+  FREE(allocator, as->label_uses.uses);
+
+  const size_t unused_pages = (as->capacity - as->size) / as->page_size;
+
+  if (unused_pages > 0) {
+    const size_t unused_size = as->page_size * unused_pages;
+    munmap(as->code + as->capacity - unused_size, unused_size);
+  }
+
+  if (mprotect(as->code, as->size, PROT_READ | PROT_EXEC)) {
+    munmap(as->code, as->size);
+    return NULL;
+  }
+
+  *size = as->size;
+  return as->code;
+}
+
+WARN_UNUSED_RESULT static int grow_assembler(assembler_t *as) {
+  assert(as->capacity % as->page_size == 0);
+
+  const size_t capacity = 2 * as->capacity + as->page_size;
+  assert(capacity % as->page_size == 0);
+
+  const int prot = PROT_READ | PROT_WRITE;
+  const int flags = MAP_ANONYMOUS | MAP_PRIVATE;
+
+  // First, try to "extend" the existing mapping by creating a new mapping immediately following.
+  // On the first call to grow_assembler, as->code + as->code == NULL
+  unsigned char *next = mmap(as->code + as->capacity, capacity - as->capacity, prot, flags, -1, 0);
+
+  // ENOMEM, probably
+  if (next == MAP_FAILED) {
+    return 0;
+  }
+
+  // If in fact the new mapping was created immediately following the old mapping, we're done
+  if (next == as->code + as->capacity) {
+    as->capacity = capacity;
+    return 1;
+  }
+
+  // Otherwise, allocate an entirely new mapping
+  munmap(next, capacity);
+  unsigned char *code = mmap(NULL, capacity, prot, flags, -1, 0);
+
+  if (next == MAP_FAILED) {
+    return 0;
+  }
+
+  // Copy the old data and destroy the old mapping
+  memcpy(code, as->code, as->size);
+  munmap(as->code, as->capacity);
+
+  as->code = code;
+  as->capacity = capacity;
+
+  return 1;
+}
+
+WARN_UNUSED_RESULT static unsigned char *reserve_assembler_space(assembler_t *as, size_t size) {
+  if (as->size + size > as->capacity) {
+    if (!grow_assembler(as)) {
+      return NULL;
+    }
+  }
+
+  assert(as->size + size <= as->capacity);
+
+  return as->code + as->size;
+}
+
+static void resize_assembler(assembler_t *as, unsigned char *end) {
+  as->size = end - as->code;
+}
+
+#include "build/x64.h"
+
+WARN_UNUSED_RESULT static label_use_t *push_label_use(assembler_t *as,
+                                                      const allocator_t *allocator) {
+  assert(as->label_uses.size <= as->label_uses.capacity);
+
+  if (as->label_uses.size == as->label_uses.capacity) {
+    const size_t capacity = 2 * as->label_uses.capacity + 4;
+    label_use_t *uses = ALLOC(allocator, sizeof(label_use_t) * capacity);
+
+    if (uses == NULL) {
+      return NULL;
+    }
+
+    safe_memcpy(uses, as->label_uses.uses, as->label_uses.capacity);
+    FREE(allocator, as->label_uses.uses);
+
+    as->label_uses.capacity = capacity;
+    as->label_uses.uses = uses;
+  }
+
+  return &as->label_uses.uses[as->label_uses.size++];
+}
+
+WARN_UNUSED_RESULT static int
+define_label(assembler_t *as, label_t label, const allocator_t *allocator) {
+  label_use_t *use = push_label_use(as, allocator);
+
+  if (use == NULL) {
+    return 0;
+  }
+
+  use->type = LUT_DEFINITION;
+  use->offset = as->size;
+  use->label = label;
+
+  return 1;
+}
+
+WARN_UNUSED_RESULT static int
+call64_label(assembler_t *as, label_t label, const allocator_t *allocator) {
+  if (reserve_assembler_space(as, 5) == NULL) {
+    return 0;
+  }
+
+  label_use_t *use = push_label_use(as, allocator);
+
+  if (use == NULL) {
+    return 0;
+  }
+
+  use->type = LUT_CALL;
+  use->offset = as->size;
+  use->label = label;
+
+  as->size += 5;
+
+  return 1;
+}
+
+WARN_UNUSED_RESULT static int
+jmp64_label(assembler_t *as, label_t label, const allocator_t *allocator) {
+  if (reserve_assembler_space(as, 5) == NULL) {
+    return 0;
+  }
+
+  label_use_t *use = push_label_use(as, allocator);
+
+  if (use == NULL) {
+    return 0;
+  }
+
+  use->type = LUT_JUMP;
+  use->offset = as->size;
+  use->is_short = 0;
+  use->label = label;
+
+  as->size += 5;
+
+  return 1;
+}
+
+WARN_UNUSED_RESULT static int
+lea64_reg_label(assembler_t *as, reg_t reg, label_t label, const allocator_t *allocator) {
+  if (reserve_assembler_space(as, 7) == NULL) {
+    return 0;
+  }
+
+  label_use_t *use = push_label_use(as, allocator);
+
+  if (use == NULL) {
+    return 0;
+  }
+
+  use->type = LUT_LEA;
+  use->offset = as->size;
+  use->label = label;
+  use->reg = reg;
+
+  as->size += 7;
+
+  return 1;
+}
+
+WARN_UNUSED_RESULT static int
+resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *allocator) {
+  size_t *label_values = ALLOC(allocator, sizeof(size_t) * n_labels);
+
+  if (label_values == NULL) {
     return 0;
   }
 
 #ifndef NDEBUG
   for (size_t i = 0; i < n_labels; i++) {
-    assembler->label_values[i] = SIZE_MAX;
+    label_values[i] = SIZE_MAX;
   }
 #endif
 
-  assembler->n_label_uses = 0;
-  assembler->label_uses_capacity = 0;
-  assembler->label_uses = NULL;
+  const size_t n_uses = as->label_uses.size;
+  label_use_t *uses = as->label_uses.uses;
 
-  return 1;
-}
+  for (size_t i = 0; i < n_uses; i++) {
+    const label_use_t *use = &uses[i];
+    assert(use->label < n_labels);
 
-static void assembler_destroy(assembler_t *assembler) {
-  (void)assembler;
-  // FIXME
-}
-
-static size_t get_page_size(void) {
-  const long size = sysconf(_SC_PAGE_SIZE);
-  return (size < 0) ? 4096 : size;
-}
-
-static unsigned char *my_mremap(unsigned char *buffer, size_t old_size, size_t size) {
-#ifndef NDEBUG
-  const size_t page_size = get_page_size();
-  assert(old_size % page_size == 0 && size % page_size == 0);
-#endif
-
-  // "Shrink" an existing mapping by unmapping its tail
-  if (size <= old_size) {
-    munmap(buffer + size, old_size - size);
-    return buffer;
-  }
-
-  const int prot = PROT_READ | PROT_WRITE;
-  const int flags = MAP_ANONYMOUS | MAP_PRIVATE;
-
-  const size_t delta = size - old_size;
-
-  // First, try to "extend" the existing mapping by creating a new mapping immediately following
-  unsigned char *next = mmap(buffer + old_size, delta, prot, flags, -1, 0);
-
-  // ENOMEM, probably
-  if (next == MAP_FAILED) {
-    return NULL;
-  }
-
-  // If in fact the new mapping was created immediately after the old mapping, we're done
-  if (next == buffer + old_size) {
-    return buffer;
-  }
-
-  // Otherwise, we need to create an entirely new, sufficiently-large mapping
-  munmap(next, delta);
-  next = mmap(NULL, size, prot, flags, -1, 0);
-
-  if (next == MAP_FAILED) {
-    return NULL;
-  }
-
-  // Copy the old data and destroy the old mapping
-  memcpy(next, buffer, old_size);
-  munmap(buffer, old_size);
-
-  return next;
-}
-
-// x64 instruction encoding
-
-#define REX(w, r, x, b) (0x40u | ((w) << 3u) | ((r) << 2u) | ((x) << 1u) | (b))
-
-#define MOD_REG_RM(mod, reg, rm) (((mod) << 6u) | ((reg) << 3u) | (rm))
-
-#define SIB(scale, index, base) (((scale) << 6u) | ((index) << 3u) | (base))
-
-typedef enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15 } reg_t;
-
-typedef enum { SCALE_1, SCALE_2, SCALE_4, SCALE_8 } scale_t;
-
-typedef struct {
-  unsigned int rip_relative : 1;
-  unsigned int base : 4;
-  unsigned int has_index : 1;
-  unsigned int scale : 2;
-  unsigned int index : 4;
-  long displacement;
-} indirect_operand_t;
-
-#define INDIRECT_REG(reg) ((indirect_operand_t){0, reg, 0, 0, 0, 0})
-
-#define INDIRECT_RD(reg, displacement) ((indirect_operand_t){0, reg, 0, 0, 0, displacement})
-
-#define INDIRECT_BSXD(base, scale, index, displacement)                                            \
-  ((indirect_operand_t){0, base, 1, scale, index, displacement})
-
-#define INDIRECT_RIP(displacement) ((indirect_operand_t){1, 0, 0, 0, 0, displacement})
-
-static unsigned char *reserve_native_code(assembler_t *code, size_t size) {
-  if (code->size + size <= code->capacity) {
-    return code->buffer + code->size;
-  }
-
-  // FIXME: don't hardcode page size
-  const size_t capacity = 2 * code->capacity + 4096;
-  assert(code->size + size <= capacity);
-
-  unsigned char *buffer = my_mremap(code->buffer, code->capacity, capacity);
-
-  if (buffer == NULL) {
-    return NULL;
-  }
-
-  code->buffer = buffer;
-  code->capacity = capacity;
-
-  return code->buffer + code->size;
-}
-
-static void resize(assembler_t *code, unsigned char *end) {
-  code->size = end - code->buffer;
-}
-
-static void copy_displacement(unsigned char *destination, long value, size_t size);
-
-static size_t encode_rex_r(unsigned char *data, int rex_w, int rex_r, reg_t rm) {
-  const int rex_b = rm >> 3u;
-
-  if (rex_w || rex_r || rex_b) {
-    *data = REX(rex_w, rex_r, 0, rex_b);
-    return 1;
-  }
-
-  return 0;
-}
-
-static size_t encode_mod_reg_rm_r(unsigned char *data, size_t reg_or_extension, reg_t rm) {
-  *data = MOD_REG_RM(3u, reg_or_extension & 7u, rm & 7u);
-  return 1;
-}
-
-static size_t encode_rex_m(unsigned char *data, int rex_w, int rex_r, indirect_operand_t rm) {
-  const int rex_x = (rm.has_index) ? (rm.index >> 3u) : 0;
-  const int rex_b = (rm.rip_relative) ? 0 : rm.base >> 3u;
-
-  if (rex_w || rex_r || rex_x || rex_b) {
-    *data = REX(rex_w, rex_r, rex_x, rex_b);
-    return 1;
-  }
-
-  return 0;
-}
-
-static size_t
-encode_mod_reg_rm_m(unsigned char *data, size_t reg_or_extension, indirect_operand_t rm) {
-  size_t displacement_size;
-  unsigned char mod;
-
-  // [rbp], [r13], [rbp + reg], and [r13 + reg] can't be encoded with a zero-size displacement
-  // (because the corresponding bit patterns are used for RIP-relative addressing in the former case
-  // and displacement-only mode in the latter). We can encode these forms as e.g. [rbp + 0], with an
-  // 8-bit displacement instead
-
-  if (rm.rip_relative) {
-    displacement_size = 4;
-    mod = 0;
-  } else if (rm.displacement == 0 && rm.base != RBP && rm.base != R13) {
-    displacement_size = 0;
-    mod = 0;
-  } else if (-128 <= rm.displacement && rm.displacement <= 127) {
-    displacement_size = 1;
-    mod = 1;
-  } else {
-    assert(-2147483648 <= rm.displacement && rm.displacement <= 2147483647);
-    displacement_size = 4;
-    mod = 2;
-  }
-
-  if (rm.rip_relative) {
-    *(data++) = MOD_REG_RM(0, reg_or_extension & 7u, RBP);
-    copy_displacement(data, rm.displacement, displacement_size);
-
-    return 1 + displacement_size;
-  }
-
-  if (rm.has_index || rm.base == RSP) {
-    size_t index;
-
-    if (rm.has_index) {
-      assert(rm.index != RSP);
-      index = rm.index & 7u;
-    } else {
-      index = RSP;
+    if (use->type != LUT_DEFINITION) {
+      continue;
     }
 
-    *(data++) = MOD_REG_RM(mod, reg_or_extension & 7u, 0x04);
-    *(data++) = SIB(rm.scale, index, rm.base & 7u);
-    copy_displacement(data, rm.displacement, displacement_size);
-
-    return 2 + displacement_size;
+    label_values[use->label] = use->offset;
   }
 
-  *(data++) = MOD_REG_RM(mod, reg_or_extension & 7u, rm.base & 7u);
-  copy_displacement(data, rm.displacement, displacement_size);
+  // Multi-pass label optimization
 
-  return 1 + displacement_size;
-}
+  for (;;) {
+    size_t shrinkage = 0;
 
-// FIXME: sane name
-static void copy_displacement(unsigned char *destination, long value, size_t size) {
-  assert(size == 0 || size == 1 || size == 4);
+    for (size_t i = 0; i < n_uses; i++) {
+      label_use_t *use = &uses[i];
 
-  if (size == 0) {
-    return;
-  }
+      switch (use->type) {
+      case LUT_DEFINITION:
+        // Adjust our best estimate of the label value
+        label_values[use->label] -= shrinkage;
+        break;
 
-  if (size == 1) {
-    assert(-128 <= value && value <= 127);
-    *destination = value;
-  }
+      case LUT_LEA:
+      case LUT_CALL:
+        // lea reg [rip + disp] is exactly 7 bytes irrespective of the magnitude of disp;
+        // call foo is exactly 5 bytes when encoded as a rip-relative call. Neither is subject to
+        // optimization
+        break;
 
-  assert(-2147483648 <= value && value <= 2147483647);
+        //
+        break;
 
-  // Should get optimized down to a mov on x64
-  unsigned long unsigned_value = value;
-  destination[0] = unsigned_value & 0xffu;
-  destination[1] = (unsigned_value >> 8u) & 0xffu;
-  destination[2] = (unsigned_value >> 16u) & 0xffu;
-  destination[3] = (unsigned_value >> 24u) & 0xffu;
-}
+      case LUT_JUMP: {
+        // jmp foo is either 2 or 5 bytes when encoded as a rip-relative call, depending on whether
+        // it's a short or near jump
 
-#include "build/x64.h"
+        if (use->is_short) {
+          break;
+        }
 
-enum { JMP_LABEL, CALL_LABEL, LEA_LABEL };
+        // Attempt to transform a near jump into a short jump
 
-WARN_UNUSED_RESULT static int push_label_use(assembler_t *assembler) {
-  assert(assembler->n_label_uses <= assembler->label_uses_capacity);
+        const size_t origin = use->offset + 2;
 
-  if (assembler->n_label_uses == assembler->label_uses_capacity) {
-    const size_t capacity = 2 * assembler->label_uses_capacity + 4;
-    size_t *label_uses = realloc(assembler->label_uses, capacity);
+        size_t target = label_values[use->label];
+        assert(target != SIZE_MAX);
 
-    if (label_uses == NULL) {
-      return 0;
+        if (target > origin) {
+          target -= 3;
+        }
+
+        // FIXME: probably need to catch this even in production
+        if (target > origin) {
+          assert(target - origin <= 2147483647L);
+        } else {
+          assert(origin - target - 1 <= 2147483647L);
+        }
+
+        const long displacement = (long)target - (long)origin;
+
+        if (-128 <= displacement && displacement <= 127) {
+          use->is_short = 1;
+          shrinkage += 3;
+        }
+
+        break;
+      }
+
+      default:
+        assert(0);
+      }
     }
 
-    assembler->label_uses = label_uses;
-    assembler->label_uses_capacity = capacity;
+    // Quit after the first pass that yielded no improvement
+    if (shrinkage == 0) {
+      break;
+    }
   }
 
-  assembler->label_uses[assembler->n_label_uses++] = assembler->size;
+  assert(n_uses > 0);
 
-  return 1;
-}
+  // The segment of the machine code spanning from offset zero to the offset of the first
+  // instruction with a label operand is guaranteed to be unchanged by the label
+  // substitution/optimization step, so we can skip over it
 
-WARN_UNUSED_RESULT static int jmp64_label(assembler_t *assembler, label_t label) {
-  assert(label <= UINT32_MAX);
+  unsigned char *code = as->code + uses[0].offset;
 
-  if (!push_label_use(assembler)) {
-    return 0;
-  }
+  for (size_t i = 0; i < n_uses; i++) {
+    const label_use_t *use = &uses[i];
 
-  unsigned char *data = reserve_native_code(assembler, 5);
+    assert(label_values[use->label] != SIZE_MAX);
 
-  if (data == NULL) {
-    return 0;
-  }
+    // It's a bit easier to work with pointers rather than offsets in this context
+    unsigned char *target = as->code + label_values[use->label];
 
-  *(data++) = JMP_LABEL;
+    size_t reserved_size = 0;
 
-  uint32_t u32_label = label;
-  memcpy(data, &u32_label, 4);
-  data += 4;
-
-  resize(assembler, data);
-
-  return 1;
-}
-
-WARN_UNUSED_RESULT static int call64_label(assembler_t *assembler, label_t label) {
-  assert(label <= UINT32_MAX);
-
-  if (!push_label_use(assembler)) {
-    return 0;
-  }
-
-  unsigned char *data = reserve_native_code(assembler, 5);
-
-  if (data == NULL) {
-    return 0;
-  }
-
-  *(data++) = CALL_LABEL;
-
-  uint32_t u32_label = label;
-  memcpy(data, &u32_label, 4);
-  data += 4;
-
-  resize(assembler, data);
-
-  return 1;
-}
-
-WARN_UNUSED_RESULT static int lea64_reg_label(assembler_t *assembler, label_t label) {
-  assert(label <= UINT32_MAX);
-
-  if (!push_label_use(assembler)) {
-    return 0;
-  }
-
-  unsigned char *data = reserve_native_code(assembler, 6);
-
-  if (data == NULL) {
-    return 0;
-  }
-
-  *(data++) = LEA_LABEL;
-
-  uint32_t u32_label = label;
-  memcpy(data, &u32_label, 4);
-  data += 4;
-
-  data++;
-
-  resize(assembler, data);
-
-  return 1;
-}
-
-static void define_label(assembler_t *assembler, label_t label) {
-  assert(label < assembler->n_labels);
-  assembler->label_values[label] = assembler->size;
-}
-
-static void resolve_labels(assembler_t *assembler) {
-  for (size_t i = 0; i < assembler->n_label_uses; i++) {
-    const size_t offset = assembler->label_uses[i];
-
-    const int type = assembler->buffer[offset];
-    assert(type == CALL_LABEL || type == JMP_LABEL || type == LEA_LABEL);
-
-    uint32_t u32_label;
-    memcpy(&u32_label, assembler->buffer + offset + 1, 4);
-    label_t label = u32_label;
-    const size_t destination = assembler->label_values[label];
-    assert(destination != SIZE_MAX);
-
-    const size_t origin = offset + ((type == LEA_LABEL) ? 6 : 5);
-
-    const long delta = destination - origin;
-
-    switch (assembler->buffer[offset]) {
-    case CALL_LABEL: {
-      // FIXME
+    // Generate code for the i'th label-using instruction
+    switch (use->type) {
+    case LUT_DEFINITION: {
+      // Label definitions don't generate any code
       break;
     }
 
-    case JMP_LABEL: {
-      unsigned char *data = assembler->buffer + offset;
-      *(data++) = 0xe9;
-      copy_displacement(data, delta, 4);
+    case LUT_CALL: {
+      unsigned char *origin = code + 5;
+
+      if (target > origin) {
+        assert(target - origin <= 2147483647L);
+      } else {
+        assert(origin - target - 1 <= 2147483647L);
+      }
+
+      const long displacement = target - origin;
+
+      *(code++) = 0xe8;
+      copy_displacement(code, displacement, 4);
+      code += 4;
+
+      reserved_size = 5;
+
       break;
     }
 
-    case LEA_LABEL: {
-      // FIXME
+    case LUT_JUMP: {
+      unsigned char *origin = code + ((use->is_short) ? 2 : 5);
+
+      if (target > origin) {
+        assert(target - origin <= 2147483647L);
+      } else {
+        assert(origin - target - 1 <= 2147483647L);
+      }
+
+      const long displacement = target - origin;
+
+      if (use->is_short) {
+        assert(-128 <= displacement && displacement <= 127);
+        *(code++) = 0xeb;
+        copy_displacement(code, displacement, 1);
+        code++;
+      } else {
+        *(code++) = 0xe9;
+        copy_displacement(code, displacement, 4);
+        code += 4;
+      }
+
+      reserved_size = 5;
+
+      break;
+    }
+
+    case LUT_LEA: {
+      unsigned char *origin = code + 7;
+
+      if (target > origin) {
+        assert(target - origin <= 2147483647L);
+      } else {
+        assert(origin - target - 1 <= 2147483647L);
+      }
+
+      const long displacement = target - origin;
+
+      *(code++) = REX(1, use->reg >> 3u, 0, 0);
+      *(code++) = 0x8d;
+      *(code++) = MOD_REG_RM(0, use->reg & 7u, RBP);
+      copy_displacement(code, displacement, 4);
+      code += 4;
+
+      reserved_size = 7;
+
       break;
     }
 
     default:
       assert(0);
     }
+
+    // Consider the segment of code that lies strictly between the i'th and (i + 1)th label uses (or
+    // the segment that lies after the last label use and spans to the end of the code)
+    const size_t begin = uses[i].offset + reserved_size;
+    const size_t end = (i == n_uses - 1) ? as->size : uses[i + 1].offset;
+    assert(begin <= end);
+
+    // Move the segment into the correct post-optimization position
+    memmove(code, as->code + begin, end - begin);
+    code += end - begin;
   }
+
+  // Truncate the assembler to the correct size
+  resize_assembler(as, code);
+
+  return 1;
 }
 
 #endif

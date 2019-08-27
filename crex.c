@@ -2079,7 +2079,7 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
 
 #ifdef NATIVE_COMPILER
 
-  *status = compile_to_native(regex);
+  *status = compile_to_native(regex, allocator);
 
   if (*status != CREX_OK) {
     FREE(allocator, regex->classes);

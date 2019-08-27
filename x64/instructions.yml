@@ -115,11 +115,11 @@
   opcode: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
   encoding: [reg, u64]
   special: |
-    *(data++) = REX(1, 0, 0, reg >> 3u);
-    *(data++) = 0xb8 + (reg & 7u);
+    *(code++) = REX(1, 0, 0, reg >> 3u);
+    *(code++) = 0xb8 + (reg & 7u);
 
-    serialize_operand_le(data, immediate, 8);
-    data += 8;
+    serialize_operand_le(code, immediate, 8);
+    code += 8;
 
 
 - name: push64
@@ -127,20 +127,20 @@
   encoding: [reg]
   special: |
     if(reg >> 3u) {
-      *(data++) = REX(0, 0, 0, 1);
+      *(code++) = REX(0, 0, 0, 1);
     }
 
-    *(data++) = 0x50 + (reg & 7u);
+    *(code++) = 0x50 + (reg & 7u);
 
 - name: pop64
   opcode: [0x00, 0x00]
   encoding: [reg]
   special: |
     if(reg >> 3u) {
-      *(data++) = REX(0, 0, 0, 1);
+      *(code++) = REX(0, 0, 0, 1);
     }
 
-    *(data++) = 0x58 + (reg & 7u);
+    *(code++) = 0x58 + (reg & 7u);
 
 - name: push64
   opcode: [0xff]
@@ -157,12 +157,6 @@
   opcode: [0xc7]
   extension: 0x00
   encoding: [rm_reg, u32]
-
-- name: sub64
-  rex_w: true
-  opcode: [0x83]
-  extension: 0x05
-  encoding: [rm_reg, i8]
 
 - name: push64
   opcode: [0x6a]

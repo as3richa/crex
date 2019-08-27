@@ -1,7 +1,9 @@
-MAYBE_UNUSED static int <%= function_name %>(assembler_t* assembler<%= param_list %>) {
-  unsigned char* data = reserve_native_code(assembler, <%= max_size %>);
+MAYBE_UNUSED static int <%= function_name %>(assembler_t *assembler, <%= param_list && "#{param_list}, " %>const allocator_t *allocator) {
+  (void)allocator;
 
-  if (data == NULL) {
+  unsigned char* code = reserve_assembler_space(assembler, <%= max_size %>);
+
+  if (code == NULL) {
     return 0;
   }
 
@@ -16,38 +18,38 @@ MAYBE_UNUSED static int <%= function_name %>(assembler_t* assembler<%= param_lis
   const int rex_r = <%= reg ? "reg >> 3u" : 0 %>;
 
 <% if rm_reg %>
-  data += encode_rex_r(data, rex_w, rex_r, rm_reg);
+  code += encode_rex_r(code, rex_w, rex_r, rm_reg);
 <% elsif rm_mem %>
-  data += encode_rex_m(data, rex_w, rex_r, rm_mem);
+  code += encode_rex_m(code, rex_w, rex_r, rm_mem);
 <% else %>
-  data += encode_rex_r(data, rex_w, rex_r, 0);
+  code += encode_rex_r(code, rex_w, rex_r, 0);
 <% end %>
 
 <% end %>
 
   static const unsigned char opcode[] = <%= opcode_literal %>;
-  memcpy(data, opcode, sizeof(opcode));
-  data += sizeof(opcode);
+  memcpy(code, opcode, sizeof(opcode));
+  code += sizeof(opcode);
 
 <% if rm_reg %>
-  data += encode_mod_reg_rm_r(data, <%= reg_or_extension %>, rm_reg);
+  code += encode_mod_reg_rm_r(code, <%= reg_or_extension %>, rm_reg);
 <% elsif rm_mem %>
-  data += encode_mod_reg_rm_m(data, <%= reg_or_extension %>, rm_mem);
+  code += encode_mod_reg_rm_m(code, <%= reg_or_extension %>, rm_mem);
 <% end %>
 
 <% if immediate %>
 <% if immediate_unsigned %>
-  serialize_operand_le(data, immediate, <%= immediate_size %>);
+  serialize_operand_le(code, immediate, <%= immediate_size %>);
 <% else %>
-  copy_displacement(data, immediate, <%= immediate_size %>);
+  copy_displacement(code, immediate, <%= immediate_size %>);
 <% end %>
 
-  data += <%= immediate_size %>;
+  code += <%= immediate_size %>;
 <% end %>
 
 <% end %>
 
-  resize(assembler, data);
+  resize_assembler(assembler, code);
 
   return 1;
 }

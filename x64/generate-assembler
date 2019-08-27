@@ -7,7 +7,7 @@ TYPES = {
   i8: 'char',
   i32: 'long',
   reg: 'reg_t',
-  rm_mem: 'indirect_operand_t',
+  rm_mem: 'memory_t',
   rm_reg: 'reg_t',
   u8: 'unsigned char',
   u32: 'size_t',
@@ -61,7 +61,7 @@ instructions.each do |name:, opcode:, encoding:, rex_w: false, extension: nil, s
       end
     end
 
-    ', ' + types.zip(names).map { |type, name| "#{type} #{name}"}.join(', ')
+    types.zip(names).map { |type, name| "#{type} #{name}"}.join(', ')
   end
 
   opcode_literal = '{' + opcode.map { |byte| "0x#{byte.to_s(16)}" }.join(', ') + '}'

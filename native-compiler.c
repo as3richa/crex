@@ -24,45 +24,45 @@
 #define R_STATE RBP
 #define R_PREDECESSOR RSI
 
-#define M_RESULT INDIRECT_RD(RSP, 48)
-#define M_ALLOCATOR_CONTEXT INDIRECT_RD(RSP, 40)
-#define M_ALLOC INDIRECT_RD(RSP, 32)
-#define M_FREE INDIRECT_RD(RSP, 24)
-#define M_EOF INDIRECT_RD(RSP, 16)
-#define M_MATCHED_STATE INDIRECT_RD(RSP, 8)
-#define M_HEAD INDIRECT_RD(RSP, 0)
+#define M_RESULT INDIRECT_REG_DISPLACEMENT(RSP, 48)
+#define M_ALLOCATOR_CONTEXT INDIRECT_REG_DISPLACEMENT(RSP, 40)
+#define M_ALLOC INDIRECT_REG_DISPLACEMENT(RSP, 32)
+#define M_FREE INDIRECT_REG_DISPLACEMENT(RSP, 24)
+#define M_EOF INDIRECT_REG_DISPLACEMENT(RSP, 16)
+#define M_MATCHED_STATE INDIRECT_REG_DISPLACEMENT(RSP, 8)
+#define M_HEAD INDIRECT_REG_DISPLACEMENT(RSP, 0)
 
 #define STACK_FRAME_SIZE 56
 
 #define M_DEREF_HANDLE(reg, offset) INDIRECT_BSXD(R_BUFFER, SCALE_1, reg, offset)
 
 #define DISPLACED(mem, disp)                                                                       \
-  ((indirect_operand_t){(mem).rip_relative,                                                        \
-                        (mem).base,                                                                \
-                        (mem).has_index,                                                           \
-                        (mem).scale,                                                               \
-                        (mem).index,                                                               \
-                        (mem).displacement + disp})
+  ((memory_t){(mem).rip_relative,                                                                  \
+              (mem).base,                                                                          \
+              (mem).has_index,                                                                     \
+              (mem).scale,                                                                         \
+              (mem).index,                                                                         \
+              (mem).displacement + disp})
 
 #define CALLEE_SAVED(reg) (reg == RBX || reg == RBP || (R12 <= reg && reg <= R15))
 
 #define ASM0(id)                                                                                   \
   do {                                                                                             \
-    if (!id(assembler)) {                                                                          \
+    if (!id(as, allocator)) {                                                                      \
       return 0;                                                                                    \
     }                                                                                              \
   } while (0)
 
 #define ASM1(id, x)                                                                                \
   do {                                                                                             \
-    if (!id(assembler, x)) {                                                                       \
+    if (!id(as, x, allocator)) {                                                                   \
       return 0;                                                                                    \
     }                                                                                              \
   } while (0)
 
 #define ASM2(id, x, y)                                                                             \
   do {                                                                                             \
-    if (!id(assembler, x, y)) {                                                                    \
+    if (!id(as, x, y, allocator)) {                                                                \
       return 0;                                                                                    \
     }                                                                                              \
   } while (0)
@@ -74,90 +74,80 @@
 
 #define BRANCH(id)                                                                                 \
   ASM1(id, 0);                                                                                     \
-  size_t branch_origin = assembler->size
+  size_t branch_origin = as->size
 
 #define BRANCH_TARGET()                                                                            \
   do {                                                                                             \
-    assert(assembler->size - branch_origin <= 127);                                                \
-    assembler->buffer[branch_origin - 1] = assembler->size - branch_origin;                        \
+    assert(as->size - branch_origin <= 127);                                                       \
+    as->code[branch_origin - 1] = as->size - branch_origin;                                        \
   } while (0)
 
 #define BACKWARDS_BRANCH(id)                                                                       \
   do {                                                                                             \
-    assert(assembler->size + 2 - branch_origin <= 128);                                            \
-    ASM1(id, -(int)(assembler->size + 2 - branch_origin));                                         \
+    assert(as->size + 2 - branch_origin <= 128);                                                   \
+    ASM1(id, -(int)(as->size + 2 - branch_origin));                                                \
   } while (0)
 
-#define BACKWARDS_BRANCH_TARGET() size_t branch_origin = assembler->size
-
-WARN_UNUSED_RESULT static int compile_prologue(assembler_t *assembler, size_t n_flags);
-
-WARN_UNUSED_RESULT static int compile_main_loop(assembler_t *assembler, size_t n_flags);
-
-WARN_UNUSED_RESULT static int compile_epilogue(assembler_t *assembler);
-
-WARN_UNUSED_RESULT static int compile_allocator(assembler_t *assembler);
+#define BACKWARDS_BRANCH_TARGET() size_t branch_origin = as->size
 
 WARN_UNUSED_RESULT static int
-compile_bytecode_instruction(assembler_t *assembler, regex_t *regex, size_t *index);
+compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int compile_match(assembler_t *assembler);
+WARN_UNUSED_RESULT static int
+compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t *allocator);
+
+WARN_UNUSED_RESULT static int compile_epilogue(assembler_t *as, const allocator_t *allocator);
+
+WARN_UNUSED_RESULT static int compile_allocator(assembler_t *as, const allocator_t *allocator);
+
+WARN_UNUSED_RESULT static int compile_bytecode_instruction(assembler_t *as,
+                                                           regex_t *regex,
+                                                           size_t *index,
+                                                           const allocator_t *allocator);
+
+WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *allocator);
 
 #define LABEL_EPILOGUE 0
 #define LABEL_ALLOC_STATE_BLOCK 1
 #define LABEL_ALLOC_MEMORY 2
 #define N_STATIC_LABELS 3
-#define LABEL_BYTECODE_INDEX(i) (N_STATIC_LABELS + (i))
 
-WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex) {
-  const size_t page_size = get_page_size();
+WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const allocator_t *allocator) {
+  assembler_t as;
+  create_assembler(&as);
 
+  // The (N_STATIC_LABELS + k)th label corresponds to the bytecode instruction at index k
   const size_t n_labels = N_STATIC_LABELS + regex->size;
-  assert((n_labels - 1) <= UINT32_MAX);
-
-  assembler_t assembler;
-
-  if (!assembler_init(&assembler, n_labels)) {
-    return CREX_E_NOMEM;
-  }
 
 #define CHECK(expr)                                                                                \
   do {                                                                                             \
     if (!expr) {                                                                                   \
-      assembler_destroy(&assembler);                                                               \
+      destroy_assembler(&as, allocator);                                                           \
       return CREX_E_NOMEM;                                                                         \
     }                                                                                              \
   } while (0)
 
-  CHECK(compile_prologue(&assembler, regex->n_flags));
-  CHECK(compile_epilogue(&assembler));
-  CHECK(compile_main_loop(&assembler, regex->n_flags));
-  CHECK(compile_allocator(&assembler));
+  CHECK(compile_prologue(&as, regex->n_flags, allocator));
+  CHECK(compile_epilogue(&as, allocator));
+  CHECK(compile_main_loop(&as, regex->n_flags, allocator));
+  CHECK(compile_allocator(&as, allocator));
 
   for (size_t i = 0; i < regex->size;) {
-    CHECK(compile_bytecode_instruction(&assembler, regex, &i));
+    CHECK(compile_bytecode_instruction(&as, regex, &i, allocator));
   }
 
-  CHECK(compile_match(&assembler));
+  CHECK(compile_match(&as, allocator));
 
-  resolve_labels(&assembler);
+  regex->native_code = finalize_assembler(&regex->native_code_size, &as, n_labels, allocator);
 
-  assert(assembler.capacity % page_size == 0);
-
-  const size_t n_pages = assembler.capacity / page_size;
-  const size_t used_pages = (assembler.size + page_size - 1) / page_size;
-
-  munmap(assembler.buffer + page_size * used_pages, page_size * (n_pages - used_pages));
-
-  regex->native_code = assembler.buffer;
-  regex->native_code_size = assembler.size;
-
-  assembler_destroy(&assembler);
+  if (regex->native_code == NULL) {
+    return CREX_E_NOMEM;
+  }
 
   return CREX_OK;
 }
 
-static int compile_prologue(assembler_t *assembler, size_t n_flags) {
+static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *allocator) {
   // Push callee-saved registers
   for (reg_t reg = RAX; reg <= R15; reg++) {
     if (!CALLEE_SAVED(reg)) {
@@ -184,9 +174,10 @@ static int compile_prologue(assembler_t *assembler, size_t n_flags) {
 
   // Unpack the allocator from the context onto the stack
   const size_t allocator_offset = offsetof(context_t, allocator);
-  ASM1(push64_mem, INDIRECT_RD(RSI, allocator_offset + offsetof(allocator_t, context)));
-  ASM1(push64_mem, INDIRECT_RD(RSI, allocator_offset + offsetof(allocator_t, alloc)));
-  ASM1(push64_mem, INDIRECT_RD(RSI, allocator_offset + offsetof(allocator_t, free)));
+  ASM1(push64_mem,
+       INDIRECT_REG_DISPLACEMENT(RSI, allocator_offset + offsetof(allocator_t, context)));
+  ASM1(push64_mem, INDIRECT_REG_DISPLACEMENT(RSI, allocator_offset + offsetof(allocator_t, alloc)));
+  ASM1(push64_mem, INDIRECT_REG_DISPLACEMENT(RSI, allocator_offset + offsetof(allocator_t, free)));
 
   // Save eof pointer
   ASM1(push64_reg, RCX);
@@ -195,8 +186,8 @@ static int compile_prologue(assembler_t *assembler, size_t n_flags) {
   ASM1(push64_i8, -1);
 
   // Unpack the buffer and capacity from the context
-  ASM2(lea64_reg_mem, R_BUFFER, INDIRECT_RD(RSI, offsetof(context_t, buffer)));
-  ASM2(lea64_reg_mem, R_CAPACITY, INDIRECT_RD(RSI, offsetof(context_t, capacity)));
+  ASM2(lea64_reg_mem, R_BUFFER, INDIRECT_REG_DISPLACEMENT(RSI, offsetof(context_t, buffer)));
+  ASM2(lea64_reg_mem, R_CAPACITY, INDIRECT_REG_DISPLACEMENT(RSI, offsetof(context_t, capacity)));
 
   const uint64_t builtin_classes_uint = (uint64_t)builtin_classes;
 
@@ -217,7 +208,7 @@ static int compile_prologue(assembler_t *assembler, size_t n_flags) {
   return 1;
 }
 
-static int compile_main_loop(assembler_t *assembler, size_t n_flags) {
+static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t *allocator) {
   ASM2(cmp64_reg_mem, R_STR, M_EOF);
 
   BACKWARDS_BRANCH_TARGET();
@@ -231,6 +222,7 @@ static int compile_main_loop(assembler_t *assembler, size_t n_flags) {
   ASM2(mov64_reg_mem, R_STATE, M_HEAD);
 
   assert(n_flags <= 64 && "FIXME");
+  (void)n_flags; // FIXME: wipe in-memory bitmap if necessary
   ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
 
   // Thread iteration
@@ -244,8 +236,8 @@ static int compile_main_loop(assembler_t *assembler, size_t n_flags) {
   return 1;
 }
 
-static int compile_epilogue(assembler_t *assembler) {
-  define_label(assembler, LABEL_EPILOGUE);
+static int compile_epilogue(assembler_t *as, const allocator_t *allocator) {
+  ASM1(define_label, LABEL_EPILOGUE);
 
   ASM2(add64_reg_i8, RSP, STACK_FRAME_SIZE);
 
@@ -265,7 +257,7 @@ static int compile_epilogue(assembler_t *assembler) {
   return 1;
 }
 
-static int compile_allocator(assembler_t *assembler) {
+static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
   // The macros for the various stack variables are written assuming the stack is in the same
   // state as immediately following the prologue. However, because we reach this function body via
   // a call, we need to take into account the return address that was pushed onto the stack, as
@@ -274,7 +266,7 @@ static int compile_allocator(assembler_t *assembler) {
   size_t stack_offset = 8;
 
   // State-push allocation operations enter here
-  define_label(assembler, LABEL_ALLOC_STATE_BLOCK);
+  ASM1(define_label, LABEL_ALLOC_STATE_BLOCK);
 
   // Compute the size of a state block
   ASM2(mov64_reg_reg, R_SCRATCH, R_N_POINTERS);
@@ -283,7 +275,7 @@ static int compile_allocator(assembler_t *assembler) {
 
   // General allocations (i.e. for the flag bitmap) enter here, and provide their own size
   // parameter in R_SCRATCH
-  define_label(assembler, LABEL_ALLOC_MEMORY);
+  ASM1(define_label, LABEL_ALLOC_MEMORY);
 
   // Try bump allocation first
   ASM2(add64_reg_reg, R_SCRATCH, R_BUMP_POINTER);
@@ -414,7 +406,10 @@ static int compile_allocator(assembler_t *assembler) {
   return 1;
 }
 
-static int compile_bytecode_instruction(assembler_t *assembler, regex_t *regex, size_t *index) {
+static int compile_bytecode_instruction(assembler_t *as,
+                                        regex_t *regex,
+                                        size_t *index,
+                                        const allocator_t *allocator) {
   const unsigned char byte = regex->bytecode[(*index)++];
 
   const unsigned char opcode = VM_OPCODE(byte);
@@ -555,7 +550,7 @@ static int compile_bytecode_instruction(assembler_t *assembler, regex_t *regex, 
         ASM2(mov32_reg_reg, R_SCRATCH, character);
         ASM2(shr32_reg_u8, R_SCRATCH, 5);
 
-        const indirect_operand_t dword =
+        const memory_t dword =
             INDIRECT_BSXD(R_BUILTIN_CHAR_CLASSES, SCALE_4, R_SCRATCH, 32 * BCC_WORD);
 
         ASM2(bt32_mem_reg, dword, character);
@@ -633,7 +628,7 @@ static int compile_bytecode_instruction(assembler_t *assembler, regex_t *regex, 
   return 1;
 }
 
-WARN_UNUSED_RESULT static int compile_match(assembler_t *assembler) {
+WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *allocator) {
   ASM2(cmp32_reg_i8, R_N_POINTERS, 0);
   BRANCH(je_i8);
 
