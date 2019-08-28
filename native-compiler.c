@@ -34,7 +34,7 @@
 
 #define STACK_FRAME_SIZE 56
 
-#define M_DEREF_HANDLE(reg, offset) M_INDIRECT_BSXD(R_BUFFER, SCALE_1, reg, offset)
+#define M_DEREF_HANDLE(reg) M_INDIRECT_BSXD(R_BUFFER, SCALE_1, reg, 0)
 
 #define R_IS_CALLEE_SAVED(reg) (reg == RBX || reg == RBP || (R12 <= reg && reg <= R15))
 
@@ -62,7 +62,8 @@
 // The vast majority of branches in the (typical) compiled program are used for simple control
 // flow and boolean logic within a single VM instruction or self-contained loop; moreover, these
 // branches can always be expressed with an 8-bit operand. For this class of branch, we can save
-// some cycles and complexity by just building them with local variables and macros
+// some cycles and complexity by just building them with local variables and macros, rather than
+// using the label substitution engine
 
 #define BRANCH(id)                                                                                 \
   ASM1(id, 0);                                                                                     \
@@ -82,6 +83,16 @@
 
 #define BACKWARDS_BRANCH_TARGET() size_t branch_origin = as->size
 
+enum {
+  LABEL_EPILOGUE,
+  LABEL_ALLOC_STATE_BLOCK,
+  LABEL_ALLOC_MEMORY,
+  LABEL_PUSH_STATE_COPY,
+  N_STATIC_LABELS
+};
+
+#define INSTR_LABEL(index) (N_STATIC_LABELS + (index))
+
 WARN_UNUSED_RESULT static int
 compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *allocator);
 
@@ -98,13 +109,6 @@ WARN_UNUSED_RESULT static int compile_bytecode_instruction(assembler_t *as,
                                                            const allocator_t *allocator);
 
 WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *allocator);
-
-#define LABEL_EPILOGUE 0
-#define LABEL_ALLOC_STATE_BLOCK 1
-#define LABEL_ALLOC_MEMORY 2
-#define N_STATIC_LABELS 3
-
-#define INSTR_LABEL(index) (N_STATIC_LABELS + (index))
 
 WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const allocator_t *allocator) {
   assembler_t as;
@@ -289,7 +293,7 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
 
     // Remove and return the freelist head
     ASM2(mov64_reg_reg, R_SCRATCH, R_FREELIST);
-    ASM2(mov64_reg_mem, R_FREELIST, M_DISPLACED(M_DEREF_HANDLE(R_FREELIST, 0), stack_offset));
+    ASM2(mov64_reg_mem, R_FREELIST, M_DEREF_HANDLE(R_FREELIST));
     ASM0(ret);
 
     BRANCH_TARGET();
@@ -579,29 +583,20 @@ static int compile_bytecode_instruction(assembler_t *as,
   case VM_SPLIT_BACKWARDS_PASSIVE:
   case VM_SPLIT_BACKWARDS_EAGER: {
     label_t passive_target;
-    label_t eager_target;
 
     switch (opcode) {
     case VM_SPLIT_PASSIVE: {
-      eager_target = INSTR_LABEL(*index);
       passive_target = INSTR_LABEL(*index + operand);
       break;
     }
 
-    case VM_SPLIT_EAGER: {
-      eager_target = INSTR_LABEL(*index + operand);
-      passive_target = INSTR_LABEL(*index);
-      break;
-    }
-
     case VM_SPLIT_BACKWARDS_PASSIVE: {
-      eager_target = INSTR_LABEL(*index);
       passive_target = INSTR_LABEL(*index - operand);
       break;
     }
 
+    case VM_SPLIT_EAGER:
     case VM_SPLIT_BACKWARDS_EAGER: {
-      eager_target = INSTR_LABEL(*index - operand);
       passive_target = INSTR_LABEL(*index);
       break;
     }
@@ -610,10 +605,51 @@ static int compile_bytecode_instruction(assembler_t *as,
       assert(0);
     }
 
-    // meep meep
-    (void)eager_target;
-    (void)passive_target;
-    assert(0);
+    // WIP: push new state
+
+    ASM1(call64_label, LABEL_ALLOC_STATE_BLOCK);
+
+    // R_SCRATCH contains either HANDLE_NULL (i.e. -1), or a handle corresponding to a
+    // newly-allocated state block
+
+    ASM2(cmp64_reg_i8, R_SCRATCH, -1);
+    // FIXME: je epilogue
+
+    // Insert the newly-allocated state after the current state
+    ASM2(mov64_reg_mem, R_SCRATCH_2, M_DEREF_HANDLE(R_STATE));
+    ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH), R_SCRATCH_2);
+    ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_STATE), R_SCRATCH);
+
+    // Populate instruction pointer
+    ASM2(lea64_reg_label, R_SCRATCH_2, passive_target);
+    ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 8), R_SCRATCH_2);
+
+    // Copy pointer buffer. Recall that R_N_POINTERS is either 0, 2, or 2 times the number of
+    // capturing groups; we can use this observation to unroll the copy loop very efficiently
+    {
+      ASM2(cmp64_reg_i8, R_N_POINTERS, 0);
+      BRANCH(je_i8);
+
+      {
+        ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 16));
+        ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 16), R_SCRATCH_2);
+
+        ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 24));
+        ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 24), R_SCRATCH_2);
+
+        ASM2(cmp64_reg_i8, R_N_POINTERS, 2);
+        BRANCH(je_i8);
+
+        for (size_t i = 2; i < 2 * regex->n_capturing_groups; i++) {
+          ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8 * (2 + i)));
+          ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 8 * (2 + i)), R_SCRATCH_2);
+        }
+
+        BRANCH_TARGET();
+      }
+
+      BRANCH_TARGET();
+    }
 
     break;
   }
@@ -627,7 +663,7 @@ static int compile_bytecode_instruction(assembler_t *as,
 
     BRANCH(jbe_i8);
 
-    ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_STATE, 2 + operand), R_STR);
+    ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8 * (2 + operand)), R_STR);
 
     BRANCH_TARGET();
 
@@ -645,7 +681,7 @@ static int compile_bytecode_instruction(assembler_t *as,
       }
     } else {
       const size_t offset = 4 * (operand / 4);
-      ASM2(bts32_mem_u8, M_DEREF_HANDLE(R_FLAGS, offset), operand % 32);
+      ASM2(bts32_mem_u8, M_DISPLACED(M_DEREF_HANDLE(R_FLAGS), offset), operand % 32);
     }
 
     BRANCH(jnc_i8);
@@ -678,7 +714,7 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
     BRANCH(je_i8);
 
     // Chain the previous M_MATCHED_STATE onto the front of the freelist
-    ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH, 0), R_FREELIST);
+    ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH), R_FREELIST);
     ASM2(mov64_reg_reg, R_FREELIST, R_SCRATCH);
 
     BRANCH_TARGET();
@@ -689,7 +725,7 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
     // Deallocate any successors to R_STATE (because any matches therein would be of lower
     // priority)
     {
-      ASM2(mov64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_STATE, 0));
+      ASM2(mov64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_STATE));
 
       ASM2(cmp64_reg_i8, R_SCRATCH, -1);
       BRANCH(je_i8);
@@ -698,7 +734,7 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
         BACKWARDS_BRANCH_TARGET();
 
         // Chain the successor onto the front of the freelist
-        ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH, 0), R_FREELIST);
+        ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH), R_FREELIST);
         ASM2(mov64_reg_reg, R_FREELIST, R_SCRATCH);
 
         ASM2(cmp64_reg_i8, R_SCRATCH, -1);
@@ -712,7 +748,7 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
 
     // If R_PREDECESSOR is HANDLE_NULL, let R_SCRATCH be the address of M_HEAD; otherwise, let
     // R_SCRATCH be the address of the next-pointer of R_PREDECESSOR
-    ASM2(lea64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_PREDECESSOR, 0));
+    ASM2(lea64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_PREDECESSOR));
     ASM2(lea64_reg_mem, R_SCRATCH_2, M_HEAD);
     ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
     ASM2(cmovne64_reg_reg, R_SCRATCH, R_SCRATCH_2);
