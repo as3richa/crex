@@ -24,27 +24,19 @@
 #define R_STATE RBP
 #define R_PREDECESSOR RSI
 
-#define M_RESULT INDIRECT_REG_DISPLACEMENT(RSP, 48)
-#define M_ALLOCATOR_CONTEXT INDIRECT_REG_DISPLACEMENT(RSP, 40)
-#define M_ALLOC INDIRECT_REG_DISPLACEMENT(RSP, 32)
-#define M_FREE INDIRECT_REG_DISPLACEMENT(RSP, 24)
-#define M_EOF INDIRECT_REG_DISPLACEMENT(RSP, 16)
-#define M_MATCHED_STATE INDIRECT_REG_DISPLACEMENT(RSP, 8)
-#define M_HEAD INDIRECT_REG_DISPLACEMENT(RSP, 0)
+#define M_RESULT M_INDIRECT_REG_DISP(RSP, 48)
+#define M_ALLOCATOR_CONTEXT M_INDIRECT_REG_DISP(RSP, 40)
+#define M_ALLOC M_INDIRECT_REG_DISP(RSP, 32)
+#define M_FREE M_INDIRECT_REG_DISP(RSP, 24)
+#define M_EOF M_INDIRECT_REG_DISP(RSP, 16)
+#define M_MATCHED_STATE M_INDIRECT_REG_DISP(RSP, 8)
+#define M_HEAD M_INDIRECT_REG_DISP(RSP, 0)
 
 #define STACK_FRAME_SIZE 56
 
-#define M_DEREF_HANDLE(reg, offset) INDIRECT_BSXD(R_BUFFER, SCALE_1, reg, offset)
+#define M_DEREF_HANDLE(reg, offset) M_INDIRECT_BSXD(R_BUFFER, SCALE_1, reg, offset)
 
-#define DISPLACED(mem, disp)                                                                       \
-  ((memory_t){(mem).rip_relative,                                                                  \
-              (mem).base,                                                                          \
-              (mem).has_index,                                                                     \
-              (mem).scale,                                                                         \
-              (mem).index,                                                                         \
-              (mem).displacement + disp})
-
-#define CALLEE_SAVED(reg) (reg == RBX || reg == RBP || (R12 <= reg && reg <= R15))
+#define R_IS_CALLEE_SAVED(reg) (reg == RBX || reg == RBP || (R12 <= reg && reg <= R15))
 
 #define ASM0(id)                                                                                   \
   do {                                                                                             \
@@ -150,7 +142,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const alloc
 static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *allocator) {
   // Push callee-saved registers
   for (reg_t reg = RAX; reg <= R15; reg++) {
-    if (!CALLEE_SAVED(reg)) {
+    if (!R_IS_CALLEE_SAVED(reg)) {
       continue;
     }
     ASM1(push64_reg, reg);
@@ -174,10 +166,9 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
 
   // Unpack the allocator from the context onto the stack
   const size_t allocator_offset = offsetof(context_t, allocator);
-  ASM1(push64_mem,
-       INDIRECT_REG_DISPLACEMENT(RSI, allocator_offset + offsetof(allocator_t, context)));
-  ASM1(push64_mem, INDIRECT_REG_DISPLACEMENT(RSI, allocator_offset + offsetof(allocator_t, alloc)));
-  ASM1(push64_mem, INDIRECT_REG_DISPLACEMENT(RSI, allocator_offset + offsetof(allocator_t, free)));
+  ASM1(push64_mem, M_INDIRECT_REG_DISP(RSI, allocator_offset + offsetof(allocator_t, context)));
+  ASM1(push64_mem, M_INDIRECT_REG_DISP(RSI, allocator_offset + offsetof(allocator_t, alloc)));
+  ASM1(push64_mem, M_INDIRECT_REG_DISP(RSI, allocator_offset + offsetof(allocator_t, free)));
 
   // Save eof pointer
   ASM1(push64_reg, RCX);
@@ -186,8 +177,8 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
   ASM1(push64_i8, -1);
 
   // Unpack the buffer and capacity from the context
-  ASM2(lea64_reg_mem, R_BUFFER, INDIRECT_REG_DISPLACEMENT(RSI, offsetof(context_t, buffer)));
-  ASM2(lea64_reg_mem, R_CAPACITY, INDIRECT_REG_DISPLACEMENT(RSI, offsetof(context_t, capacity)));
+  ASM2(lea64_reg_mem, R_BUFFER, M_INDIRECT_REG_DISP(RSI, offsetof(context_t, buffer)));
+  ASM2(lea64_reg_mem, R_CAPACITY, M_INDIRECT_REG_DISP(RSI, offsetof(context_t, capacity)));
 
   const uint64_t builtin_classes_uint = (uint64_t)builtin_classes;
 
@@ -216,7 +207,7 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
   ASM2(mov32_reg_reg, R_PREV_CHARACTER, R_CHARACTER);
 
   ASM2(mov32_reg_i32, R_CHARACTER, -1);
-  ASM2(cmovne64_reg_mem, R_CHARACTER, INDIRECT_REG(R_STR));
+  ASM2(cmovne64_reg_mem, R_CHARACTER, M_INDIRECT_REG(R_STR));
 
   ASM2(mov32_reg_i32, R_PREDECESSOR, -1);
   ASM2(mov64_reg_mem, R_STATE, M_HEAD);
@@ -243,7 +234,7 @@ static int compile_epilogue(assembler_t *as, const allocator_t *allocator) {
 
   // Pop calle-saved registers; careful of overflow
   for (reg_t reg = R15;; reg--) {
-    if (CALLEE_SAVED(reg)) {
+    if (R_IS_CALLEE_SAVED(reg)) {
       ASM1(pop64_reg, reg);
     }
 
@@ -296,7 +287,7 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
 
     // Remove and return the freelist head
     ASM2(mov64_reg_reg, R_SCRATCH, R_FREELIST);
-    ASM2(mov64_reg_mem, R_FREELIST, DISPLACED(M_DEREF_HANDLE(R_FREELIST, 0), stack_offset));
+    ASM2(mov64_reg_mem, R_FREELIST, M_DISPLACED(M_DEREF_HANDLE(R_FREELIST, 0), stack_offset));
     ASM0(ret);
 
     BRANCH_TARGET();
@@ -307,13 +298,13 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
 
       // By ensuring that R_{BUFFER,CAPACITY,BUMP_POINTER} are preserve_native_coded across function
       // calls we can save some pushes and pops
-      assert(CALLEE_SAVED(R_BUFFER));
-      assert(CALLEE_SAVED(R_CAPACITY));
-      assert(CALLEE_SAVED(R_BUMP_POINTER));
+      assert(R_IS_CALLEE_SAVED(R_BUFFER));
+      assert(R_IS_CALLEE_SAVED(R_CAPACITY));
+      assert(R_IS_CALLEE_SAVED(R_BUMP_POINTER));
 
       // Push all the non-scratch caller-saved registers
       for (reg_t reg = RAX; reg <= R15; reg++) {
-        if (CALLEE_SAVED(reg) || reg == R_SCRATCH || reg == R_SCRATCH_2 || reg == RSP) {
+        if (R_IS_CALLEE_SAVED(reg) || reg == R_SCRATCH || reg == R_SCRATCH_2 || reg == RSP) {
           continue;
         }
 
@@ -331,9 +322,9 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
 
       // Call the allocator's alloc function, with the first parameter being the allocator context
       // and the second being the requested capacity
-      ASM2(mov64_reg_mem, RDI, DISPLACED(M_ALLOCATOR_CONTEXT, stack_offset));
+      ASM2(mov64_reg_mem, RDI, M_DISPLACED(M_ALLOCATOR_CONTEXT, stack_offset));
       ASM2(mov64_reg_reg, RSI, R_SCRATCH);
-      ASM1(call64_mem, DISPLACED(M_ALLOC, stack_offset));
+      ASM1(call64_mem, M_DISPLACED(M_ALLOC, stack_offset));
 
       // Sanity check
       const size_t null_int = (size_t)NULL;
@@ -362,9 +353,9 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
 
         // Call the allocator's free function, with the first parameter being the allocator
         // context and the second being the the old buffer
-        ASM2(mov64_reg_mem, RDI, DISPLACED(M_ALLOCATOR_CONTEXT, stack_offset));
+        ASM2(mov64_reg_mem, RDI, M_DISPLACED(M_ALLOCATOR_CONTEXT, stack_offset));
         ASM2(mov64_reg_reg, RSI, R_BUFFER);
-        ASM1(call64_mem, DISPLACED(M_FREE, stack_offset));
+        ASM1(call64_mem, M_DISPLACED(M_FREE, stack_offset));
 
         // Copy the new buffer out of R_CAPACITY
         ASM2(mov64_reg_reg, R_BUFFER, R_CAPACITY);
@@ -374,7 +365,7 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
 
         // Update R_BUMP_POINTER and R_CAPACITY with the information we previously spilled. We use
         // mov rather than pop because it simplifies the control flow
-        ASM2(mov64_reg_mem, R_BUMP_POINTER, INDIRECT_REG(RSP));
+        ASM2(mov64_reg_mem, R_BUMP_POINTER, M_INDIRECT_REG(RSP));
         ASM2(mov64_reg_reg, R_CAPACITY, R_BUMP_POINTER);
         ASM1(shl164_reg, R_CAPACITY);
       }
@@ -387,7 +378,7 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
 
       // Restore saved registers. Careful of underflow
       for (reg_t reg = R15;; reg--) {
-        if (!CALLEE_SAVED(reg) && reg != R_SCRATCH && reg != R_SCRATCH_2 && reg != RSP) {
+        if (!R_IS_CALLEE_SAVED(reg) && reg != R_SCRATCH && reg != R_SCRATCH_2 && reg != RSP) {
           ASM1(pop64_reg, reg);
           stack_offset -= 8;
         }
@@ -457,7 +448,7 @@ static int compile_bytecode_instruction(assembler_t *as,
     const reg_t base = (opcode == VM_CHAR_CLASS) ? R_CHAR_CLASSES : R_BUILTIN_CHAR_CLASSES;
 
     // The kth character class is at offset 32 * k from the base pointer
-    ASM2(bt32_mem_reg, INDIRECT_BSXD(base, SCALE_4, R_SCRATCH_2, 32 * operand), R_CHARACTER);
+    ASM2(bt32_mem_reg, M_INDIRECT_BSXD(base, SCALE_4, R_SCRATCH_2, 32 * operand), R_CHARACTER);
 
     // R_SCRATCH := 1 if the bit corresponding to R_CHARACTER is set
     ASM1(setc8_reg, R_SCRATCH);
@@ -551,7 +542,7 @@ static int compile_bytecode_instruction(assembler_t *as,
         ASM2(shr32_reg_u8, R_SCRATCH, 5);
 
         const memory_t dword =
-            INDIRECT_BSXD(R_BUILTIN_CHAR_CLASSES, SCALE_4, R_SCRATCH, 32 * BCC_WORD);
+            M_INDIRECT_BSXD(R_BUILTIN_CHAR_CLASSES, SCALE_4, R_SCRATCH, 32 * BCC_WORD);
 
         ASM2(bt32_mem_reg, dword, character);
         BRANCH(jnc_i8);
@@ -682,7 +673,7 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
     ASM2(cmovne64_reg_reg, R_SCRATCH, R_SCRATCH_2);
 
     // Point the above at HANDLE_NULL
-    ASM2(mov64_mem_i32, INDIRECT_REG(R_SCRATCH), -1);
+    ASM2(mov64_mem_i32, M_INDIRECT_REG(R_SCRATCH), -1);
 
     // FIXME: return something meaningful
     ASM0(ret);
@@ -696,10 +687,10 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
 
   // 64-bit int isn't totally implausible
   if (sizeof(int) == 4) {
-    ASM2(mov32_mem_i32, INDIRECT_REG(R_SCRATCH_2), 0);
+    ASM2(mov32_mem_i32, M_INDIRECT_REG(R_SCRATCH_2), 0);
   } else {
     assert(sizeof(int) == 8);
-    ASM2(mov64_mem_i32, INDIRECT_REG(R_SCRATCH_2), 0);
+    ASM2(mov64_mem_i32, M_INDIRECT_REG(R_SCRATCH_2), 0);
   }
 
   // Short-circuit by jumping directly to the function epilogue

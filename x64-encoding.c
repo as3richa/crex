@@ -19,14 +19,22 @@ typedef struct {
   long displacement;
 } memory_t;
 
-#define INDIRECT_REG(reg) ((memory_t){0, reg, 0, 0, 0, 0})
+#define M_INDIRECT_REG(reg) ((memory_t){0, reg, 0, 0, 0, 0})
 
-#define INDIRECT_REG_DISPLACEMENT(reg, displacement) ((memory_t){0, reg, 0, 0, 0, displacement})
+#define M_INDIRECT_REG_DISP(reg, displacement) ((memory_t){0, reg, 0, 0, 0, displacement})
 
-#define INDIRECT_BSXD(base, scale, index, displacement)                                            \
+#define M_INDIRECT_BSXD(base, scale, index, displacement)                                          \
   ((memory_t){0, base, 1, scale, index, displacement})
 
-#define INDIRECT_RIP_RELATIVE(displacement) ((memory_t){1, 0, 0, 0, 0, displacement})
+#define M_RIP_RELATIVE(displacement) ((memory_t){1, 0, 0, 0, 0, displacement})
+
+#define M_DISPLACED(mem, disp)                                                                     \
+  ((memory_t){(mem).rip_relative,                                                                  \
+              (mem).base,                                                                          \
+              (mem).has_index,                                                                     \
+              (mem).scale,                                                                         \
+              (mem).index,                                                                         \
+              (mem).displacement + disp})
 
 static void copy_displacement(unsigned char *destination, long value, size_t size);
 
