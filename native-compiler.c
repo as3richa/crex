@@ -104,6 +104,8 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
 #define LABEL_ALLOC_MEMORY 2
 #define N_STATIC_LABELS 3
 
+#define INSTR_LABEL(index) (N_STATIC_LABELS + (index))
+
 WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const allocator_t *allocator) {
   assembler_t as;
   create_assembler(&as);
@@ -401,6 +403,8 @@ static int compile_bytecode_instruction(assembler_t *as,
                                         regex_t *regex,
                                         size_t *index,
                                         const allocator_t *allocator) {
+  ASM1(define_label, INSTR_LABEL(*index));
+
   const unsigned char byte = regex->bytecode[(*index)++];
 
   const unsigned char opcode = VM_OPCODE(byte);
@@ -565,12 +569,53 @@ static int compile_bytecode_instruction(assembler_t *as,
     break;
   }
 
-  case VM_JUMP:
+  case VM_JUMP: {
+    ASM1(jmp64_label, INSTR_LABEL(*index + operand));
+    break;
+  }
+
   case VM_SPLIT_PASSIVE:
   case VM_SPLIT_EAGER:
   case VM_SPLIT_BACKWARDS_PASSIVE:
   case VM_SPLIT_BACKWARDS_EAGER: {
+    label_t passive_target;
+    label_t eager_target;
+
+    switch (opcode) {
+    case VM_SPLIT_PASSIVE: {
+      eager_target = INSTR_LABEL(*index);
+      passive_target = INSTR_LABEL(*index + operand);
+      break;
+    }
+
+    case VM_SPLIT_EAGER: {
+      eager_target = INSTR_LABEL(*index + operand);
+      passive_target = INSTR_LABEL(*index);
+      break;
+    }
+
+    case VM_SPLIT_BACKWARDS_PASSIVE: {
+      eager_target = INSTR_LABEL(*index);
+      passive_target = INSTR_LABEL(*index - operand);
+      break;
+    }
+
+    case VM_SPLIT_BACKWARDS_EAGER: {
+      eager_target = INSTR_LABEL(*index - operand);
+      passive_target = INSTR_LABEL(*index);
+      break;
+    }
+
+    default:
+      assert(0);
+    }
+
+    // meep meep
+    (void)eager_target;
+    (void)passive_target;
     assert(0);
+
+    break;
   }
 
   case VM_WRITE_POINTER: {
@@ -666,7 +711,7 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
     // Remove R_STATE from the list of active states
 
     // If R_PREDECESSOR is HANDLE_NULL, let R_SCRATCH be the address of M_HEAD; otherwise, let
-    // R_SCRATCH be the address of the next pointer of R_PREDECESSOR
+    // R_SCRATCH be the address of the next-pointer of R_PREDECESSOR
     ASM2(lea64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_PREDECESSOR, 0));
     ASM2(lea64_reg_mem, R_SCRATCH_2, M_HEAD);
     ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
