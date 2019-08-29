@@ -181,7 +181,7 @@ define_label(assembler_t *as, label_t label, const allocator_t *allocator) {
 }
 
 WARN_UNUSED_RESULT static int
-call64_label(assembler_t *as, label_t label, const allocator_t *allocator) {
+call_label(assembler_t *as, label_t label, const allocator_t *allocator) {
   if (reserve_assembler_space(as, 5) == NULL) {
     return 0;
   }
@@ -202,7 +202,7 @@ call64_label(assembler_t *as, label_t label, const allocator_t *allocator) {
 }
 
 WARN_UNUSED_RESULT static int
-jmp64_label(assembler_t *as, label_t label, const allocator_t *allocator) {
+jmp_label(assembler_t *as, label_t label, const allocator_t *allocator) {
   if (reserve_assembler_space(as, 5) == NULL) {
     return 0;
   }
@@ -282,20 +282,11 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
       label_use_t *use = &uses[i];
 
       switch (use->type) {
-      case LUT_DEFINITION:
+      case LUT_DEFINITION: {
         // Adjust our best estimate of the label value
         label_values[use->label] -= shrinkage;
         break;
-
-      case LUT_LEA:
-      case LUT_CALL:
-        // lea reg [rip + disp] is exactly 7 bytes irrespective of the magnitude of disp;
-        // call foo is exactly 5 bytes when encoded as a rip-relative call. Neither is subject to
-        // optimization
-        break;
-
-        //
-        break;
+      }
 
       case LUT_JUMP: {
         // jmp foo is either 2 or 5 bytes when encoded as a rip-relative call, depending on whether
@@ -333,6 +324,13 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
         break;
       }
 
+      case LUT_LEA:
+      case LUT_CALL:
+        // lea reg [rip + disp] is exactly 7 bytes irrespective of the magnitude of disp;
+        // call foo is exactly 5 bytes when encoded as a rip-relative call. Neither is subject to
+        // optimization
+        break;
+
       default:
         assert(0);
       }
@@ -364,10 +362,9 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
 
     // Generate code for the i'th label-using instruction
     switch (use->type) {
-    case LUT_DEFINITION: {
+    case LUT_DEFINITION:
       // Label definitions don't generate any code
       break;
-    }
 
     case LUT_CALL: {
       unsigned char *origin = code + 5;

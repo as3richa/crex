@@ -243,12 +243,12 @@
   extension: 0x04
   encoding: [rm_reg]
 
-- name: call64
+- name: call
   opcode: [0xff]
   extension: 0x02
   encoding: [rm_mem]
 
-- name: call64
+- name: call
   opcode: [0xff]
   extension: 0x02
   encoding: [rm_reg]
@@ -264,7 +264,7 @@
   extension: 0x00
   encoding: [rm_reg, i32]
 
-- name: jmp64
+- name: jmp
   opcode: [0xff]
   extension: 0x04
   encoding: [rm_mem]

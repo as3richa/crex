@@ -234,9 +234,12 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
   ASM2(mov32_reg_i32, R_PREDECESSOR, -1);
   ASM2(mov64_reg_mem, R_STATE, M_HEAD);
 
-  assert(n_flags <= 64 && "FIXME");
-  (void)n_flags; // FIXME: wipe in-memory bitmap if necessary
-  ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
+  if(n_flags <= 64) {
+    ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
+  } else {
+    // FIXME: wipe in-memory bitmap if necessary
+    assert(0);
+  }
 
   {
     ASM2(cmp64_reg_i8, R_STATE, -1);
@@ -245,7 +248,7 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
     {
       BACKWARDS_BRANCH_TARGET();
 
-      ASM1(jmp64_mem, M_DEREF_HANDLE(R_STATE));
+      ASM1(jmp_mem, M_DEREF_HANDLE(R_STATE));
 
       ASM1(define_label, LABEL_KEEP);
       // FIXME
@@ -266,10 +269,6 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
 
     BRANCH_TARGET();
   }
-
-  // Iterate
-  // Thread iteration
-  // FIXME
 
   ASM1(inc64_reg, R_STR);
 
@@ -381,7 +380,7 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
       // and the second being the requested capacity
       ASM2(mov64_reg_mem, RDI, M_DISPLACED(M_ALLOCATOR_CONTEXT, stack_offset));
       ASM2(mov64_reg_reg, RSI, R_SCRATCH);
-      ASM1(call64_mem, M_DISPLACED(M_ALLOC, stack_offset));
+      ASM1(call_mem, M_DISPLACED(M_ALLOC, stack_offset));
 
       // Sanity check
       const size_t null_int = (size_t)NULL;
@@ -406,13 +405,13 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
         ASM2(mov64_reg_reg, RSI, R_BUFFER);
         ASM2(mov64_reg_reg, RDX, R_BUMP_POINTER);
         ASM2(mov64_reg_u64, R_SCRATCH, (size_t)memcpy);
-        ASM1(call64_reg, R_SCRATCH);
+        ASM1(call_reg, R_SCRATCH);
 
         // Call the allocator's free function, with the first parameter being the allocator
         // context and the second being the the old buffer
         ASM2(mov64_reg_mem, RDI, M_DISPLACED(M_ALLOCATOR_CONTEXT, stack_offset));
         ASM2(mov64_reg_reg, RSI, R_BUFFER);
-        ASM1(call64_mem, M_DISPLACED(M_FREE, stack_offset));
+        ASM1(call_mem, M_DISPLACED(M_FREE, stack_offset));
 
         // Copy the new buffer out of R_CAPACITY
         ASM2(mov64_reg_reg, R_BUFFER, R_CAPACITY);
@@ -461,7 +460,7 @@ compile_push_state_copy(assembler_t *as, size_t n_capturing_groups, const alloca
   // R_SCRATCH_2 contains the instruction pointer for the new state. We use R_SCRATCH_2 rather than
   // R_SCRATCH to save a mov; the call to LABEL_ALLOC_STATE_BLOCK preserves R_SCRATCH_2
 
-  ASM1(call64_label, LABEL_ALLOC_STATE_BLOCK);
+  ASM1(call_label, LABEL_ALLOC_STATE_BLOCK);
 
   // R_SCRATCH contains a handle corresponding to a newly-allocated state block
 
@@ -674,7 +673,7 @@ static int compile_bytecode_instruction(assembler_t *as,
   }
 
   case VM_JUMP: {
-    ASM1(jmp64_label, INSTR_LABEL(*index + operand));
+    ASM1(jmp_label, INSTR_LABEL(*index + operand));
     break;
   }
 
@@ -713,7 +712,7 @@ static int compile_bytecode_instruction(assembler_t *as,
 
     // push_state_copy accepts an instruction pointer in R_SCRATCH_2
     ASM2(lea64_reg_label, R_SCRATCH_2, passive);
-    ASM1(call64_label, LABEL_PUSH_STATE_COPY);
+    ASM1(call_label, LABEL_PUSH_STATE_COPY);
 
     break;
   }
@@ -840,7 +839,7 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
 
   // Short-circuit by jumping directly to the function epilogue
   ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
-  ASM1(jmp64_label, LABEL_EPILOGUE);
+  ASM1(jmp_label, LABEL_EPILOGUE);
 
   return 1;
 }
