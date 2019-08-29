@@ -84,6 +84,8 @@
 #define BACKWARDS_BRANCH_TARGET() size_t branch_origin = as->size
 
 enum {
+  LABEL_KEEP,
+  LABEL_DISCARD,
   LABEL_EPILOGUE,
   LABEL_ALLOC_STATE_BLOCK,
   LABEL_ALLOC_MEMORY,
@@ -210,8 +212,6 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
   ASM2(xor32_reg_reg, R_BUMP_POINTER, R_BUMP_POINTER);
   ASM2(mov32_reg_i32, R_FREELIST, -1);
 
-  ASM2(mov32_reg_i32, R_CHARACTER, -1);
-
   // FIXME: allocate flag buffer if necessary
   (void)n_flags;
 
@@ -219,12 +219,15 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
 }
 
 static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t *allocator) {
+  ASM2(mov32_reg_i32, R_CHARACTER, -1);
+
   ASM2(cmp64_reg_mem, R_STR, M_EOF);
 
   BACKWARDS_BRANCH_TARGET();
 
   ASM2(mov32_reg_reg, R_PREV_CHARACTER, R_CHARACTER);
 
+  // Let R_CHARACTER := -1 if R_STR == R_EOF, [R_STR] otherwise
   ASM2(mov32_reg_i32, R_CHARACTER, -1);
   ASM2(cmovne64_reg_mem, R_CHARACTER, M_INDIRECT_REG(R_STR));
 
@@ -235,6 +238,36 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
   (void)n_flags; // FIXME: wipe in-memory bitmap if necessary
   ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
 
+  {
+    ASM2(cmp64_reg_i8, R_STATE, -1);
+    BRANCH(je_i8);
+
+    {
+      BACKWARDS_BRANCH_TARGET();
+
+      ASM1(jmp64_mem, M_DEREF_HANDLE(R_STATE));
+
+      ASM1(define_label, LABEL_KEEP);
+      // FIXME
+
+      {
+        // Don't fall through from the previous case
+        BRANCH(jmp_i8);
+
+        ASM1(define_label, LABEL_DISCARD);
+        // FIXME
+
+        BRANCH_TARGET();
+      }
+
+      ASM2(cmp64_reg_i8, R_STATE, -1);
+      BACKWARDS_BRANCH(jne_i8);
+    }
+
+    BRANCH_TARGET();
+  }
+
+  // Iterate
   // Thread iteration
   // FIXME
 

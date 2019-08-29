@@ -263,3 +263,12 @@
   opcode: [0xc7]
   extension: 0x00
   encoding: [rm_reg, i32]
+
+- name: jmp64
+  opcode: [0xff]
+  extension: 0x04
+  encoding: [rm_mem]
+
+- name: jmp
+  opcode: [0xeb]
+  encoding: [i8]
