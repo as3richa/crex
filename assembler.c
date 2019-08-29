@@ -155,7 +155,7 @@ WARN_UNUSED_RESULT static label_use_t *push_label_use(assembler_t *as,
       return NULL;
     }
 
-    safe_memcpy(uses, as->label_uses.uses, as->label_uses.capacity);
+    safe_memcpy(uses, as->label_uses.uses, sizeof(label_use_t) * as->label_uses.capacity);
     FREE(allocator, as->label_uses.uses);
 
     as->label_uses.capacity = capacity;

@@ -103,12 +103,18 @@ WARN_UNUSED_RESULT static int compile_epilogue(assembler_t *as, const allocator_
 
 WARN_UNUSED_RESULT static int compile_allocator(assembler_t *as, const allocator_t *allocator);
 
+WARN_UNUSED_RESULT static int
+compile_push_state_copy(assembler_t *as, size_t n_capturing_groups, const allocator_t *allocator);
+
 WARN_UNUSED_RESULT static int compile_bytecode_instruction(assembler_t *as,
                                                            regex_t *regex,
                                                            size_t *index,
                                                            const allocator_t *allocator);
 
 WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *allocator);
+
+WARN_UNUSED_RESULT static int compile_debugging_boundary(assembler_t *as,
+                                                         const allocator_t *allocator);
 
 WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const allocator_t *allocator) {
   assembler_t as;
@@ -117,24 +123,31 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const alloc
   // The (N_STATIC_LABELS + k)th label corresponds to the bytecode instruction at index k
   const size_t n_labels = N_STATIC_LABELS + regex->size;
 
-#define CHECK(expr)                                                                                \
+#define CHECK_ERROR(expr)                                                                          \
   do {                                                                                             \
-    if (!expr) {                                                                                   \
+    if (!expr || !compile_debugging_boundary(&as, allocator)) {                                    \
       destroy_assembler(&as, allocator);                                                           \
       return CREX_E_NOMEM;                                                                         \
     }                                                                                              \
   } while (0)
 
-  CHECK(compile_prologue(&as, regex->n_flags, allocator));
-  CHECK(compile_epilogue(&as, allocator));
-  CHECK(compile_main_loop(&as, regex->n_flags, allocator));
-  CHECK(compile_allocator(&as, allocator));
+  // Executor/thread scheduler
+  CHECK_ERROR(compile_prologue(&as, regex->n_flags, allocator));
+  CHECK_ERROR(compile_main_loop(&as, regex->n_flags, allocator));
+  CHECK_ERROR(compile_epilogue(&as, allocator));
+
+  // Utility functions called from elsewhere
+  CHECK_ERROR(compile_allocator(&as, allocator));
+  CHECK_ERROR(compile_push_state_copy(&as, regex->n_capturing_groups, allocator));
+
+  // Compiled regex program
 
   for (size_t i = 0; i < regex->size;) {
-    CHECK(compile_bytecode_instruction(&as, regex, &i, allocator));
+    CHECK_ERROR(compile_bytecode_instruction(&as, regex, &i, allocator));
   }
+  CHECK_ERROR(compile_match(&as, allocator));
 
-  CHECK(compile_match(&as, allocator));
+#undef CHECK_ERROR
 
   regex->native_code = finalize_assembler(&regex->native_code_size, &as, n_labels, allocator);
 
@@ -302,15 +315,20 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
       // Slowest path: need to allocate a new, larger buffer, copy the data from the old buffer,
       // and free the old buffer
 
-      // By ensuring that R_{BUFFER,CAPACITY,BUMP_POINTER} are preserve_native_coded across function
+      // By ensuring that R_{BUFFER,CAPACITY,BUMP_POINTER} are preserved across function
       // calls we can save some pushes and pops
       assert(R_IS_CALLEE_SAVED(R_BUFFER));
       assert(R_IS_CALLEE_SAVED(R_CAPACITY));
       assert(R_IS_CALLEE_SAVED(R_BUMP_POINTER));
 
-      // Push all the non-scratch caller-saved registers
+      // Push all the callee-saved registers except R_SCRATCH (which contains garbage).
+      // We can hackily save a few cycles elsewhere if we preserve R_SCRATCH_2 across the entire
+      // function call, so make sure we push it too
+
+      assert(!R_IS_CALLEE_SAVED(R_SCRATCH_2));
+
       for (reg_t reg = RAX; reg <= R15; reg++) {
-        if (R_IS_CALLEE_SAVED(reg) || reg == R_SCRATCH || reg == R_SCRATCH_2 || reg == RSP) {
+        if (R_IS_CALLEE_SAVED(reg) || reg == R_SCRATCH || reg == RSP) {
           continue;
         }
 
@@ -384,7 +402,7 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
 
       // Restore saved registers. Careful of underflow
       for (reg_t reg = R15;; reg--) {
-        if (!R_IS_CALLEE_SAVED(reg) && reg != R_SCRATCH && reg != R_SCRATCH_2 && reg != RSP) {
+        if (!R_IS_CALLEE_SAVED(reg) && reg != R_SCRATCH && reg != RSP) {
           ASM1(pop64_reg, reg);
           stack_offset -= 8;
         }
@@ -399,6 +417,55 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
   }
 
   assert(stack_offset == 8);
+
+  return 1;
+}
+
+WARN_UNUSED_RESULT static int
+compile_push_state_copy(assembler_t *as, size_t n_capturing_groups, const allocator_t *allocator) {
+  ASM1(define_label, LABEL_PUSH_STATE_COPY);
+
+  // R_SCRATCH_2 contains the instruction pointer for the new state. We use R_SCRATCH_2 rather than
+  // R_SCRATCH to save a mov; the call to LABEL_ALLOC_STATE_BLOCK preserves R_SCRATCH_2
+
+  ASM1(call64_label, LABEL_ALLOC_STATE_BLOCK);
+
+  // R_SCRATCH contains a handle corresponding to a newly-allocated state block
+
+  // Populate the instruction pointer
+  ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 8), R_SCRATCH_2);
+
+  // Insert the newly-allocated state after the current state
+  ASM2(mov64_reg_mem, R_SCRATCH_2, M_DEREF_HANDLE(R_STATE));
+  ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH), R_SCRATCH_2);
+  ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_STATE), R_SCRATCH);
+
+  // Copy pointer buffer. Recall that R_N_POINTERS is either 0, 2, or 2 times the number of
+  // capturing groups; we can use this observation to unroll the copy loop very efficiently
+  {
+    ASM2(cmp64_reg_i8, R_N_POINTERS, 0);
+    BRANCH(je_i8);
+
+    {
+      ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 16));
+      ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 16), R_SCRATCH_2);
+
+      ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 24));
+      ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 24), R_SCRATCH_2);
+
+      ASM2(cmp64_reg_i8, R_N_POINTERS, 2);
+      BRANCH(je_i8);
+
+      for (size_t i = 2; i < 2 * n_capturing_groups; i++) {
+        ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8 * (2 + i)));
+        ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 8 * (2 + i)), R_SCRATCH_2);
+      }
+
+      BRANCH_TARGET();
+    }
+
+    BRANCH_TARGET();
+  }
 
   return 1;
 }
@@ -582,22 +649,28 @@ static int compile_bytecode_instruction(assembler_t *as,
   case VM_SPLIT_EAGER:
   case VM_SPLIT_BACKWARDS_PASSIVE:
   case VM_SPLIT_BACKWARDS_EAGER: {
-    label_t passive_target;
+    // Conceptually, a given split has an "active" (higher priority) and a "passive" (lower
+    // priority) branch, where the active branch is taken immediately in current thread of
+    // execution, and the passive branch is enqueued onto the list of states. Eager splits
+    // have their target as the active branch and the next instruction as the passive
+    // branch, and vice versa for passive splits
+
+    label_t passive;
 
     switch (opcode) {
     case VM_SPLIT_PASSIVE: {
-      passive_target = INSTR_LABEL(*index + operand);
+      passive = INSTR_LABEL(*index + operand);
       break;
     }
 
     case VM_SPLIT_BACKWARDS_PASSIVE: {
-      passive_target = INSTR_LABEL(*index - operand);
+      passive = INSTR_LABEL(*index - operand);
       break;
     }
 
     case VM_SPLIT_EAGER:
     case VM_SPLIT_BACKWARDS_EAGER: {
-      passive_target = INSTR_LABEL(*index);
+      passive = INSTR_LABEL(*index);
       break;
     }
 
@@ -605,51 +678,9 @@ static int compile_bytecode_instruction(assembler_t *as,
       assert(0);
     }
 
-    // WIP: push new state
-
-    ASM1(call64_label, LABEL_ALLOC_STATE_BLOCK);
-
-    // R_SCRATCH contains either HANDLE_NULL (i.e. -1), or a handle corresponding to a
-    // newly-allocated state block
-
-    ASM2(cmp64_reg_i8, R_SCRATCH, -1);
-    // FIXME: je epilogue
-
-    // Insert the newly-allocated state after the current state
-    ASM2(mov64_reg_mem, R_SCRATCH_2, M_DEREF_HANDLE(R_STATE));
-    ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH), R_SCRATCH_2);
-    ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_STATE), R_SCRATCH);
-
-    // Populate instruction pointer
-    ASM2(lea64_reg_label, R_SCRATCH_2, passive_target);
-    ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 8), R_SCRATCH_2);
-
-    // Copy pointer buffer. Recall that R_N_POINTERS is either 0, 2, or 2 times the number of
-    // capturing groups; we can use this observation to unroll the copy loop very efficiently
-    {
-      ASM2(cmp64_reg_i8, R_N_POINTERS, 0);
-      BRANCH(je_i8);
-
-      {
-        ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 16));
-        ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 16), R_SCRATCH_2);
-
-        ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 24));
-        ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 24), R_SCRATCH_2);
-
-        ASM2(cmp64_reg_i8, R_N_POINTERS, 2);
-        BRANCH(je_i8);
-
-        for (size_t i = 2; i < 2 * regex->n_capturing_groups; i++) {
-          ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8 * (2 + i)));
-          ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 8 * (2 + i)), R_SCRATCH_2);
-        }
-
-        BRANCH_TARGET();
-      }
-
-      BRANCH_TARGET();
-    }
+    // push_state_copy accepts an instruction pointer in R_SCRATCH_2
+    ASM2(lea64_reg_label, R_SCRATCH_2, passive);
+    ASM1(call64_label, LABEL_PUSH_STATE_COPY);
 
     break;
   }
@@ -777,6 +808,19 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
   // Short-circuit by jumping directly to the function epilogue
   ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
   ASM1(jmp64_label, LABEL_EPILOGUE);
+
+  return 1;
+}
+
+WARN_UNUSED_RESULT static int compile_debugging_boundary(assembler_t *as,
+                                                         const allocator_t *allocator) {
+#ifdef NDEBUG
+  (void)as;
+  (void)allocator;
+#else
+  ASM2(mov64_reg_u64, R_SCRATCH, (size_t)-1);
+  ASM2(mov64_reg_u64, R_SCRATCH, (size_t)-1);
+#endif
 
   return 1;
 }
