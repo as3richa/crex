@@ -127,7 +127,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const alloc
 
 #define CHECK_ERROR(expr)                                                                          \
   do {                                                                                             \
-    if (!expr || !compile_debugging_boundary(&as, allocator)) {                                    \
+    if (!expr) {                                                                                   \
       destroy_assembler(&as, allocator);                                                           \
       return CREX_E_NOMEM;                                                                         \
     }                                                                                              \
@@ -137,13 +137,15 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const alloc
   CHECK_ERROR(compile_prologue(&as, regex->n_flags, allocator));
   CHECK_ERROR(compile_main_loop(&as, regex->n_flags, allocator));
   CHECK_ERROR(compile_epilogue(&as, allocator));
+  CHECK_ERROR(compile_debugging_boundary(&as, allocator));
 
   // Utility functions called from elsewhere
   CHECK_ERROR(compile_allocator(&as, allocator));
+  CHECK_ERROR(compile_debugging_boundary(&as, allocator));
   CHECK_ERROR(compile_push_state_copy(&as, regex->n_capturing_groups, allocator));
+  CHECK_ERROR(compile_debugging_boundary(&as, allocator));
 
   // Compiled regex program
-
   for (size_t i = 0; i < regex->size;) {
     CHECK_ERROR(compile_bytecode_instruction(&as, regex, &i, allocator));
   }
@@ -234,7 +236,7 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
   ASM2(mov32_reg_i32, R_PREDECESSOR, -1);
   ASM2(mov64_reg_mem, R_STATE, M_HEAD);
 
-  if(n_flags <= 64) {
+  if (n_flags <= 64) {
     ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
   } else {
     // FIXME: wipe in-memory bitmap if necessary
@@ -520,19 +522,14 @@ static int compile_bytecode_instruction(assembler_t *as,
   case VM_CHARACTER: {
     assert(operand <= 0xffu);
 
-    ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
-
     if ((operand & (1u << 7u)) == 0) {
       ASM2(cmp32_reg_i8, R_CHARACTER, operand);
     } else {
       ASM2(cmp32_reg_i32, R_CHARACTER, operand);
     }
 
-    // R_SCRATCH := 1 if R_CHARACTER == operand
-    ASM1(sete8_reg, R_SCRATCH);
-
-    // FIXME: jmp?
-    ASM0(ret);
+    ASM1(je_label, LABEL_KEEP);
+    ASM1(jmp_label, LABEL_DISCARD);
 
     break;
   }
@@ -542,132 +539,95 @@ static int compile_bytecode_instruction(assembler_t *as,
     assert(opcode != VM_CHAR_CLASS || operand < regex->n_classes);
     assert(opcode != VM_BUILTIN_CHAR_CLASS || operand < N_BUILTIN_CLASSES);
 
-    ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
-
     // Short-circuit for EOF
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
-    BRANCH(je_i8);
-
-    // The bitmap bit corresponding to character k can be found in the (k / 32)th dword
-    ASM2(mov32_reg_reg, R_SCRATCH_2, R_CHARACTER);
-    ASM2(shr32_reg_u8, R_SCRATCH_2, 5);
+    ASM1(je_label, LABEL_DISCARD);
 
     const reg_t base = (opcode == VM_CHAR_CLASS) ? R_CHAR_CLASSES : R_BUILTIN_CHAR_CLASSES;
 
-    // The kth character class is at offset 32 * k from the base pointer
-    ASM2(bt32_mem_reg, M_INDIRECT_BSXD(base, SCALE_4, R_SCRATCH_2, 32 * operand), R_CHARACTER);
+    // The kth character class begins at offset 32 * k from the base of the array
+    ASM2(bt32_mem_reg, M_INDIRECT_REG_DISP(base, 32 * operand), R_CHARACTER);
 
-    // R_SCRATCH := 1 if the bit corresponding to R_CHARACTER is set
-    ASM1(setc8_reg, R_SCRATCH);
-
-    BRANCH_TARGET();
-
-    ASM0(ret);
+    ASM1(jc_label, LABEL_KEEP);
+    ASM1(jmp_label, LABEL_DISCARD);
 
     break;
   }
 
   case VM_ANCHOR_BOF: {
     ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
-    BRANCH(je_i8);
-
-    ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
-    ASM0(ret);
-
-    BRANCH_TARGET();
-
+    ASM1(je_label, LABEL_KEEP);
+    ASM1(jmp_label, LABEL_DISCARD);
     break;
   }
 
   case VM_ANCHOR_BOL: {
     ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
-    BRANCH(je_i8);
+    ASM1(je_label, LABEL_KEEP);
 
-    {
-      ASM2(cmp32_reg_i8, R_PREV_CHARACTER, '\n');
-      BRANCH(je_i8);
+    ASM2(cmp32_reg_i8, R_PREV_CHARACTER, '\n');
+    ASM1(je_label, LABEL_KEEP);
 
-      ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
-      ASM0(ret);
-
-      BRANCH_TARGET();
-    }
-
-    BRANCH_TARGET();
+    ASM1(jmp_label, LABEL_DISCARD);
 
     break;
   }
 
   case VM_ANCHOR_EOF: {
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
-    BRANCH(je_i8);
-
-    ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
-    ASM0(ret);
-
-    BRANCH_TARGET();
-
+    ASM1(je_label, LABEL_KEEP);
+    ASM1(jmp_label, LABEL_DISCARD);
     break;
   }
 
   case VM_ANCHOR_EOL: {
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
-    BRANCH(je_i8);
+    ASM1(je_label, LABEL_KEEP);
 
-    {
-      ASM2(cmp32_reg_i8, R_CHARACTER, '\n');
-      BRANCH(je_i8);
+    ASM2(cmp32_reg_i8, R_CHARACTER, '\n');
+    ASM1(je_label, LABEL_KEEP);
 
-      ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
-      ASM0(ret);
-
-      BRANCH_TARGET();
-    }
-
-    BRANCH_TARGET();
+    ASM1(jmp_label, LABEL_DISCARD);
 
     break;
   }
 
   case VM_ANCHOR_WORD_BOUNDARY:
   case VM_ANCHOR_NOT_WORD_BOUNDARY: {
-    if (opcode == VM_ANCHOR_WORD_BOUNDARY) {
-      ASM2(xor32_reg_reg, R_SCRATCH_2, R_SCRATCH_2);
-    } else {
-      ASM2(mov8_reg_i8, R_SCRATCH_2, 1);
-    }
-
-    // D.R.Y.
-    for (size_t k = 0; k <= 1; k++) {
-      const reg_t character = (k == 0) ? R_PREV_CHARACTER : R_CHARACTER;
-
-      ASM2(cmp32_reg_i8, character, -1);
+    {
+      ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
       BRANCH(je_i8);
 
-      {
-        ASM2(mov32_reg_reg, R_SCRATCH, character);
-        ASM2(shr32_reg_u8, R_SCRATCH, 5);
-
-        const memory_t dword =
-            M_INDIRECT_BSXD(R_BUILTIN_CHAR_CLASSES, SCALE_4, R_SCRATCH, 32 * BCC_WORD);
-
-        ASM2(bt32_mem_reg, dword, character);
-        BRANCH(jnc_i8);
-
-        ASM1(inc32_reg, R_SCRATCH_2);
-
-        BRANCH_TARGET();
-      }
+      ASM2(bt32_mem_reg,
+           M_INDIRECT_REG_DISP(R_BUILTIN_CHAR_CLASSES, 32 * BCC_WORD),
+           R_PREV_CHARACTER);
+      ASM1(setc8_reg, R_SCRATCH);
 
       BRANCH_TARGET();
     }
 
-    ASM2(test8_reg_i8, R_SCRATCH_2, 1);
-    BRANCH(jnz_i8);
+    {
+      ASM2(cmp32_reg_i8, R_CHARACTER, -1);
+      BRANCH(je_i8);
 
-    ASM0(ret);
+      ASM2(bt32_mem_reg, M_INDIRECT_REG_DISP(R_BUILTIN_CHAR_CLASSES, 32 * BCC_WORD), R_CHARACTER);
+      ASM1(setc8_reg, R_SCRATCH_2);
 
-    BRANCH_TARGET();
+      BRANCH_TARGET();
+    }
+
+    // The least significant byte of R_SCRATCH (resp. R_SCRATCH_2) is equal to 1 if R_PREV_CHARACTER
+    // (resp. R_CHARACTER) is a word character, 0 otherwise
+
+    ASM2(xor8_reg_reg, R_SCRATCH, R_SCRATCH_2);
+
+    if (opcode == VM_ANCHOR_WORD_BOUNDARY) {
+      ASM1(jnz_label, LABEL_KEEP);
+    } else {
+      ASM1(jz_label, LABEL_KEEP);
+    }
+
+    ASM1(jmp_label, LABEL_DISCARD);
 
     break;
   }
@@ -682,7 +642,7 @@ static int compile_bytecode_instruction(assembler_t *as,
   case VM_SPLIT_BACKWARDS_PASSIVE:
   case VM_SPLIT_BACKWARDS_EAGER: {
     // Conceptually, a given split has an "active" (higher priority) and a "passive" (lower
-    // priority) branch, where the active branch is taken immediately in current thread of
+    // priority) branch, where the active branch is taken immediately in the current thread of
     // execution, and the passive branch is enqueued onto the list of states. Eager splits
     // have their target as the active branch and the next instruction as the passive
     // branch, and vice versa for passive splits
@@ -710,18 +670,26 @@ static int compile_bytecode_instruction(assembler_t *as,
       assert(0);
     }
 
-    // push_state_copy accepts an instruction pointer in R_SCRATCH_2
+    // LABEL_PUSH_STATE_COPY accepts an instruction pointer in R_SCRATCH_2
     ASM2(lea64_reg_label, R_SCRATCH_2, passive);
     ASM1(call_label, LABEL_PUSH_STATE_COPY);
+
+    // Eager splits need to explicitly jump to their target; passive splits just fall through to the
+    // next instruction
+    if (opcode == VM_SPLIT_EAGER || opcode == VM_SPLIT_BACKWARDS_EAGER) {
+      const label_t eager =
+          INSTR_LABEL((opcode == VM_SPLIT_EAGER) ? (*index + operand) : (*index - operand));
+      ASM1(jmp_label, eager);
+    }
 
     break;
   }
 
   case VM_WRITE_POINTER: {
     if (operand < 128) {
-      ASM2(cmp32_reg_i8, R_N_POINTERS, operand);
+      ASM2(cmp64_reg_i8, R_N_POINTERS, operand);
     } else {
-      ASM2(cmp32_reg_u32, R_N_POINTERS, operand);
+      ASM2(cmp64_reg_i32, R_N_POINTERS, operand);
     }
 
     BRANCH(jbe_i8);
@@ -743,15 +711,12 @@ static int compile_bytecode_instruction(assembler_t *as,
         ASM2(bts64_reg_u8, R_FLAGS, operand);
       }
     } else {
-      const size_t offset = 4 * (operand / 4);
-      ASM2(bts32_mem_u8, M_DISPLACED(M_DEREF_HANDLE(R_FLAGS), offset), operand % 32);
+      // FIXME
+      assert(0);
     }
 
-    BRANCH(jnc_i8);
-
-    ASM0(ret);
-
-    BRANCH_TARGET();
+    ASM1(jc_label, LABEL_KEEP);
+    ASM1(jmp_label, LABEL_DISCARD);
 
     break;
   }
@@ -764,15 +729,36 @@ static int compile_bytecode_instruction(assembler_t *as,
 }
 
 WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *allocator) {
-  ASM2(cmp32_reg_i8, R_N_POINTERS, 0);
-  BRANCH(je_i8);
+  // FIXME: use 32-bit operations on R_N_POINTERS if applicable
+  ASM2(cmp64_reg_i8, R_N_POINTERS, 0);
+  BRANCH(jne_i8);
+
+  // R_N_POINTERS == 0, i.e. we're performing a boolean search. M_RESULT is a pointer to an int
+  ASM2(mov32_reg_mem, R_SCRATCH, M_RESULT);
+
+  // 64-bit int isn't totally implausible
+  assert(sizeof(int) == 4 || sizeof(int) == 8);
+
+  if (sizeof(int) == 4) {
+    ASM2(mov32_mem_i32, M_INDIRECT_REG(R_SCRATCH), 1);
+  } else {
+    ASM2(mov64_mem_i32, M_INDIRECT_REG(R_SCRATCH), 1);
+  }
+
+  // Short-circuit by jumping directly to the function epilogue
+  ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
+  ASM1(jmp_label, LABEL_EPILOGUE);
+
+  BRANCH_TARGET();
+
+  // R_N_POINTERS != 0, i.e. we're doing a find or group search
+
+  // Deallocate the current M_MATCHED_STATE, if any
 
   {
-    // n_pointers != 0, i.e. we're doing a find or group search
 
     ASM2(mov64_reg_mem, R_SCRATCH, M_MATCHED_STATE);
 
-    // Deallocate the current M_MATCHED_STATE, if any
     ASM2(cmp64_reg_i8, R_SCRATCH, -1);
     BRANCH(je_i8);
 
@@ -781,65 +767,47 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
     ASM2(mov64_reg_reg, R_FREELIST, R_SCRATCH);
 
     BRANCH_TARGET();
+  }
 
-    // Let M_MATCHED_STATE := R_STATE
-    ASM2(mov64_mem_reg, M_MATCHED_STATE, R_STATE);
+  ASM2(mov64_mem_reg, M_MATCHED_STATE, R_STATE);
 
-    // Deallocate any successors to R_STATE (because any matches therein would be of lower
-    // priority)
+  // Deallocate any successors to R_STATE (because any matches therein would be of lower
+  // priority)
+
+  {
+    ASM2(mov64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_STATE));
+
+    ASM2(cmp64_reg_i8, R_SCRATCH, -1);
+    BRANCH(je_i8);
+
     {
-      ASM2(mov64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_STATE));
+      BACKWARDS_BRANCH_TARGET();
+
+      // Chain the successor onto the front of the freelist
+      ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH), R_FREELIST);
+      ASM2(mov64_reg_reg, R_FREELIST, R_SCRATCH);
 
       ASM2(cmp64_reg_i8, R_SCRATCH, -1);
-      BRANCH(je_i8);
-
-      {
-        BACKWARDS_BRANCH_TARGET();
-
-        // Chain the successor onto the front of the freelist
-        ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH), R_FREELIST);
-        ASM2(mov64_reg_reg, R_FREELIST, R_SCRATCH);
-
-        ASM2(cmp64_reg_i8, R_SCRATCH, -1);
-        BACKWARDS_BRANCH(jne_i8);
-      }
-
-      BRANCH_TARGET();
+      BACKWARDS_BRANCH(jne_i8);
     }
 
-    // Remove R_STATE from the list of active states
-
-    // If R_PREDECESSOR is HANDLE_NULL, let R_SCRATCH be the address of M_HEAD; otherwise, let
-    // R_SCRATCH be the address of the next-pointer of R_PREDECESSOR
-    ASM2(lea64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_PREDECESSOR));
-    ASM2(lea64_reg_mem, R_SCRATCH_2, M_HEAD);
-    ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
-    ASM2(cmovne64_reg_reg, R_SCRATCH, R_SCRATCH_2);
-
-    // Point the above at HANDLE_NULL
-    ASM2(mov64_mem_i32, M_INDIRECT_REG(R_SCRATCH), -1);
-
-    // FIXME: return something meaningful
-    ASM0(ret);
+    BRANCH_TARGET();
   }
 
-  BRANCH_TARGET();
+  // Remove R_STATE from the list of active states
 
-  // n_pointers == 0, i.e. we're performing a boolean search; M_RESULT is
-  // (the address on the stack of) a pointer to an int
-  ASM2(mov32_reg_mem, R_SCRATCH_2, M_RESULT);
+  // If R_PREDECESSOR is HANDLE_NULL, let R_SCRATCH be the address of M_HEAD; otherwise, let
+  // R_SCRATCH be the address of the next-pointer of R_PREDECESSOR
+  ASM2(lea64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_PREDECESSOR));
+  ASM2(lea64_reg_mem, R_SCRATCH_2, M_HEAD);
+  ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
+  ASM2(cmovne64_reg_reg, R_SCRATCH, R_SCRATCH_2);
 
-  // 64-bit int isn't totally implausible
-  if (sizeof(int) == 4) {
-    ASM2(mov32_mem_i32, M_INDIRECT_REG(R_SCRATCH_2), 0);
-  } else {
-    assert(sizeof(int) == 8);
-    ASM2(mov64_mem_i32, M_INDIRECT_REG(R_SCRATCH_2), 0);
-  }
+  // Set the incoming pointer to HANDLE_NULL, thereby removing the state from the list
+  ASM2(mov64_mem_i32, M_INDIRECT_REG(R_SCRATCH), -1);
 
-  // Short-circuit by jumping directly to the function epilogue
-  ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
-  ASM1(jmp_label, LABEL_EPILOGUE);
+  // Don't discard the state - that would cause it to be deallocated
+  ASM1(jmp_label, LABEL_KEEP);
 
   return 1;
 }
