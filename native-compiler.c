@@ -84,8 +84,9 @@
 #define BACKWARDS_BRANCH_TARGET() size_t branch_origin = as->size
 
 enum {
-  LABEL_KEEP,
-  LABEL_DISCARD,
+  LABEL_DESTROY_STATE,
+  LABEL_REMOVE_STATE,
+  LABEL_KEEP_STATE,
   LABEL_EPILOGUE,
   LABEL_ALLOC_STATE_BLOCK,
   LABEL_ALLOC_MEMORY,
@@ -214,8 +215,10 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
   ASM2(xor32_reg_reg, R_BUMP_POINTER, R_BUMP_POINTER);
   ASM2(mov32_reg_i32, R_FREELIST, -1);
 
-  // FIXME: allocate flag buffer if necessary
-  (void)n_flags;
+  if (n_flags > 64) {
+    // FIXME: allocate flag buffer if necessary
+    assert(0);
+  }
 
   return 1;
 }
@@ -244,23 +247,64 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
   }
 
   {
+    // Loop until the end of the list of states
     ASM2(cmp64_reg_i8, R_STATE, -1);
     BRANCH(je_i8);
+
+    // FIXME: push initial state
 
     {
       BACKWARDS_BRANCH_TARGET();
 
-      ASM1(jmp_mem, M_DEREF_HANDLE(R_STATE));
+      // Resume execution of the regex program from where the state last left off
+      ASM1(jmp_mem, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8));
 
-      ASM1(define_label, LABEL_KEEP);
-      // FIXME
+      // Control flow comes back to: LABEL_DESTROY_STATE, if a character, character class, or anchor
+      // failed and the state needs to be removed and freed; LABEL_REMOVE_STATE, if the state
+      // matched and must be removed from the list but not destroyed; LABEL_KEEP_STATE, if the state
+      // should be kept for the next iteration of the outer loop; the function epilogue, in the case
+      // of a match on a boolean search or in the case of an error
+
+      ASM1(define_label, LABEL_DESTROY_STATE);
+
+      // Cache the successor
+      ASM2(mov64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_STATE));
+
+      // Chain the state onto the freelist
+      ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_STATE), R_FREELIST);
+      ASM2(mov64_reg_reg, R_FREELIST, R_STATE);
+
+      // Fall through to the next case - destroyed states also need to be moved
+
+      ASM1(define_label, LABEL_REMOVE_STATE);
+
+      // Assume that R_SCRATCH contains the successor to R_STATE (but N.B. we may have arrived here
+      // via a jump to LABEL_REMOVE_STATE)
+
+      // Proceed to the next state
+      ASM2(mov64_reg_reg, R_STATE, R_SCRATCH);
+
+      // Calculate the address of the incoming pointer to the removed state (i.e. the address of
+      // M_HEAD if R_PREDECESSOR is HANDLE_NULL, or the address of the next-pointer of R_PREDECESSOR
+      // otherwise)
+
+      ASM2(lea64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_PREDECESSOR));
+      ASM2(lea64_reg_mem, R_SCRATCH_2, M_HEAD);
+
+      ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
+      ASM2(cmove64_reg_reg, R_SCRATCH, R_SCRATCH_2);
+
+      // Set the incoming pointer to next state
+      ASM2(mov64_mem_reg, M_INDIRECT_REG(R_SCRATCH), R_STATE);
 
       {
-        // Don't fall through from the previous case
+        // Don't fall through from the previous cases
         BRANCH(jmp_i8);
 
-        ASM1(define_label, LABEL_DISCARD);
-        // FIXME
+        ASM1(define_label, LABEL_KEEP_STATE);
+
+        // Proceed to the next state
+        ASM2(mov64_reg_mem, R_STATE, M_DEREF_HANDLE(R_STATE));
 
         BRANCH_TARGET();
       }
@@ -528,8 +572,8 @@ static int compile_bytecode_instruction(assembler_t *as,
       ASM2(cmp32_reg_i32, R_CHARACTER, operand);
     }
 
-    ASM1(je_label, LABEL_KEEP);
-    ASM1(jmp_label, LABEL_DISCARD);
+    ASM1(je_label, LABEL_KEEP_STATE);
+    ASM1(jmp_label, LABEL_DESTROY_STATE);
 
     break;
   }
@@ -541,53 +585,53 @@ static int compile_bytecode_instruction(assembler_t *as,
 
     // Short-circuit for EOF
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
-    ASM1(je_label, LABEL_DISCARD);
+    ASM1(je_label, LABEL_DESTROY_STATE);
 
     const reg_t base = (opcode == VM_CHAR_CLASS) ? R_CHAR_CLASSES : R_BUILTIN_CHAR_CLASSES;
 
     // The kth character class begins at offset 32 * k from the base of the array
     ASM2(bt32_mem_reg, M_INDIRECT_REG_DISP(base, 32 * operand), R_CHARACTER);
 
-    ASM1(jc_label, LABEL_KEEP);
-    ASM1(jmp_label, LABEL_DISCARD);
+    ASM1(jc_label, LABEL_KEEP_STATE);
+    ASM1(jmp_label, LABEL_DESTROY_STATE);
 
     break;
   }
 
   case VM_ANCHOR_BOF: {
     ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
-    ASM1(je_label, LABEL_KEEP);
-    ASM1(jmp_label, LABEL_DISCARD);
+    ASM1(je_label, LABEL_KEEP_STATE);
+    ASM1(jmp_label, LABEL_DESTROY_STATE);
     break;
   }
 
   case VM_ANCHOR_BOL: {
     ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
-    ASM1(je_label, LABEL_KEEP);
+    ASM1(je_label, LABEL_KEEP_STATE);
 
     ASM2(cmp32_reg_i8, R_PREV_CHARACTER, '\n');
-    ASM1(je_label, LABEL_KEEP);
+    ASM1(je_label, LABEL_KEEP_STATE);
 
-    ASM1(jmp_label, LABEL_DISCARD);
+    ASM1(jmp_label, LABEL_DESTROY_STATE);
 
     break;
   }
 
   case VM_ANCHOR_EOF: {
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
-    ASM1(je_label, LABEL_KEEP);
-    ASM1(jmp_label, LABEL_DISCARD);
+    ASM1(je_label, LABEL_KEEP_STATE);
+    ASM1(jmp_label, LABEL_DESTROY_STATE);
     break;
   }
 
   case VM_ANCHOR_EOL: {
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
-    ASM1(je_label, LABEL_KEEP);
+    ASM1(je_label, LABEL_KEEP_STATE);
 
     ASM2(cmp32_reg_i8, R_CHARACTER, '\n');
-    ASM1(je_label, LABEL_KEEP);
+    ASM1(je_label, LABEL_KEEP_STATE);
 
-    ASM1(jmp_label, LABEL_DISCARD);
+    ASM1(jmp_label, LABEL_DESTROY_STATE);
 
     break;
   }
@@ -622,12 +666,12 @@ static int compile_bytecode_instruction(assembler_t *as,
     ASM2(xor8_reg_reg, R_SCRATCH, R_SCRATCH_2);
 
     if (opcode == VM_ANCHOR_WORD_BOUNDARY) {
-      ASM1(jnz_label, LABEL_KEEP);
+      ASM1(jnz_label, LABEL_KEEP_STATE);
     } else {
-      ASM1(jz_label, LABEL_KEEP);
+      ASM1(jz_label, LABEL_KEEP_STATE);
     }
 
-    ASM1(jmp_label, LABEL_DISCARD);
+    ASM1(jmp_label, LABEL_DESTROY_STATE);
 
     break;
   }
@@ -715,8 +759,8 @@ static int compile_bytecode_instruction(assembler_t *as,
       assert(0);
     }
 
-    ASM1(jc_label, LABEL_KEEP);
-    ASM1(jmp_label, LABEL_DISCARD);
+    ASM1(jc_label, LABEL_KEEP_STATE);
+    ASM1(jmp_label, LABEL_DESTROY_STATE);
 
     break;
   }
@@ -794,20 +838,9 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
     BRANCH_TARGET();
   }
 
-  // Remove R_STATE from the list of active states
-
-  // If R_PREDECESSOR is HANDLE_NULL, let R_SCRATCH be the address of M_HEAD; otherwise, let
-  // R_SCRATCH be the address of the next-pointer of R_PREDECESSOR
-  ASM2(lea64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_PREDECESSOR));
-  ASM2(lea64_reg_mem, R_SCRATCH_2, M_HEAD);
-  ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
-  ASM2(cmovne64_reg_reg, R_SCRATCH, R_SCRATCH_2);
-
-  // Set the incoming pointer to HANDLE_NULL, thereby removing the state from the list
-  ASM2(mov64_mem_i32, M_INDIRECT_REG(R_SCRATCH), -1);
-
-  // Don't discard the state - that would cause it to be deallocated
-  ASM1(jmp_label, LABEL_KEEP);
+  // Remove the state from the list, but don't destroy it
+  ASM2(mov64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_STATE));
+  ASM1(jmp_label, LABEL_REMOVE_STATE);
 
   return 1;
 }
