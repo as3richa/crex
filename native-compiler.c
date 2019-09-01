@@ -294,7 +294,7 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
       ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
       ASM2(cmove64_reg_reg, R_SCRATCH, R_SCRATCH_2);
 
-      // Set the incoming pointer to next state
+      // Set the incoming pointer to point to the next state
       ASM2(mov64_mem_reg, M_INDIRECT_REG(R_SCRATCH), R_STATE);
 
       {
@@ -361,7 +361,7 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
   ASM2(add64_reg_i8, R_SCRATCH, 2);
   ASM2(shl64_reg_i8, R_SCRATCH, 3);
 
-  // General allocations (i.e. for the flag bitmap) enter here, and provide their own size
+  // General allocations (e.g. for the flag bitmap) enter here, and provide their own size
   // parameter in R_SCRATCH
   ASM1(define_label, LABEL_ALLOC_MEMORY);
 
@@ -638,13 +638,13 @@ static int compile_bytecode_instruction(assembler_t *as,
 
   case VM_ANCHOR_WORD_BOUNDARY:
   case VM_ANCHOR_NOT_WORD_BOUNDARY: {
+    const memory_t word_class = M_INDIRECT_REG_DISP(R_BUILTIN_CHAR_CLASSES, 32 * BCC_WORD);
+
     {
       ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
       BRANCH(je_i8);
 
-      ASM2(bt32_mem_reg,
-           M_INDIRECT_REG_DISP(R_BUILTIN_CHAR_CLASSES, 32 * BCC_WORD),
-           R_PREV_CHARACTER);
+      ASM2(bt32_mem_reg, word_class, R_PREV_CHARACTER);
       ASM1(setc8_reg, R_SCRATCH);
 
       BRANCH_TARGET();
@@ -654,7 +654,7 @@ static int compile_bytecode_instruction(assembler_t *as,
       ASM2(cmp32_reg_i8, R_CHARACTER, -1);
       BRANCH(je_i8);
 
-      ASM2(bt32_mem_reg, M_INDIRECT_REG_DISP(R_BUILTIN_CHAR_CLASSES, 32 * BCC_WORD), R_CHARACTER);
+      ASM2(bt32_mem_reg, word_class, R_CHARACTER);
       ASM1(setc8_reg, R_SCRATCH_2);
 
       BRANCH_TARGET();
