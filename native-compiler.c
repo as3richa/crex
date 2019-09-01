@@ -102,6 +102,9 @@ compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *allocator);
 WARN_UNUSED_RESULT static int
 compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t *allocator);
 
+WARN_UNUSED_RESULT static int
+compile_post_loop(assembler_t *as, size_t n_capturing_groups, const allocator_t *allocator);
+
 WARN_UNUSED_RESULT static int compile_epilogue(assembler_t *as, const allocator_t *allocator);
 
 WARN_UNUSED_RESULT static int compile_allocator(assembler_t *as, const allocator_t *allocator);
@@ -134,15 +137,25 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const alloc
     }                                                                                              \
   } while (0)
 
-  // Executor/thread scheduler
+  // Main executor function body
+
   CHECK_ERROR(compile_prologue(&as, regex->n_flags, allocator));
+  CHECK_ERROR(compile_debugging_boundary(&as, allocator));
+
   CHECK_ERROR(compile_main_loop(&as, regex->n_flags, allocator));
+  CHECK_ERROR(compile_debugging_boundary(&as, allocator));
+
+  CHECK_ERROR(compile_post_loop(&as, regex->n_capturing_groups, allocator));
+  CHECK_ERROR(compile_debugging_boundary(&as, allocator));
+
   CHECK_ERROR(compile_epilogue(&as, allocator));
   CHECK_ERROR(compile_debugging_boundary(&as, allocator));
 
   // Utility functions called from elsewhere
+
   CHECK_ERROR(compile_allocator(&as, allocator));
   CHECK_ERROR(compile_debugging_boundary(&as, allocator));
+
   CHECK_ERROR(compile_push_state_copy(&as, regex->n_capturing_groups, allocator));
   CHECK_ERROR(compile_debugging_boundary(&as, allocator));
 
@@ -185,19 +198,27 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
   assert(R_N_POINTERS == R8);
   assert(R_CHAR_CLASSES == R9);
 
-  // Save result pointer
+  // M_RESULT
   ASM1(push64_reg, RDI);
 
-  // Unpack the allocator from the context onto the stack
   const size_t allocator_offset = offsetof(context_t, allocator);
+
+  // M_ALLOCATOR_CONTEXT
   ASM1(push64_mem, M_INDIRECT_REG_DISP(RSI, allocator_offset + offsetof(allocator_t, context)));
+
+  // M_ALLOC
   ASM1(push64_mem, M_INDIRECT_REG_DISP(RSI, allocator_offset + offsetof(allocator_t, alloc)));
+
+  // M_FREE
   ASM1(push64_mem, M_INDIRECT_REG_DISP(RSI, allocator_offset + offsetof(allocator_t, free)));
 
-  // Save eof pointer
+  // M_EOF
   ASM1(push64_reg, RCX);
 
-  // Matched state, if any
+  // M_MATCHED_STATE
+  ASM1(push64_i8, -1);
+
+  // M_HEAD
   ASM1(push64_i8, -1);
 
   // Unpack the buffer and capacity from the context
@@ -224,17 +245,22 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
 }
 
 static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t *allocator) {
-  ASM2(mov32_reg_i32, R_CHARACTER, -1);
+  ASM2(mov32_reg_i32, R_PREV_CHARACTER, -1);
 
-  ASM2(cmp64_reg_mem, R_STR, M_EOF);
+  // Let R_CHARACTER := -1 if R_STR = M_EOF, [R_STR] otherwise
+  {
+    ASM2(mov32_reg_i32, R_CHARACTER, -1);
 
+    ASM2(cmp64_reg_mem, R_STR, M_EOF);
+    BRANCH(je_i8);
+
+    ASM2(mov32_reg_mem, R_CHARACTER, M_INDIRECT_REG(R_STR));
+
+    BRANCH_TARGET();
+  }
+
+  // Loop until R_STR > M_EOF
   BACKWARDS_BRANCH_TARGET();
-
-  ASM2(mov32_reg_reg, R_PREV_CHARACTER, R_CHARACTER);
-
-  // Let R_CHARACTER := -1 if R_STR == R_EOF, [R_STR] otherwise
-  ASM2(mov32_reg_i32, R_CHARACTER, -1);
-  ASM2(cmovne64_reg_mem, R_CHARACTER, M_INDIRECT_REG(R_STR));
 
   ASM2(mov32_reg_i32, R_PREDECESSOR, -1);
   ASM2(mov64_reg_mem, R_STATE, M_HEAD);
@@ -242,7 +268,7 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
   if (n_flags <= 64) {
     ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
   } else {
-    // FIXME: wipe in-memory bitmap if necessary
+    // FIXME: wipe flag bitmap
     assert(0);
   }
 
@@ -274,7 +300,7 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
       ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_STATE), R_FREELIST);
       ASM2(mov64_reg_reg, R_FREELIST, R_STATE);
 
-      // Fall through to the next case - destroyed states also need to be moved
+      // Fall through to the next case - destroyed states also need to be removed
 
       ASM1(define_label, LABEL_REMOVE_STATE);
 
@@ -316,10 +342,70 @@ static int compile_main_loop(assembler_t *as, size_t n_flags, const allocator_t 
     BRANCH_TARGET();
   }
 
-  ASM1(inc64_reg, R_STR);
+  ASM2(mov32_reg_reg, R_PREV_CHARACTER, R_CHARACTER);
+  ASM2(mov32_reg_i32, R_CHARACTER, -1);
 
+  ASM1(inc64_reg, R_STR);
   ASM2(cmp64_reg_mem, R_STR, M_EOF);
+
+  {
+    BRANCH(je_i8);
+    ASM2(mov32_reg_mem, R_CHARACTER, M_INDIRECT_REG(R_STR));
+    BRANCH_TARGET();
+  }
+
   BACKWARDS_BRANCH(jbe_i8);
+
+  return 1;
+}
+
+WARN_UNUSED_RESULT static int
+compile_post_loop(assembler_t *as, size_t n_capturing_groups, const allocator_t *allocator) {
+  {
+    ASM2(cmp64_reg_i8, R_N_POINTERS, 0);
+    BRANCH(jne_i8);
+
+    // R_N_POINTERS == 0, i.e. we're performing a boolean search. Because boolean searches
+    // short-circuit on match, if we reach this point there was no match
+
+    ASM2(mov64_reg_mem, R_SCRATCH, M_RESULT);
+
+    assert(sizeof(int) == 4 || sizeof(int) == 8);
+
+    if (sizeof(int) == 4) {
+      ASM2(mov32_mem_i32, M_INDIRECT_REG(R_SCRATCH), 0);
+    } else {
+      ASM2(mov64_mem_i32, M_INDIRECT_REG(R_SCRATCH), 0);
+    }
+
+    ASM2(xor32_reg_reg, R_SCRATCH, R_SCRATCH);
+
+    ASM1(jmp_label, LABEL_EPILOGUE);
+
+    BRANCH_TARGET();
+  }
+
+  // Recall that R_N_POINTERS is either 0, 2, or 2 times the number of capturing groups, and the
+  // previous case gives us that R_N_POINTERS != 0
+
+  ASM2(cmp64_mem_i8, M_MATCHED_STATE, -1);
+  BRANCH(je_i8);
+
+  // FIXME: implement the following two cases
+
+  (void)n_capturing_groups;
+
+  {
+    // The regex matched, and M_MATCHED_STATE contains the state of the matching thread
+  }
+
+  BRANCH_TARGET();
+
+  {
+    // The regex did not match
+  }
+
+  // Fall through to the function epilogue
 
   return 1;
 }
@@ -781,7 +867,6 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
   // R_N_POINTERS == 0, i.e. we're performing a boolean search. M_RESULT is a pointer to an int
   ASM2(mov32_reg_mem, R_SCRATCH, M_RESULT);
 
-  // 64-bit int isn't totally implausible
   assert(sizeof(int) == 4 || sizeof(int) == 8);
 
   if (sizeof(int) == 4) {

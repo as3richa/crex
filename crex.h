@@ -1,6 +1,8 @@
 #ifndef CREX_H
 #define CREX_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif

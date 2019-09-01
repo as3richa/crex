@@ -2151,9 +2151,15 @@ WARN_UNUSED_RESULT static status_t call_regex_native_code(void *result,
                                                           const char *str,
                                                           size_t size,
                                                           size_t n_pointers) {
+#if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+
   const native_function_t function = (native_function_t)(regex->native_code);
+
+#if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
 
   return (*function)(result, context, str, str + size, n_pointers);
 }
