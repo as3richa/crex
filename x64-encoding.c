@@ -125,6 +125,7 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
   assert(size == 0 || size == 1 || size == 4);
 
   if (size == 0) {
+    assert(value == 0);
     return;
   }
 

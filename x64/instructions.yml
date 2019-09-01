@@ -278,3 +278,7 @@
   opcode: [0x81]
   extension: 0x07
   encoding: [rm_reg, i32]
+
+- name: xor8
+  opcode: [0x30]
+  encoding: [rm_reg, reg]

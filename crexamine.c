@@ -111,6 +111,8 @@ int main(void) {
       printf("$%zu: ", i);
 
       if (groups[i].begin == NULL) {
+        assert(groups[i].end == NULL);
+
         puts("<unmatched>");
         continue;
       }

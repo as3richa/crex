@@ -572,8 +572,10 @@ static int compile_bytecode_instruction(assembler_t *as,
       ASM2(cmp32_reg_i32, R_CHARACTER, operand);
     }
 
-    ASM1(je_label, LABEL_KEEP_STATE);
-    ASM1(jmp_label, LABEL_DESTROY_STATE);
+    ASM2(jcc_label, JCC_JNE, LABEL_DESTROY_STATE);
+
+    ASM2(lea64_reg_label, R_SCRATCH, INSTR_LABEL(*index));
+    ASM1(jmp_label, LABEL_KEEP_STATE);
 
     break;
   }
@@ -585,53 +587,53 @@ static int compile_bytecode_instruction(assembler_t *as,
 
     // Short-circuit for EOF
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
-    ASM1(je_label, LABEL_DESTROY_STATE);
+    ASM2(jcc_label, JCC_JE, LABEL_DESTROY_STATE);
 
     const reg_t base = (opcode == VM_CHAR_CLASS) ? R_CHAR_CLASSES : R_BUILTIN_CHAR_CLASSES;
 
     // The kth character class begins at offset 32 * k from the base of the array
     ASM2(bt32_mem_reg, M_INDIRECT_REG_DISP(base, 32 * operand), R_CHARACTER);
 
-    ASM1(jc_label, LABEL_KEEP_STATE);
-    ASM1(jmp_label, LABEL_DESTROY_STATE);
+    ASM2(jcc_label, JCC_JNC, LABEL_DESTROY_STATE);
+
+    ASM2(lea64_reg_label, R_SCRATCH, INSTR_LABEL(*index));
+    ASM1(jmp_label, LABEL_KEEP_STATE);
 
     break;
   }
 
   case VM_ANCHOR_BOF: {
     ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
-    ASM1(je_label, LABEL_KEEP_STATE);
-    ASM1(jmp_label, LABEL_DESTROY_STATE);
+    ASM2(jcc_label, JCC_JNE, LABEL_DESTROY_STATE);
     break;
   }
 
   case VM_ANCHOR_BOL: {
     ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
-    ASM1(je_label, LABEL_KEEP_STATE);
+    BRANCH(je_i8);
 
     ASM2(cmp32_reg_i8, R_PREV_CHARACTER, '\n');
-    ASM1(je_label, LABEL_KEEP_STATE);
+    ASM2(jcc_label, JCC_JNE, LABEL_DESTROY_STATE);
 
-    ASM1(jmp_label, LABEL_DESTROY_STATE);
+    BRANCH_TARGET();
 
     break;
   }
 
   case VM_ANCHOR_EOF: {
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
-    ASM1(je_label, LABEL_KEEP_STATE);
-    ASM1(jmp_label, LABEL_DESTROY_STATE);
+    ASM2(jcc_label, JCC_JNE, LABEL_DESTROY_STATE);
     break;
   }
 
   case VM_ANCHOR_EOL: {
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
-    ASM1(je_label, LABEL_KEEP_STATE);
+    BRANCH(je_i8);
 
     ASM2(cmp32_reg_i8, R_CHARACTER, '\n');
-    ASM1(je_label, LABEL_KEEP_STATE);
+    ASM2(jcc_label, JCC_JNE, LABEL_DESTROY_STATE);
 
-    ASM1(jmp_label, LABEL_DESTROY_STATE);
+    BRANCH_TARGET();
 
     break;
   }
@@ -666,12 +668,12 @@ static int compile_bytecode_instruction(assembler_t *as,
     ASM2(xor8_reg_reg, R_SCRATCH, R_SCRATCH_2);
 
     if (opcode == VM_ANCHOR_WORD_BOUNDARY) {
-      ASM1(jnz_label, LABEL_KEEP_STATE);
+      // Fail if neither or both character(s) are word characters
+      ASM2(jcc_label, JCC_JZ, LABEL_DESTROY_STATE);
     } else {
-      ASM1(jz_label, LABEL_KEEP_STATE);
+      // Fail if exactly one character is a word character
+      ASM2(jcc_label, JCC_JNZ, LABEL_DESTROY_STATE);
     }
-
-    ASM1(jmp_label, LABEL_DESTROY_STATE);
 
     break;
   }
@@ -759,8 +761,7 @@ static int compile_bytecode_instruction(assembler_t *as,
       assert(0);
     }
 
-    ASM1(jc_label, LABEL_KEEP_STATE);
-    ASM1(jmp_label, LABEL_DESTROY_STATE);
+    ASM2(jcc_label, JCC_JC, LABEL_DESTROY_STATE);
 
     break;
   }

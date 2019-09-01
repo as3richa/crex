@@ -4,16 +4,53 @@
 
 typedef size_t label_t;
 
-typedef enum { LUT_DEFINITION, LUT_CALL, LUT_JUMP, LUT_LEA } label_use_type_t;
+typedef enum { LU_CALL, LU_DEFINITION, LU_JCC, LU_JMP, LU_LEA } label_use_type_t;
+
+typedef enum {
+  JCC_JO,
+  JCC_JNO,
+  JCC_JB,
+  JCC_JC = JCC_JB,
+  JCC_JNAE = JCC_JB,
+  JCC_JAE,
+  JCC_JNB = JCC_JAE,
+  JCC_JNC = JCC_JAE,
+  JCC_JE,
+  JCC_JZ = JCC_JE,
+  JCC_JNE,
+  JCC_JNZ = JCC_JNE,
+  JCC_JBE,
+  JCC_JNA = JCC_JBE,
+  JCC_JA,
+  JCC_JNBE = JCC_JA,
+  JCC_JS,
+  JCC_JNS,
+  JCC_JP,
+  JCC_JPE = JCC_JP,
+  JCC_JNP,
+  JCC_JPO = JCC_JNP,
+  JCC_JL,
+  JCC_JNGE = JCC_JL,
+  JCC_JGE,
+  JCC_JNL = JCC_JGE,
+  JCC_JLE,
+  JCC_JNG = JCC_JLE,
+  JCC_JG,
+  JCC_JNLE = JCC_JG,
+  N_JCC_TYPES
+} jcc_type_t;
 
 typedef struct {
-  label_use_type_t type : 3;
+  label_use_type_t type : 4;
 
   // For lea
   reg_t reg : 4;
 
-  // For jmp
+  // For jmp and jcc
   unsigned int is_short : 1;
+
+  // For jcc
+  jcc_type_t jcc_type : 5;
 
   size_t offset;
   label_t label;
@@ -32,6 +69,10 @@ typedef struct {
 
   size_t page_size;
 } assembler_t;
+
+#define DISPLACEMENT_IS_REPRESENTABLE(origin, target)                                              \
+  (((target) >= (origin) && (long)((target) - (origin)) <= 2147483647L) ||                         \
+   ((target) < (origin) && (long)((origin) - (target)) - 1 <= 2147483647L))
 
 WARN_UNUSED_RESULT static int
 resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *allocator);
@@ -173,7 +214,7 @@ define_label(assembler_t *as, label_t label, const allocator_t *allocator) {
     return 0;
   }
 
-  use->type = LUT_DEFINITION;
+  use->type = LU_DEFINITION;
   use->offset = as->size;
   use->label = label;
 
@@ -192,7 +233,7 @@ call_label(assembler_t *as, label_t label, const allocator_t *allocator) {
     return 0;
   }
 
-  use->type = LUT_CALL;
+  use->type = LU_CALL;
   use->offset = as->size;
   use->label = label;
 
@@ -213,9 +254,9 @@ jmp_label(assembler_t *as, label_t label, const allocator_t *allocator) {
     return 0;
   }
 
-  use->type = LUT_JUMP;
-  use->offset = as->size;
+  use->type = LU_JMP;
   use->is_short = 0;
+  use->offset = as->size;
   use->label = label;
 
   as->size += 5;
@@ -235,12 +276,35 @@ lea64_reg_label(assembler_t *as, reg_t reg, label_t label, const allocator_t *al
     return 0;
   }
 
-  use->type = LUT_LEA;
+  use->type = LU_LEA;
+  use->reg = reg;
   use->offset = as->size;
   use->label = label;
-  use->reg = reg;
 
   as->size += 7;
+
+  return 1;
+}
+
+WARN_UNUSED_RESULT static int
+jcc_label(assembler_t *as, jcc_type_t jcc_type, label_t label, const allocator_t *allocator) {
+  if (reserve_assembler_space(as, 6) == NULL) {
+    return 0;
+  }
+
+  label_use_t *use = push_label_use(as, allocator);
+
+  if (use == NULL) {
+    return 0;
+  }
+
+  use->type = LU_JCC;
+  use->is_short = 0;
+  use->jcc_type = jcc_type;
+  use->offset = as->size;
+  use->label = label;
+
+  as->size += 6;
 
   return 1;
 }
@@ -266,7 +330,7 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
     const label_use_t *use = &uses[i];
     assert(use->label < n_labels);
 
-    if (use->type != LUT_DEFINITION) {
+    if (use->type != LU_DEFINITION) {
       continue;
     }
 
@@ -282,50 +346,53 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
       label_use_t *use = &uses[i];
 
       switch (use->type) {
-      case LUT_DEFINITION: {
+      case LU_DEFINITION: {
         // Adjust our best estimate of the label value
         label_values[use->label] -= shrinkage;
         break;
       }
 
-      case LUT_JUMP: {
-        // jmp foo is either 2 or 5 bytes when encoded as a rip-relative call, depending on whether
-        // it's a short or near jump
+      case LU_JCC:
+      case LU_JMP: {
+        // When encoded with a relative operand, jcc and jmp are 2 bytes in their short form and
+        // 6 or 5 bytes respectively in their near form
 
+        // If the jmp/jcc is already short, there's no further optimization to do
         if (use->is_short) {
           break;
         }
 
-        // Attempt to transform a near jump into a short jump
-
         const size_t origin = use->offset + 2;
-
         size_t target = label_values[use->label];
+
+        // Assert that the label was actually defined
         assert(target != SIZE_MAX);
 
+        // If the target follows the origin, the act of shrinking the instruction encoding would
+        // cause the target to move
         if (target > origin) {
-          target -= 3;
+          target -= (use->type == LU_JCC) ? 4 : 3;
         }
 
-        // FIXME: probably need to catch this even in production
-        if (target > origin) {
-          assert(target - origin <= 2147483647L);
-        } else {
-          assert(origin - target - 1 <= 2147483647L);
+        // There's no practical difference between an allocation failure and an excessively-large
+        // displacement, since the latter implies that the generated code exceeds 2 GiB
+        if (!DISPLACEMENT_IS_REPRESENTABLE(origin, target)) {
+          FREE(allocator, label_values);
+          return 0;
         }
 
         const long displacement = (long)target - (long)origin;
 
         if (-128 <= displacement && displacement <= 127) {
           use->is_short = 1;
-          shrinkage += 3;
+          shrinkage += (use->type == LU_JCC) ? 4 : 3;
         }
 
         break;
       }
 
-      case LUT_LEA:
-      case LUT_CALL:
+      case LU_LEA:
+      case LU_CALL:
         // lea reg [rip + disp] is exactly 7 bytes irrespective of the magnitude of disp;
         // call foo is exactly 5 bytes when encoded as a rip-relative call. Neither is subject to
         // optimization
@@ -362,18 +429,13 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
 
     // Generate code for the i'th label-using instruction
     switch (use->type) {
-    case LUT_DEFINITION:
+    case LU_DEFINITION:
       // Label definitions don't generate any code
       break;
 
-    case LUT_CALL: {
+    case LU_CALL: {
       unsigned char *origin = code + 5;
-
-      if (target > origin) {
-        assert(target - origin <= 2147483647L);
-      } else {
-        assert(origin - target - 1 <= 2147483647L);
-      }
+      assert(DISPLACEMENT_IS_REPRESENTABLE(origin, target));
 
       const long displacement = target - origin;
 
@@ -386,14 +448,33 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
       break;
     }
 
-    case LUT_JUMP: {
-      unsigned char *origin = code + ((use->is_short) ? 2 : 5);
+    case LU_JCC: {
+      unsigned char *origin = code + ((use->is_short) ? 2 : 6);
+      assert(DISPLACEMENT_IS_REPRESENTABLE(origin, target));
 
-      if (target > origin) {
-        assert(target - origin <= 2147483647L);
+      assert(use->jcc_type < N_JCC_TYPES);
+
+      const long displacement = target - origin;
+
+      if (use->is_short) {
+        assert(-128 <= displacement && displacement <= 127);
+        *(code++) = 0x70 + use->jcc_type;
+        copy_displacement(code, displacement, 1);
+        code++;
       } else {
-        assert(origin - target - 1 <= 2147483647L);
+        *(code++) = 0x0f;
+        *(code++) = 0x80 + use->jcc_type;
+        copy_displacement(code, displacement, 4);
+        code += 4;
       }
+
+      reserved_size = 6;
+      break;
+    }
+
+    case LU_JMP: {
+      unsigned char *origin = code + ((use->is_short) ? 2 : 5);
+      assert(DISPLACEMENT_IS_REPRESENTABLE(origin, target));
 
       const long displacement = target - origin;
 
@@ -413,14 +494,9 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
       break;
     }
 
-    case LUT_LEA: {
+    case LU_LEA: {
       unsigned char *origin = code + 7;
-
-      if (target > origin) {
-        assert(target - origin <= 2147483647L);
-      } else {
-        assert(origin - target - 1 <= 2147483647L);
-      }
+      assert(DISPLACEMENT_IS_REPRESENTABLE(origin, target));
 
       const long displacement = target - origin;
 
