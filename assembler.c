@@ -61,6 +61,8 @@ typedef struct {
   size_t capacity;
   unsigned char *code;
 
+  size_t n_labels;
+
   struct {
     size_t size;
     size_t capacity;
@@ -74,13 +76,15 @@ typedef struct {
   (((target) >= (origin) && (long)((target) - (origin)) <= 2147483647L) ||                         \
    ((target) < (origin) && (long)((origin) - (target)) - 1 <= 2147483647L))
 
-WARN_UNUSED_RESULT static int
-resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *allocator);
+WARN_UNUSED_RESULT static int resolve_assembler_labels(assembler_t *as,
+                                                       const allocator_t *allocator);
 
 static void create_assembler(assembler_t *as) {
   as->size = 0;
   as->capacity = 0;
   as->code = NULL;
+
+  as->n_labels = 0;
 
   as->label_uses.size = 0;
   as->label_uses.capacity = 0;
@@ -96,12 +100,12 @@ static void destroy_assembler(assembler_t *as, const allocator_t *allocator) {
 }
 
 WARN_UNUSED_RESULT static unsigned char *
-finalize_assembler(size_t *size, assembler_t *as, size_t n_flags, const allocator_t *allocator) {
+finalize_assembler(size_t *size, assembler_t *as, const allocator_t *allocator) {
 
   assert(as->size <= as->capacity);
   assert(as->capacity % as->page_size == 0);
 
-  if (!resolve_assembler_labels(as, n_flags, allocator)) {
+  if (!resolve_assembler_labels(as, allocator)) {
     FREE(allocator, as->label_uses.uses);
     return NULL;
   }
@@ -183,6 +187,10 @@ static void resize_assembler(assembler_t *as, unsigned char *end) {
 }
 
 #include "build/x64.h"
+
+WARN_UNUSED_RESULT static label_t create_label(assembler_t *as) {
+  return as->n_labels++;
+}
 
 WARN_UNUSED_RESULT static label_use_t *push_label_use(assembler_t *as,
                                                       const allocator_t *allocator) {
@@ -309,16 +317,16 @@ jcc_label(assembler_t *as, jcc_type_t jcc_type, label_t label, const allocator_t
   return 1;
 }
 
-WARN_UNUSED_RESULT static int
-resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *allocator) {
-  size_t *label_values = ALLOC(allocator, sizeof(size_t) * n_labels);
+WARN_UNUSED_RESULT static int resolve_assembler_labels(assembler_t *as,
+                                                       const allocator_t *allocator) {
+  size_t *label_values = ALLOC(allocator, sizeof(size_t) * as->n_labels);
 
   if (label_values == NULL) {
     return 0;
   }
 
 #ifndef NDEBUG
-  for (size_t i = 0; i < n_labels; i++) {
+  for (size_t i = 0; i < as->n_labels; i++) {
     label_values[i] = SIZE_MAX;
   }
 #endif
@@ -328,7 +336,7 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
 
   for (size_t i = 0; i < n_uses; i++) {
     const label_use_t *use = &uses[i];
-    assert(use->label < n_labels);
+    assert(use->label < as->n_labels);
 
     if (use->type != LU_DEFINITION) {
       continue;

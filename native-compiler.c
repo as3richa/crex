@@ -104,6 +104,7 @@ enum {
   N_STATIC_LABELS
 };
 
+// INSTR_LABEL(k) is a label pointing to the bytecode instruction starting at index k, if any
 #define INSTR_LABEL(index) (N_STATIC_LABELS + (index))
 
 WARN_UNUSED_RESULT static int
@@ -136,8 +137,16 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const alloc
   assembler_t as;
   create_assembler(&as);
 
-  // The (N_STATIC_LABELS + k)th label corresponds to the bytecode instruction at index k
-  const size_t n_labels = N_STATIC_LABELS + regex->size;
+  // Preallocate static labels and bytecode instruction labels
+  for (size_t i = 0; i < N_STATIC_LABELS + regex->size; i++) {
+    const label_t label = create_label(&as);
+
+#ifndef NDEBUG
+    assert(label == i);
+#else
+    (void)label;
+#endif
+  }
 
 #define CHECK_ERROR(expr)                                                                          \
   do {                                                                                             \
@@ -167,14 +176,16 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const alloc
   CHECK_ERROR(compile_debugging_boundary(&as, allocator));
 
   // Compiled regex program
+
   for (size_t i = 0; i < regex->size;) {
     CHECK_ERROR(compile_bytecode_instruction(&as, regex, &i, allocator));
   }
+
   CHECK_ERROR(compile_match(&as, allocator));
 
 #undef CHECK_ERROR
 
-  regex->native_code = finalize_assembler(&regex->native_code_size, &as, n_labels, allocator);
+  regex->native_code = finalize_assembler(&regex->native_code_size, &as, allocator);
 
   if (regex->native_code == NULL) {
     return CREX_E_NOMEM;
@@ -489,7 +500,8 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
   // state as immediately following the prologue. However, because we reach this function body via
   // a call, we need to take into account the return address that was pushed onto the stack, as
   // well as the pushes we make within the body of the function. We could avoid this burden by
-  // just using RBP to track the base of the stack frame, but then we lose a register
+  // just using RBP to track the base of the stack frame, but then we lose a general-purpose
+  // register
   size_t stack_offset = 8;
 
   // State-push allocation operations enter here
@@ -761,13 +773,19 @@ static int compile_bytecode_instruction(assembler_t *as,
   }
 
   case VM_ANCHOR_BOL: {
+    // We need to use a dynamic label here (and analogously in the VM_ANCHOR_EOL case), because the
+    // jcc_label to LABEL_DESTROY_STATE might change size during branch optimization. This would
+    // break the branch if we were to use the BRANCH macro
+
+    const label_t passed = create_label(as);
+
     ASM2(cmp32_reg_i8, R_PREV_CHARACTER, -1);
-    BRANCH(je_i8, passed);
+    ASM2(jcc_label, JCC_JE, passed);
 
     ASM2(cmp32_reg_i8, R_PREV_CHARACTER, '\n');
     ASM2(jcc_label, JCC_JNE, LABEL_DESTROY_STATE);
 
-    BRANCH_TARGET(passed);
+    ASM1(define_label, passed);
 
     break;
   }
@@ -779,13 +797,15 @@ static int compile_bytecode_instruction(assembler_t *as,
   }
 
   case VM_ANCHOR_EOL: {
+    const label_t passed = create_label(as);
+
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
-    BRANCH(je_i8, passed);
+    ASM2(jcc_label, JCC_JE, passed);
 
     ASM2(cmp32_reg_i8, R_CHARACTER, '\n');
     ASM2(jcc_label, JCC_JNE, LABEL_DESTROY_STATE);
 
-    BRANCH_TARGET(passed);
+    ASM1(define_label, passed);
 
     break;
   }
