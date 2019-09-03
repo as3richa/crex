@@ -288,3 +288,17 @@
   opcode: [0x83]
   extension: 0x07
   encoding: [rm_mem, i8]
+
+- name: sub64
+  rex_w: true
+  opcode: [0x83]
+  extension: 0x05
+  encoding: [rm_reg, i8]
+
+- name: movzx328
+  opcode: [0x0f, 0xb6]
+  encoding: [reg, rm_mem]
+
+- name: nop
+  opcode: [0x90]
+  encoding: []

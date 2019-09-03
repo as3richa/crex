@@ -19,7 +19,7 @@ int main(void) {
     return 1;
   }
 
-  const char *str = "b";
+  const char *str = "a";
 
   int is_match;
 
