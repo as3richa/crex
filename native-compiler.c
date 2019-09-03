@@ -659,11 +659,21 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
     }
   }
 
-  // FIXME: jump to the program epilogue on error
+  // Return normally if R_SCRATCH != HANDLE_NULL, i.e. if the allocation succeeded
+
+  ASM2(cmp64_reg_i8, R_SCRATCH, -1);
+  BRANCH(je_i8, allocation_failed);
 
   ASM0(ret);
 
-  assert(stack_offset == 8);
+  BRANCH_TARGET(allocation_failed);
+
+  // Discard the return address and jump directly to the function epilogue on allocation failure
+  ASM2(add64_reg_i8, RSP, 8);
+  ASM1(jmp_label, LABEL_EPILOGUE);
+
+  stack_offset -= 8;
+  assert(stack_offset == 0);
 
   return 1;
 }
