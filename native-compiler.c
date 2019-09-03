@@ -364,9 +364,9 @@ compile_state_list_loop(assembler_t *as, const regex_t *regex, const allocator_t
   ASM2(mov64_reg_i32, R_PREDECESSOR, -1);
   ASM2(mov64_reg_mem, R_STATE, M_HEAD);
 
-  if (regex->n_flags <= 64) {
-    ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
-  } else {
+  ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
+
+  if (regex->n_flags > 0) {
     // FIXME: wipe flag bitmap
     assert(0);
   }
@@ -945,15 +945,12 @@ static int compile_bytecode_instruction(assembler_t *as,
   case VM_TEST_AND_SET_FLAG: {
     assert(operand < regex->n_flags);
 
-    if (regex->n_flags <= 64) {
-      if (operand <= 32) {
-        ASM2(bts32_reg_u8, R_FLAGS, operand);
-      } else {
-        ASM2(bts64_reg_u8, R_FLAGS, operand);
-      }
+    if (operand <= 32) {
+      ASM2(bts32_reg_u8, R_FLAGS, operand);
+    } else if (operand <= 64) {
+      ASM2(bts64_reg_u8, R_FLAGS, operand);
     } else {
-      // FIXME
-      assert(0);
+      assert(0); // FIXME
     }
 
     ASM2(jcc_label, JCC_JC, LABEL_DESTROY_STATE);
