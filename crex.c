@@ -2119,8 +2119,14 @@ PUBLIC size_t crex_regex_n_capturing_groups(const regex_t *regex) {
 
 PUBLIC void crex_destroy_regex(regex_t *regex) {
   void *context = regex->allocator_context;
+
   regex->free(context, regex->bytecode);
   regex->free(context, regex->classes);
+
+#ifdef NATIVE_COMPILER
+  munmap(regex->native_code, regex->native_code_size);
+#endif
+
   regex->free(context, regex);
 }
 
@@ -2143,7 +2149,8 @@ PUBLIC void crex_destroy_context(context_t *context) {
 
 #else
 
-typedef status_t (*native_function_t)(void *, context_t *, const char *, const char *, size_t);
+typedef status_t (*native_function_t)(
+    void *, context_t *, const char *, const char *, size_t, const unsigned char *);
 
 WARN_UNUSED_RESULT static status_t call_regex_native_code(void *result,
                                                           crex_context_t *context,
@@ -2161,7 +2168,7 @@ WARN_UNUSED_RESULT static status_t call_regex_native_code(void *result,
 #pragma GCC diagnostic pop
 #endif
 
-  return (*function)(result, context, str, str + size, n_pointers);
+  return (*function)(result, context, str, str + size, n_pointers, (unsigned char *)regex->classes);
 }
 
 PUBLIC crex_status_t crex_is_match(int *is_match,

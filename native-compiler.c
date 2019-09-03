@@ -1,7 +1,7 @@
 #ifdef NATIVE_COMPILER
 
 #define R_SCRATCH RAX
-#define R_SCRATCH_2 RDI
+#define R_SCRATCH_2 RCX
 
 #define R_CHAR_CLASSES R9
 #define R_BUILTIN_CHAR_CLASSES RBX
@@ -19,11 +19,12 @@
 #define R_FLAGS R11
 
 #define R_CHARACTER R14
-#define R_PREV_CHARACTER RCX
+#define R_PREV_CHARACTER RDI
 
 #define R_STATE RBP
 #define R_PREDECESSOR RSI
 
+#define M_CONTEXT M_INDIRECT_REG_DISP(RSP, 64)
 #define M_RESULT M_INDIRECT_REG_DISP(RSP, 56)
 #define M_ALLOCATOR_CONTEXT M_INDIRECT_REG_DISP(RSP, 48)
 #define M_ALLOC M_INDIRECT_REG_DISP(RSP, 40)
@@ -31,9 +32,9 @@
 #define M_EOF M_INDIRECT_REG_DISP(RSP, 24)
 #define M_MATCHED_STATE M_INDIRECT_REG_DISP(RSP, 16)
 #define M_HEAD M_INDIRECT_REG_DISP(RSP, 8)
-#define M_INITIAL_STATE_PUSHED M_INDIRECT_REG(RSP, 0)
+#define M_INITIAL_STATE_PUSHED M_INDIRECT_REG_DISP(RSP, 0)
 
-#define STACK_FRAME_SIZE 64
+#define STACK_FRAME_SIZE 72
 
 #define M_DEREF_HANDLE(reg) M_INDIRECT_BSXD(R_BUFFER, SCALE_1, reg, 0)
 
@@ -92,6 +93,14 @@ enum {
   LABEL_ALLOC_STATE_BLOCK,
   LABEL_ALLOC_MEMORY,
   LABEL_PUSH_STATE_COPY,
+  // These labels are used for some particularly hairy local control flow in the executor body
+  LABEL_STRING_LOOP_HEAD,
+  LABEL_POST_STRING_LOOP,
+  LABEL_STATE_LOOP_HEAD,
+  LABEL_HAVE_STATE,
+  LABEL_POST_STATE_LOOP,
+  LABEL_NO_MATCH,
+  LABEL_PRE_EPILOGUE,
   N_STATIC_LABELS
 };
 
@@ -196,6 +205,9 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
   assert(R_N_POINTERS == R8);
   assert(R_CHAR_CLASSES == R9);
 
+  // M_CONTEXT
+  ASM1(push64_reg, RSI);
+
   // M_RESULT
   ASM1(push64_reg, RDI);
 
@@ -223,8 +235,8 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
   ASM2(sub64_reg_i8, RSP, 8);
 
   // Unpack the buffer and capacity from the context
-  ASM2(lea64_reg_mem, R_BUFFER, M_INDIRECT_REG_DISP(RSI, offsetof(context_t, buffer)));
-  ASM2(lea64_reg_mem, R_CAPACITY, M_INDIRECT_REG_DISP(RSI, offsetof(context_t, capacity)));
+  ASM2(mov64_reg_mem, R_BUFFER, M_INDIRECT_REG_DISP(RSI, offsetof(context_t, buffer)));
+  ASM2(mov64_reg_mem, R_CAPACITY, M_INDIRECT_REG_DISP(RSI, offsetof(context_t, capacity)));
 
   const uint64_t builtin_classes_uint = (uint64_t)builtin_classes;
 
@@ -235,7 +247,7 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
   }
 
   ASM2(xor32_reg_reg, R_BUMP_POINTER, R_BUMP_POINTER);
-  ASM2(mov32_reg_i32, R_FREELIST, -1);
+  ASM2(mov64_reg_i32, R_FREELIST, -1);
 
   if (n_flags > 64) {
     // FIXME: allocate flag buffer if necessary
@@ -250,14 +262,18 @@ static int compile_string_loop(assembler_t *as, regex_t *regex, const allocator_
 
   // Loop over the string, up to and including the EOF position
 
-  BACKWARDS_BRANCH_TARGET(loop_head);
+  // Here, and in several other instances in the string and state loops, we need to use the label
+  // engine proper rather than the branch macros. This is because the code to e.g. initialize a
+  // state or clear the flag bitmap can be arbitrarily long
+  ASM1(define_label, LABEL_STRING_LOOP_HEAD);
 
   ASM2(mov32_reg_reg, R_PREV_CHARACTER, R_CHARACTER);
 
-  // Let R_CHARACTER := -1 if R_STR == M_EOF, [R_STR] otherwise. N.B. there's no 8-bit cmovcc
+  // Let R_CHARACTER := -1 if R_STR == M_EOF, [R_STR] otherwise. N.B. there's no 8-bit cmov
 
   ASM2(mov32_reg_i32, R_CHARACTER, -1);
 
+  // This branch doesn't span any variable-length code, so the macro is fine here
   ASM2(cmp64_reg_mem, R_STR, M_EOF);
   BRANCH(je_i8, eof);
 
@@ -273,13 +289,13 @@ static int compile_string_loop(assembler_t *as, regex_t *regex, const allocator_
   // Break if R_STR == M_EOF. We need to check this before the increment to prevent an overflow when
   // M_EOF == 0xffffffffffffffff; this means we need two cmps instead of one
   ASM2(cmp64_reg_mem, R_STR, M_EOF);
-  BRANCH(je_i8, post_loop);
+  ASM2(jcc_label, JCC_JE, LABEL_POST_STRING_LOOP);
 
   ASM1(inc64_reg, R_STR);
 
-  BACKWARDS_BRANCH(jmp_i8, loop_head);
+  ASM1(jmp_label, LABEL_STRING_LOOP_HEAD);
 
-  BRANCH_TARGET(post_loop);
+  ASM1(define_label, LABEL_POST_STRING_LOOP);
 
   // Populate the result
 
@@ -300,7 +316,7 @@ static int compile_string_loop(assembler_t *as, regex_t *regex, const allocator_
   }
 
   // Don't fall through to the next case
-  BRANCH(jmp_i8, skip1);
+  ASM1(jmp_label, LABEL_PRE_EPILOGUE);
 
   BRANCH_TARGET(n_pointers_nonzero);
 
@@ -308,23 +324,19 @@ static int compile_string_loop(assembler_t *as, regex_t *regex, const allocator_
   // regex->n_capturing_groups
 
   ASM2(cmp64_mem_i8, M_MATCHED_STATE, -1);
-  BRANCH(je_i8, no_match);
+  ASM2(jcc_label, JCC_JE, LABEL_NO_MATCH);
 
   // The regex matched, and M_MATCHED_STATE contains the state of the matching thread
   // FIXME: implement this
 
-  // Don't fall through to the next case
-  BRANCH(jmp_i8, skip2);
+  ASM1(jmp_label, LABEL_PRE_EPILOGUE);
 
-  BRANCH_TARGET(no_match);
+  ASM1(define_label, LABEL_NO_MATCH);
 
   // The regex did not match
   // FIXME: implement this
 
-  // We need both of these, because the macro-based branch system can't encode two branches to the
-  // same "label"
-  BRANCH_TARGET(skip1);
-  BRANCH_TARGET(skip2);
+  ASM1(define_label, LABEL_PRE_EPILOGUE);
 
   // Set the return value to CREX_OK
   assert(CREX_OK == 0);
@@ -337,7 +349,7 @@ static int compile_string_loop(assembler_t *as, regex_t *regex, const allocator_
 
 WARN_UNUSED_RESULT static int
 compile_state_list_loop(assembler_t *as, size_t n_flags, const allocator_t *allocator) {
-  ASM2(mov32_reg_i32, R_PREDECESSOR, -1);
+  ASM2(mov64_reg_i32, R_PREDECESSOR, -1);
   ASM2(mov64_reg_mem, R_STATE, M_HEAD);
 
   if (n_flags <= 64) {
@@ -347,12 +359,44 @@ compile_state_list_loop(assembler_t *as, size_t n_flags, const allocator_t *allo
     assert(0);
   }
 
+  // FIXME: handle the case where we already have a match (w.r.t. pushing the initial state)
+  ASM2(mov32_mem_i32, M_INITIAL_STATE_PUSHED, 0);
+
+  ASM1(define_label, LABEL_STATE_LOOP_HEAD);
+
   ASM2(cmp64_reg_i8, R_STATE, -1);
-  BRANCH(je_i8, post_loop);
+  ASM2(jcc_label, JCC_JNE, LABEL_HAVE_STATE);
 
-  // FIXME: push the initial state when necessary
+  // We've reached the end of the list. If we have not yet pushed the initial state, push it and
+  // continue; otherwise, break
+  ASM2(bts32_mem_u8, M_INITIAL_STATE_PUSHED, 0);
+  ASM2(jcc_label, JCC_JC, LABEL_POST_STATE_LOOP);
 
-  BACKWARDS_BRANCH_TARGET(loop_head);
+  ASM1(call_label, LABEL_ALLOC_STATE_BLOCK);
+
+  // R_SCRATCH contains a handle pointing to a newly-allocated state
+
+  ASM2(mov64_reg_reg, R_STATE, R_SCRATCH);
+
+  ASM2(lea64_reg_label, R_SCRATCH_2, INSTR_LABEL(0));
+
+  // Set the successor to HANDLE_NULL
+  ASM2(mov64_mem_i32, M_DEREF_HANDLE(R_STATE), -1);
+
+  // Set the instruction pointer to the start of the regex program
+  ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8), R_SCRATCH_2);
+
+  // FIXME: initialize pointer buffer
+
+  // Point the incoming pointer at the new state
+  // FIXME: kill M_HEAD, put the head in the buffer instead to avoid this cmov nonsense
+  ASM2(lea64_reg_mem, R_SCRATCH, M_HEAD);
+  ASM2(lea64_reg_mem, R_SCRATCH_2, M_DEREF_HANDLE(R_PREDECESSOR));
+  ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
+  ASM2(cmovne64_reg_reg, R_SCRATCH, R_SCRATCH_2);
+  ASM2(mov64_mem_reg, M_INDIRECT_REG(R_SCRATCH), R_STATE);
+
+  ASM1(define_label, LABEL_HAVE_STATE);
 
   // Resume execution of the regex program from where the state last left off
   ASM1(jmp_mem, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8));
@@ -382,32 +426,30 @@ compile_state_list_loop(assembler_t *as, size_t n_flags, const allocator_t *allo
   // Proceed to the next state
   ASM2(mov64_reg_reg, R_STATE, R_SCRATCH);
 
-  // Calculate the address of the incoming pointer to the removed state (i.e. the address of
-  // M_HEAD if R_PREDECESSOR is HANDLE_NULL, or the address of the next-pointer of R_PREDECESSOR
-  // otherwise)
-
-  ASM2(lea64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_PREDECESSOR));
-  ASM2(lea64_reg_mem, R_SCRATCH_2, M_HEAD);
-
+  // Point the incoming pointer at the next state (thereby removing the state from the list)
+  // FIXME: remove nonsense here too
+  ASM2(lea64_reg_mem, R_SCRATCH, M_HEAD);
+  ASM2(lea64_reg_mem, R_SCRATCH_2, M_DEREF_HANDLE(R_PREDECESSOR));
   ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
-  ASM2(cmove64_reg_reg, R_SCRATCH, R_SCRATCH_2);
-
-  // Set the incoming pointer to point to the next state
+  ASM2(cmovne64_reg_reg, R_SCRATCH, R_SCRATCH_2);
   ASM2(mov64_mem_reg, M_INDIRECT_REG(R_SCRATCH), R_STATE);
 
-  // Jump directly to the loop head, skipping the proceeding case
-  BACKWARDS_BRANCH(jmp_i8, loop_head);
+  // We jmp unconditionally to the loop head, because even if we've reached the end of the list we
+  // may need to push the initial state. This skips the keep case
+  ASM1(jmp_label, LABEL_STATE_LOOP_HEAD);
 
   ASM1(define_label, LABEL_KEEP_STATE);
 
+  // R_SCRATCH contains the address at which to resume next time
+  ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8), R_SCRATCH);
+
   // Proceed to the next state
-  ASM2(mov64_reg_mem, R_STATE, M_DEREF_HANDLE(R_STATE));
+  ASM2(mov64_reg_reg, R_PREDECESSOR, R_STATE);
+  ASM2(mov64_reg_mem, R_STATE, M_DEREF_HANDLE(R_PREDECESSOR));
 
-  // We jmp unconditionally to the loop head, because even if we've reached the end of the list we
-  // may need to push the initial state
-  BACKWARDS_BRANCH(jmp_i8, loop_head);
+  ASM1(jmp_label, LABEL_STATE_LOOP_HEAD);
 
-  BRANCH_TARGET(post_loop);
+  ASM1(define_label, LABEL_POST_STATE_LOOP);
 
   return 1;
 }
@@ -415,7 +457,14 @@ compile_state_list_loop(assembler_t *as, size_t n_flags, const allocator_t *allo
 static int compile_epilogue(assembler_t *as, const allocator_t *allocator) {
   ASM1(define_label, LABEL_EPILOGUE);
 
-  ASM2(add64_reg_i8, RSP, STACK_FRAME_SIZE);
+  ASM2(add64_reg_i8, RSP, STACK_FRAME_SIZE - 8);
+
+  // Pop context pointer
+  ASM1(pop64_reg, R_SCRATCH_2);
+
+  // Write buffer and capacity back into the context
+  ASM2(mov64_mem_reg, M_INDIRECT_REG_DISP(R_SCRATCH_2, offsetof(context_t, buffer)), R_BUFFER);
+  ASM2(mov64_mem_reg, M_INDIRECT_REG_DISP(R_SCRATCH_2, offsetof(context_t, capacity)), R_CAPACITY);
 
   // Pop calle-saved registers; careful of overflow
   for (reg_t reg = R15;; reg--) {
@@ -574,6 +623,8 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
     }
   }
 
+  // FIXME: jump to the program epilogue on error
+
   ASM0(ret);
 
   assert(stack_offset == 8);
@@ -585,12 +636,11 @@ WARN_UNUSED_RESULT static int
 compile_push_state_copy(assembler_t *as, size_t n_capturing_groups, const allocator_t *allocator) {
   ASM1(define_label, LABEL_PUSH_STATE_COPY);
 
-  // R_SCRATCH_2 contains the instruction pointer for the new state. We use R_SCRATCH_2 rather than
-  // R_SCRATCH to save a mov; the call to LABEL_ALLOC_STATE_BLOCK preserves R_SCRATCH_2
-
-  ASM1(call_label, LABEL_ALLOC_STATE_BLOCK);
-
-  // R_SCRATCH contains a handle corresponding to a newly-allocated state block
+  // We assume that:
+  // - R_SCRATCH contains a handle corresponding to a newly-allocated state block
+  // - R_SCRATCH_2 contains the instruction pointer for the new state
+  // i.e. we foist the problem of calling LABEL_ALLOC_STATE_BLOCK onto the caller. This makes
+  // managing the stack simpler
 
   // Populate the instruction pointer
   ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 8), R_SCRATCH_2);
@@ -741,10 +791,10 @@ static int compile_bytecode_instruction(assembler_t *as,
 
     BRANCH_TARGET(bof);
 
+    ASM2(xor32_reg_reg, R_SCRATCH_2, R_SCRATCH_2);
+
     ASM2(cmp32_reg_i8, R_CHARACTER, -1);
     BRANCH(je_i8, eof);
-
-    ASM2(xor32_reg_reg, R_SCRATCH_2, R_SCRATCH_2);
 
     ASM2(bt32_mem_reg, word_class, R_CHARACTER);
     ASM1(setc8_reg, R_SCRATCH_2);
@@ -805,7 +855,9 @@ static int compile_bytecode_instruction(assembler_t *as,
       assert(0);
     }
 
-    // LABEL_PUSH_STATE_COPY accepts an instruction pointer in R_SCRATCH_2
+    // LABEL_PUSH_STATE_COPY accepts a state handle in R_SCRATCH and an instruction pointer in
+    // R_SCRATCH_2
+    ASM1(call_label, LABEL_ALLOC_STATE_BLOCK);
     ASM2(lea64_reg_label, R_SCRATCH_2, passive);
     ASM1(call_label, LABEL_PUSH_STATE_COPY);
 
@@ -868,7 +920,7 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
   BRANCH(jne_i8, n_pointers_nonzero);
 
   // R_N_POINTERS == 0, i.e. we're performing a boolean search. M_RESULT is a pointer to an int
-  ASM2(mov32_reg_mem, R_SCRATCH, M_RESULT);
+  ASM2(mov64_reg_mem, R_SCRATCH, M_RESULT);
 
   assert(sizeof(int) == 4 || sizeof(int) == 8);
 

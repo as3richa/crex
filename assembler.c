@@ -339,6 +339,8 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
 
   // Multi-pass label optimization
 
+  size_t prev_shrinkage = 0;
+
   for (;;) {
     size_t shrinkage = 0;
 
@@ -348,7 +350,9 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
       switch (use->type) {
       case LU_DEFINITION: {
         // Adjust our best estimate of the label value
-        label_values[use->label] -= shrinkage;
+        if (shrinkage != 0) {
+          label_values[use->label] = use->offset - shrinkage;
+        }
         break;
       }
 
@@ -357,12 +361,15 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
         // When encoded with a relative operand, jcc and jmp are 2 bytes in their short form and
         // 6 or 5 bytes respectively in their near form
 
+        const size_t gain = (use->type == LU_JCC) ? 4 : 3;
+
         // If the jmp/jcc is already short, there's no further optimization to do
         if (use->is_short) {
+          shrinkage += gain;
           break;
         }
 
-        const size_t origin = use->offset + 2;
+        const size_t origin = use->offset - shrinkage + 2;
         size_t target = label_values[use->label];
 
         // Assert that the label was actually defined
@@ -371,7 +378,7 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
         // If the target follows the origin, the act of shrinking the instruction encoding would
         // cause the target to move
         if (target > origin) {
-          target -= (use->type == LU_JCC) ? 4 : 3;
+          target -= gain;
         }
 
         // There's no practical difference between an allocation failure and an excessively-large
@@ -385,7 +392,7 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
 
         if (-128 <= displacement && displacement <= 127) {
           use->is_short = 1;
-          shrinkage += (use->type == LU_JCC) ? 4 : 3;
+          shrinkage += gain;
         }
 
         break;
@@ -404,9 +411,11 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
     }
 
     // Quit after the first pass that yielded no improvement
-    if (shrinkage == 0) {
+    if (shrinkage == prev_shrinkage) {
       break;
     }
+
+    prev_shrinkage = shrinkage;
   }
 
   assert(n_uses > 0);
@@ -525,6 +534,8 @@ resolve_assembler_labels(assembler_t *as, size_t n_labels, const allocator_t *al
     memmove(code, as->code + begin, end - begin);
     code += end - begin;
   }
+
+  FREE(allocator, label_values);
 
   // Truncate the assembler to the correct size
   resize_assembler(as, code);

@@ -11,7 +11,7 @@ int main(void) {
     return 1;
   }
 
-  const char *pattern = "a";
+  const char *pattern = "\\Aa{2,3}\\z";
   crex_regex_t *regex = crex_compile_str(&status, pattern);
 
   if (regex == NULL) {
@@ -19,17 +19,19 @@ int main(void) {
     return 1;
   }
 
-  const char *str = "a";
+  const char *str = "aaaaa";
 
-  int is_match;
+  for (size_t i = 0; i <= 5; i++) {
+    int is_match;
 
-  if (crex_is_match_str(&is_match, context, regex, str) != CREX_OK) {
-    crex_destroy_context(context);
-    crex_destroy_regex(regex);
-    return 1;
+    if (crex_is_match(&is_match, context, regex, str, i) != CREX_OK) {
+      crex_destroy_context(context);
+      crex_destroy_regex(regex);
+      return 1;
+    }
+
+    printf("%d\n", is_match);
   }
-
-  printf("%d\n", is_match);
 
   crex_destroy_context(context);
   crex_destroy_regex(regex);
