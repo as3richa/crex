@@ -111,10 +111,10 @@ WARN_UNUSED_RESULT static int
 compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *allocator);
 
 WARN_UNUSED_RESULT static int
-compile_string_loop(assembler_t *as, regex_t *regex, const allocator_t *allocator);
+compile_string_loop(assembler_t *as, const regex_t *regex, const allocator_t *allocator);
 
 WARN_UNUSED_RESULT static int
-compile_state_list_loop(assembler_t *as, size_t n_flags, const allocator_t *allocator);
+compile_state_list_loop(assembler_t *as, const regex_t *regex, const allocator_t *allocator);
 
 WARN_UNUSED_RESULT static int compile_epilogue(assembler_t *as, const allocator_t *allocator);
 
@@ -268,7 +268,8 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
   return 1;
 }
 
-static int compile_string_loop(assembler_t *as, regex_t *regex, const allocator_t *allocator) {
+static int
+compile_string_loop(assembler_t *as, const regex_t *regex, const allocator_t *allocator) {
   ASM2(mov32_reg_i32, R_CHARACTER, -1);
 
   // Loop over the string, up to and including the EOF position
@@ -293,7 +294,7 @@ static int compile_string_loop(assembler_t *as, regex_t *regex, const allocator_
   BRANCH_TARGET(eof);
 
   // Process the list of states
-  if (!compile_state_list_loop(as, regex->n_flags, allocator)) {
+  if (!compile_state_list_loop(as, regex, allocator)) {
     return 0;
   }
 
@@ -359,11 +360,11 @@ static int compile_string_loop(assembler_t *as, regex_t *regex, const allocator_
 }
 
 WARN_UNUSED_RESULT static int
-compile_state_list_loop(assembler_t *as, size_t n_flags, const allocator_t *allocator) {
+compile_state_list_loop(assembler_t *as, const regex_t *regex, const allocator_t *allocator) {
   ASM2(mov64_reg_i32, R_PREDECESSOR, -1);
   ASM2(mov64_reg_mem, R_STATE, M_HEAD);
 
-  if (n_flags <= 64) {
+  if (regex->n_flags <= 64) {
     ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
   } else {
     // FIXME: wipe flag bitmap
@@ -389,6 +390,14 @@ compile_state_list_loop(assembler_t *as, size_t n_flags, const allocator_t *allo
 
   ASM2(mov64_reg_reg, R_STATE, R_SCRATCH);
 
+  // Point the incoming pointer at the new state
+  // FIXME: kill M_HEAD, put the head in the buffer instead to avoid this cmov nonsense
+  ASM2(lea64_reg_mem, R_SCRATCH, M_HEAD);
+  ASM2(lea64_reg_mem, R_SCRATCH_2, M_DEREF_HANDLE(R_PREDECESSOR));
+  ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
+  ASM2(cmovne64_reg_reg, R_SCRATCH, R_SCRATCH_2);
+  ASM2(mov64_mem_reg, M_INDIRECT_REG(R_SCRATCH), R_STATE);
+
   ASM2(lea64_reg_label, R_SCRATCH_2, INSTR_LABEL(0));
 
   // Set the successor to HANDLE_NULL
@@ -397,15 +406,17 @@ compile_state_list_loop(assembler_t *as, size_t n_flags, const allocator_t *allo
   // Set the instruction pointer to the start of the regex program
   ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8), R_SCRATCH_2);
 
-  // FIXME: initialize pointer buffer
+  // Initialize the pointer buffer. Recall that R_N_POINTERS is either 0, 2, or 2 *
+  // regex->n_capturing_groups
+  for (size_t i = 0; i < 2 * regex->n_capturing_groups; i++) {
+    if (i == 0 || i == 2) {
+      ASM2(cmp64_reg_i8, R_N_POINTERS, i);
+      ASM2(jcc_label, JCC_JE, LABEL_HAVE_STATE);
+    }
 
-  // Point the incoming pointer at the new state
-  // FIXME: kill M_HEAD, put the head in the buffer instead to avoid this cmov nonsense
-  ASM2(lea64_reg_mem, R_SCRATCH, M_HEAD);
-  ASM2(lea64_reg_mem, R_SCRATCH_2, M_DEREF_HANDLE(R_PREDECESSOR));
-  ASM2(cmp64_reg_i8, R_PREDECESSOR, -1);
-  ASM2(cmovne64_reg_reg, R_SCRATCH, R_SCRATCH_2);
-  ASM2(mov64_mem_reg, M_INDIRECT_REG(R_SCRATCH), R_STATE);
+    assert((size_t)NULL == 0);
+    ASM2(mov64_mem_i32, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 16 + 8 * i), 0);
+  }
 
   ASM1(define_label, LABEL_HAVE_STATE);
 
@@ -700,7 +711,7 @@ compile_push_state_copy(assembler_t *as, size_t n_capturing_groups, const alloca
 
   BRANCH_TARGET(n_pointers_not_two);
 
-  // R_N_POINTERS is exactly 2 * n_capturing groups
+  // R_N_POINTERS is exactly 2 * n_capturing groups.
 
   for (size_t i = 2; i < 2 * n_capturing_groups; i++) {
     ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8 * (2 + i)));
