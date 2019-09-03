@@ -401,11 +401,13 @@ compile_state_list_loop(assembler_t *as, size_t n_flags, const allocator_t *allo
   // Resume execution of the regex program from where the state last left off
   ASM1(jmp_mem, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8));
 
-  // Control flow comes back to: LABEL_DESTROY_STATE, if a character, character class, anchor,
-  // or bit test failed and the state needs to be removed and freed; LABEL_REMOVE_STATE, if the
-  // state matched and must be removed from the list but not destroyed; LABEL_KEEP_STATE, if the
-  // state should be kept for the next iteration of the outer loop; the function epilogue, in
-  // the case of a match on a boolean search or in the case of an error
+  // Control flow comes back to:
+  // - LABEL_DESTROY_STATE, if a character, character class, anchor, or bit test failed and the
+  // state needs to be removed and freed
+  // - LABEL_REMOVE_STATE, if the state matched and must be removed from the list but not destroyed
+  // - LABEL_KEEP_STATE, if the state should be kept for the next iteration of the outer loop
+  // - LABEL_EPILOGUE, in the case of a match on a boolean search or in the case of an allocation
+  // error
 
   ASM1(define_label, LABEL_DESTROY_STATE);
 
@@ -581,10 +583,21 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
   // Call memcpy, with the first parameter being the new buffer, the second being the old
   // buffer, and the third being the total space allocated in the old buffer (i.e.
   // R_BUMP_POINTER)
+
   ASM2(mov64_reg_reg, RDI, R_SCRATCH);
   ASM2(mov64_reg_reg, RSI, R_BUFFER);
   ASM2(mov64_reg_reg, RDX, R_BUMP_POINTER);
-  ASM2(mov64_reg_u64, R_SCRATCH, (size_t)memcpy);
+
+  // Save a few bytes by choosing the smallest usable mov
+
+  const uint64_t memcpy_value = (uint64_t)memcpy;
+
+  if (memcpy_value <= 0xffffffffLU) {
+    ASM2(mov32_reg_i32, R_SCRATCH, memcpy_value);
+  } else {
+    ASM2(mov64_reg_u64, R_SCRATCH, memcpy_value);
+  }
+
   ASM1(call_reg, R_SCRATCH);
 
   // Call the allocator's free function, with the first parameter being the allocator
