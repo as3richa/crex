@@ -366,13 +366,20 @@ compile_state_list_loop(assembler_t *as, const regex_t *regex, const allocator_t
 
   ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
 
-  if (regex->n_flags > 0) {
+  if (regex->n_flags > 64) {
     // FIXME: wipe flag bitmap
     assert(0);
   }
 
-  // FIXME: handle the case where we already have a match (w.r.t. pushing the initial state)
+  // If we've already found a match, we needn't push the initial state; clear M_INITIAL_STATE_PUSHED
+  // only if we haven't found a match
+
+  ASM2(cmp64_mem_i8, M_MATCHED_STATE, -1);
+  BRANCH(jne_i8, match_found);
+
   ASM2(mov32_mem_i32, M_INITIAL_STATE_PUSHED, 0);
+
+  BRANCH_TARGET(match_found);
 
   ASM1(define_label, LABEL_STATE_LOOP_HEAD);
 
@@ -670,6 +677,7 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
 
   // Discard the return address and jump directly to the function epilogue on allocation failure
   ASM2(add64_reg_i8, RSP, 8);
+  ASM2(mov32_reg_i32, R_SCRATCH, CREX_E_NOMEM);
   ASM1(jmp_label, LABEL_EPILOGUE);
 
   stack_offset -= 8;
@@ -1023,6 +1031,9 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
   BACKWARDS_BRANCH(jne_i8, loop_head);
 
   BRANCH_TARGET(post_loop);
+
+  // Prevent the initial state from being pushed in the future
+  ASM2(mov32_mem_i32, M_INITIAL_STATE_PUSHED, 1);
 
   // Remove the state from the list, but don't destroy it
   ASM2(mov64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_STATE));
