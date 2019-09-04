@@ -99,8 +99,9 @@ enum {
   LABEL_STATE_LOOP_HEAD,
   LABEL_HAVE_STATE,
   LABEL_POST_STATE_LOOP,
-  LABEL_NO_MATCH,
-  LABEL_PRE_EPILOGUE,
+  LABEL_FIND_OR_GROUPS_CODA,
+  LABEL_FIND_OR_GROUPS_NO_MATCH,
+  LABEL_RETURN_OK,
   N_STATIC_LABELS
 };
 
@@ -311,13 +312,13 @@ compile_string_loop(assembler_t *as, const regex_t *regex, const allocator_t *al
 
   // Populate the result
 
+  ASM2(mov64_reg_mem, R_SCRATCH, M_RESULT);
+
   ASM2(cmp64_reg_i8, R_N_POINTERS, 0);
-  BRANCH(jne_i8, n_pointers_nonzero);
+  ASM2(jcc_label, JCC_JNE, LABEL_FIND_OR_GROUPS_CODA);
 
   // R_N_POINTERS == 0, i.e. we're performing a boolean search. Because boolean searches
   // short-circuit on match, if we reach this point there was no match. Set the result equal to zero
-
-  ASM2(mov64_reg_mem, R_SCRATCH, M_RESULT);
 
   assert(sizeof(int) == 4 || sizeof(int) == 8);
 
@@ -328,27 +329,50 @@ compile_string_loop(assembler_t *as, const regex_t *regex, const allocator_t *al
   }
 
   // Don't fall through to the next case
-  ASM1(jmp_label, LABEL_PRE_EPILOGUE);
+  ASM1(jmp_label, LABEL_RETURN_OK);
 
-  BRANCH_TARGET(n_pointers_nonzero);
+  ASM1(define_label, LABEL_FIND_OR_GROUPS_CODA);
 
-  // Two possibilities: R_N_POINTERS is exactly 2, or R_N_POINTERS is exactly 2 *
-  // regex->n_capturing_groups
+  // Two possibilities: R_N_POINTERS is exactly 2 (in the case of a find), or R_N_POINTERS is
+  // exactly 2 * regex->n_capturing_groups (in the case of a group query)
 
-  ASM2(cmp64_mem_i8, M_MATCHED_STATE, -1);
-  ASM2(jcc_label, JCC_JE, LABEL_NO_MATCH);
+  ASM2(mov64_reg_mem, R_SCRATCH_2, M_MATCHED_STATE);
 
-  // The regex matched, and M_MATCHED_STATE contains the state of the matching thread
-  // FIXME: implement this
+  ASM2(cmp64_reg_i8, R_SCRATCH_2, -1);
+  ASM2(jcc_label, JCC_JE, LABEL_FIND_OR_GROUPS_NO_MATCH);
 
-  ASM1(jmp_label, LABEL_PRE_EPILOGUE);
+  // Copy the pointer buffer of the matched state into the result
 
-  ASM1(define_label, LABEL_NO_MATCH);
+  for (size_t i = 0; i < 2 * regex->n_capturing_groups; i++) {
+    if (i == 2) {
+      ASM2(cmp64_reg_i8, R_N_POINTERS, 2);
+      ASM2(jcc_label, JCC_JE, LABEL_RETURN_OK);
+    }
 
-  // The regex did not match
-  // FIXME: implement this
+    // Clobber R_PREDECESSOR; we won't need it again
 
-  ASM1(define_label, LABEL_PRE_EPILOGUE);
+    ASM2(mov64_reg_mem, R_PREDECESSOR, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH_2), 16 + 8 * i));
+    ASM2(mov64_mem_reg, M_DISPLACED(M_INDIRECT_REG(R_SCRATCH), 8 * i), R_PREDECESSOR);
+  }
+
+  // Don't fall through
+  ASM1(jmp_label, LABEL_RETURN_OK);
+
+  ASM1(define_label, LABEL_FIND_OR_GROUPS_NO_MATCH);
+
+  // Fill the result with NULLs
+
+  for (size_t i = 0; i < 2 * regex->n_capturing_groups; i++) {
+    if (i == 2) {
+      ASM2(cmp64_reg_i8, R_N_POINTERS, 2);
+      ASM2(jcc_label, JCC_JE, LABEL_RETURN_OK);
+    }
+
+    assert((size_t)NULL == 0);
+    ASM2(mov64_mem_i32, M_DISPLACED(M_INDIRECT_REG(R_SCRATCH), 8 * i), 0);
+  }
+
+  ASM1(define_label, LABEL_RETURN_OK);
 
   // Set the return value to CREX_OK
   assert(CREX_OK == 0);
@@ -377,6 +401,7 @@ compile_state_list_loop(assembler_t *as, const regex_t *regex, const allocator_t
   ASM2(cmp64_mem_i8, M_MATCHED_STATE, -1);
   BRANCH(jne_i8, match_found);
 
+  // FIXME: consider skipping this if R_N_POINTERS == 0
   ASM2(mov32_mem_i32, M_INITIAL_STATE_PUSHED, 0);
 
   BRANCH_TARGET(match_found);
@@ -422,7 +447,7 @@ compile_state_list_loop(assembler_t *as, const regex_t *regex, const allocator_t
     }
 
     assert((size_t)NULL == 0);
-    ASM2(mov64_mem_i32, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 16 + 8 * i), 0);
+    ASM2(mov64_mem_i32, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 16 + 8 * i), 0);
   }
 
   ASM1(define_label, LABEL_HAVE_STATE);
@@ -476,11 +501,13 @@ compile_state_list_loop(assembler_t *as, const regex_t *regex, const allocator_t
 
   // Proceed to the next state
   ASM2(mov64_reg_reg, R_PREDECESSOR, R_STATE);
-  ASM2(mov64_reg_mem, R_STATE, M_DEREF_HANDLE(R_PREDECESSOR));
+  ASM2(mov64_reg_mem, R_STATE, M_DEREF_HANDLE(R_STATE));
 
   ASM1(jmp_label, LABEL_STATE_LOOP_HEAD);
 
   ASM1(define_label, LABEL_POST_STATE_LOOP);
+
+  // FIXME: short-circuit if list is empty and a match was found?
 
   return 1;
 }
@@ -720,7 +747,7 @@ compile_push_state_copy(assembler_t *as, size_t n_capturing_groups, const alloca
   ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 16), R_SCRATCH_2);
 
   ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 24));
-  ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 24), R_SCRATCH_2);
+  ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 16 + 8), R_SCRATCH_2);
 
   ASM2(cmp64_reg_i8, R_N_POINTERS, 2);
   BRANCH(jne_i8, n_pointers_not_two);
@@ -732,8 +759,8 @@ compile_push_state_copy(assembler_t *as, size_t n_capturing_groups, const alloca
   // R_N_POINTERS is exactly 2 * n_capturing groups.
 
   for (size_t i = 2; i < 2 * n_capturing_groups; i++) {
-    ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 8 * (2 + i)));
-    ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 8 * (2 + i)), R_SCRATCH_2);
+    ASM2(mov64_reg_mem, R_SCRATCH_2, M_DISPLACED(M_DEREF_HANDLE(R_STATE), 16 + 8 * i));
+    ASM2(mov64_mem_reg, M_DISPLACED(M_DEREF_HANDLE(R_SCRATCH), 16 + 8 * i), R_SCRATCH_2);
   }
 
   ASM0(ret);
@@ -1015,6 +1042,8 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
   // Deallocate any successors to R_STATE (because any matches therein would be of lower
   // priority)
 
+  // FIXME: this loop looks extremely wrong
+
   ASM2(mov64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_STATE));
 
   // Loop until the end of the list
@@ -1023,9 +1052,15 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
 
   BACKWARDS_BRANCH_TARGET(loop_head);
 
+  // Cache the successor's successor
+  ASM2(mov64_reg_mem, R_SCRATCH_2, M_DEREF_HANDLE(R_SCRATCH));
+
   // Chain the successor onto the front of the freelist
   ASM2(mov64_mem_reg, M_DEREF_HANDLE(R_SCRATCH), R_FREELIST);
   ASM2(mov64_reg_reg, R_FREELIST, R_SCRATCH);
+
+  // Proceed to the following state
+  ASM2(mov64_reg_reg, R_SCRATCH, R_SCRATCH_2);
 
   ASM2(cmp64_reg_i8, R_SCRATCH, -1);
   BACKWARDS_BRANCH(jne_i8, loop_head);
@@ -1035,8 +1070,8 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
   // Prevent the initial state from being pushed in the future
   ASM2(mov32_mem_i32, M_INITIAL_STATE_PUSHED, 1);
 
-  // Remove the state from the list, but don't destroy it
-  ASM2(mov64_reg_mem, R_SCRATCH, M_DEREF_HANDLE(R_STATE));
+  // Remove the state from the list, but don't destroy it. R_SCRATCH holds the successor
+  ASM2(mov64_reg_i32, R_SCRATCH, -1);
   ASM1(jmp_label, LABEL_REMOVE_STATE);
 
   return 1;

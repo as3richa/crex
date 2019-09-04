@@ -147,16 +147,15 @@ int main(int argc, char **argv) {
       return 1;
     }
 
-    /*
-        if (crex_find(&find_result, context, regex, str, size) != CREX_OK) {
-          // FIXME
-          return 1;
-        }
+    if (crex_find(&find_result, context, regex, str, size) != CREX_OK) {
+      // FIXME
+      return 1;
+    }
 
-        if (crex_match_groups(groups, context, regex, str, size) != CREX_OK) {
-          // FIXME
-          return 1;
-        } */
+    if (crex_match_groups(groups, context, regex, str, size) != CREX_OK) {
+      // FIXME
+      return 1;
+    }
 
     if (testcase->is_match && !is_match) {
       printf(RED("%04zu: expected /%s/ to match %s, but it did not\n"), i, pattern, quoted_str);
@@ -170,63 +169,66 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    /*
-        if (!is_match) {
-          assert(find_result.begin == NULL && find_result.end == NULL);
+    if (!is_match) {
+      assert(find_result.begin == NULL && find_result.end == NULL);
 
-          for (size_t j = 0; j < n_capturing_groups; j++) {
-            assert(groups[j].begin == NULL && groups[j].end == NULL);
-          }
+      for (size_t j = 0; j < n_capturing_groups; j++) {
+        assert(groups[j].begin == NULL && groups[j].end == NULL);
+      }
 
-          printf(GREEN("%04zu: /%s/ does not match %s; okay\n"), i, pattern, quoted_str);
+      printf(GREEN("%04zu: /%s/ does not match %s; okay\n"), i, pattern, quoted_str);
 
-          continue;
-        }
+      continue;
+    }
 
-        assert(find_result.begin != NULL && find_result.end != NULL);
-        assert(find_result.begin == groups[0].begin && find_result.end == groups[0].end);
+    assert(find_result.begin != NULL && find_result.end != NULL);
+    assert(find_result.begin == groups[0].begin && find_result.end == groups[0].end);
 
-        int okay = 1;
+    int okay = 1;
 
-        for (size_t j = 0; j < n_capturing_groups; j++) {
-          const crex_match_t *slice = &groups[j];
-          const crex_match_t expected = {str + testcase->groups[j].begin,
-                                         str + testcase->groups[j].end};
+    for (size_t j = 0; j < n_capturing_groups; j++) {
+      const crex_match_t *slice = &groups[j];
+      const crex_match_t expected = {str + testcase->groups[j].begin,
+                                     str + testcase->groups[j].end};
 
-          if (slice->begin == expected.begin && slice->end == expected.end) {
-            continue;
-          }
+      if (slice->begin == expected.begin && slice->end == expected.end) {
+        continue;
+      }
 
-          char quoted_slice[MAX_QUOTED_LENGTH];
-          quote(quoted_slice, slice->begin, slice->end - slice->begin);
+      char quoted_slice[MAX_QUOTED_LENGTH];
+      quote(quoted_slice, slice->begin, slice->end - slice->begin);
 
-          char quoted_expectation[MAX_QUOTED_LENGTH];
-          quote(quoted_expectation, expected.begin, expected.end - expected.begin);
+      char quoted_expectation[MAX_QUOTED_LENGTH];
+      quote(quoted_expectation, expected.begin, expected.end - expected.begin);
 
-          const size_t match_position = slice->begin - str;
-          const size_t expected_position = expected.begin - str;
+      const size_t match_position = slice->begin - str;
+      const size_t expected_position = expected.begin - str;
 
-          printf(RED("%04zu: expected the %zu%s group of /%s/ "), i, j, inflect(j), pattern);
+      printf(RED("%04zu: expected the %zu%s group of /%s/ "), i, j, inflect(j), pattern);
 
-          if (slice->begin == NULL) {
-            printf(RED("to match %s at position %zu, but it did not match\n"),
-                   quoted_expectation,
-                   expected_position);
-          } else if (expected.begin == NULL) {
-            printf(
-                RED("to not match, but it matched %s at position %zu\n"), quoted_slice,
-       match_position); } else { printf(RED("to match %s at position %zu, but it matched %s at
-       position %zu\n"), quoted_expectation, expected_position, quoted_slice, match_position);
-          }
+      if (slice->begin == NULL) {
+        printf(RED("to match %s at position %zu, but it did not match\n"),
+               quoted_expectation,
+               expected_position);
+      } else if (expected.begin == NULL) {
+        printf(
+            RED("to not match, but it matched %s at position %zu\n"), quoted_slice, match_position);
+      } else {
+        printf(RED("to match %s at position %zu, but it matched %s at position %zu\n"),
+               quoted_expectation,
+               expected_position,
+               quoted_slice,
+               match_position);
+      }
 
-          failures[n_failures++] = i;
-          okay = 0;
-          break;
-        }
+      failures[n_failures++] = i;
+      okay = 0;
+      break;
+    }
 
-        if (okay) {
-          printf(GREEN("%04zu: /%s/ matches %s; okay\n"), i, pattern, quoted_str);
-        } */
+    if (okay) {
+      printf(GREEN("%04zu: /%s/ matches %s; okay\n"), i, pattern, quoted_str);
+    }
   }
 
   if (n_failures != 0) {

@@ -6,7 +6,7 @@
 
 #include "crex.h"
 
-#define MAX_GROUPS 4096
+#define MAX_GROUPS 32
 
 crex_status_t crex_print_tokenization(const char *pattern, const size_t size, FILE *file);
 crex_status_t crex_print_parsetree(const char *pattern, const size_t size, FILE *file);
