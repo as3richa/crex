@@ -14,9 +14,20 @@
 #endif
 
 #if (defined(__GNUC__) || defined(__clang__))
+
 #define MAYBE_UNUSED __attribute__((unused))
+
+#define UNREACHABLE()                                                                              \
+  do {                                                                                             \
+    assert(0);                                                                                     \
+    __builtin_unreachable();                                                                       \
+  } while (0)
+
 #else
+
 #define MAYBE_UNUSED
+#define UNREACHABLE() assert(0)
+
 #endif
 
 // For brevity
@@ -27,7 +38,15 @@ typedef crex_status_t status_t;
 typedef crex_regex_t regex_t;
 #define WARN_UNUSED_RESULT CREX_WARN_UNUSED_RESULT
 
-typedef unsigned char char_class_t[32];
+static void safe_memcpy(void *destination, const void *source, size_t size) {
+  assert((destination != NULL && source != NULL) || size == 0);
+
+  if (size != 0) {
+    memcpy(destination, source, size);
+  }
+}
+
+#include "bytecode-compiler.h"
 
 struct crex_context {
   unsigned char *buffer;
@@ -40,19 +59,23 @@ struct crex_regex {
   size_t n_classes;
   size_t n_flags;
 
-  size_t size;
-  unsigned char *bytecode;
-
   char_class_t *classes;
+
+  bytecode_t bytecode;
+
+#ifdef NATIVE_COMPILER
+  struct {
+    size_t size;
+    void *code;
+  } native_code;
+#endif
 
   void *allocator_context;
   void (*free)(void *, void *);
-
-#ifdef NATIVE_COMPILER
-  unsigned char *native_code;
-  size_t native_code_size;
-#endif
 };
+
+// FIXME: clean up this tire fire
+#include "serialization.c"
 
 // FIXME: put this somewhere smart
 #define NON_CAPTURING_GROUP SIZE_MAX
@@ -180,14 +203,6 @@ typedef union {
   size_t size;
   void *pointer;
 } size_or_pointer_t;
-
-static void safe_memcpy(void *destination, const void *source, size_t size) {
-  assert((destination != NULL && source != NULL) || size == 0);
-
-  if (size != 0) {
-    memcpy(destination, source, size);
-  }
-}
 
 #include "allocator.c"
 
@@ -408,21 +423,17 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
     return NULL;
   }
 
-  bytecode_t bytecode;
-  regex->n_flags = 0;
+  if (!compile_to_bytecode(&regex->bytecode, &regex->n_flags, tree, allocator)) {
+    *status = CREX_E_NOMEM;
 
-  *status = compile_to_bytecode(&bytecode, &regex->n_flags, tree, allocator);
-
-  destroy_parsetree(tree, allocator);
-
-  if (*status != CREX_OK) {
+    destroy_parsetree(tree, allocator);
     FREE(allocator, classes.buffer);
     FREE(allocator, regex);
+
     return NULL;
   }
 
-  regex->size = bytecode.size;
-  regex->bytecode = bytecode.bytecode;
+  destroy_parsetree(tree, allocator);
 
   regex->n_classes = classes.size;
   regex->classes = classes.buffer;
@@ -432,16 +443,14 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
   regex->free = allocator->free;
 
 #ifdef NATIVE_COMPILER
-
   *status = compile_to_native(regex, allocator);
 
   if (*status != CREX_OK) {
     FREE(allocator, regex->classes);
-    FREE(allocator, regex->bytecode);
+    FREE(allocator, regex->bytecode.code);
     FREE(allocator, regex);
     return NULL;
   }
-
 #endif
 
   return regex;
@@ -474,11 +483,11 @@ PUBLIC size_t crex_regex_n_capturing_groups(const regex_t *regex) {
 PUBLIC void crex_destroy_regex(regex_t *regex) {
   void *context = regex->allocator_context;
 
-  regex->free(context, regex->bytecode);
+  regex->free(context, regex->bytecode.code);
   regex->free(context, regex->classes);
 
 #ifdef NATIVE_COMPILER
-  munmap(regex->native_code, regex->native_code_size);
+  munmap(regex->native_code.code, regex->native_code.size);
 #endif
 
   regex->free(context, regex);
@@ -516,7 +525,7 @@ WARN_UNUSED_RESULT static status_t call_regex_native_code(void *result,
 #pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 
-  const native_function_t function = (native_function_t)(regex->native_code);
+  const native_function_t function = (native_function_t)(regex->native_code.code);
 
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -580,56 +589,12 @@ PUBLIC unsigned char *crex_dump_regex_with_allocator(status_t *status,
                                                      size_t *size,
                                                      const regex_t *regex,
                                                      const allocator_t *allocator) {
-  const size_t classes_size = sizeof(char_class_t) * regex->n_classes;
-
-  *size = 5 + 16 + regex->size + classes_size;
-
-  unsigned char *buffer = ALLOC(allocator, *size);
-
-  unsigned char *buf = buffer;
-
-  if (buffer == NULL) {
-    *status = CREX_E_NOMEM;
-    return NULL;
-  }
-
-  // Magic number
-  safe_memcpy(buffer, "crex", 4);
-  buffer += 4;
-
-  // Version byte
-  *(buffer++) = 0;
-
-  // Scalar elements
-  serialize_operand_le(buffer, regex->size, 4);
-  serialize_operand_le(buffer + 4, regex->n_capturing_groups, 4);
-  serialize_operand_le(buffer + 8, regex->n_classes, 4);
-  buffer += 16;
-
-  // Bytecode. Need to re-serialize each operand into little endian byte order
-
-  unsigned char *bytecode = regex->bytecode;
-  unsigned char *end = bytecode + regex->size;
-
-  while (bytecode != end) {
-    const size_t operand_size = VM_OPERAND_SIZE(*bytecode);
-
-    *(buffer++) = *(bytecode++);
-
-    const size_t operand = deserialize_operand(bytecode, operand_size);
-    serialize_operand_le(buffer, operand, operand_size);
-
-    buffer += operand_size;
-    bytecode += operand_size;
-  }
-
-  // Character classes. NB> a character class is just a blob of byes
-  safe_memcpy(buffer, regex->classes, classes_size);
-  buffer += classes_size;
-
-  assert(buffer == buf + *size);
-
-  return buf;
+  // FIXME: reimplement this later
+  (void)status;
+  (void)size;
+  (void)regex;
+  (void)allocator;
+  return NULL;
 }
 
 PUBLIC regex_t *crex_load_regex(status_t *status, unsigned char *buffer, size_t size) {
@@ -640,83 +605,12 @@ PUBLIC regex_t *crex_load_regex_with_allocator(status_t *status,
                                                unsigned char *buffer,
                                                size_t size,
                                                const allocator_t *allocator) {
-#ifndef NDEBUG
-  // For a sanity check
-  unsigned char *buf = buffer;
-#endif
-
-  // At minimum, the buffer must contain the magic number, version byte, and scalars
-  if (size < 5 + 16) {
-    // FIXME
-    return NULL;
-  }
-
-  regex_t *regex = ALLOC(allocator, sizeof(regex_t));
-
-  // Magic number
-  if (memcmp(buffer, "crex", 4) != 0) {
-    // FIXME
-    return NULL;
-  }
-  buffer += 4;
-
-  // Version byte
-  if (*(buffer++) != 0) {
-    // FIXME
-    return NULL;
-  }
-
-  // Scalars
-  regex->size = deserialize_operand_le(buffer, 4);
-  regex->n_capturing_groups = deserialize_operand_le(buffer + 4, 4);
-  regex->n_classes = deserialize_operand_le(buffer + 8, 4);
-  buffer += 16;
-
-  // Bytecode. Need to parse each operand as a little-endian number, then re-serialize it as a
-  // native integer
-
-  regex->bytecode = ALLOC(allocator, regex->size);
-
-  if (regex->bytecode == NULL) {
-    *status = CREX_E_NOMEM;
-    FREE(allocator, regex);
-    return NULL;
-  }
-
-  unsigned char *bytecode = regex->bytecode;
-  unsigned char *end = bytecode + regex->size;
-
-  while (bytecode != end) {
-    const size_t operand_size = VM_OPERAND_SIZE(*buffer);
-
-    *(bytecode++) = *(buffer++);
-
-    const size_t operand = deserialize_operand_le(buffer, operand_size);
-    serialize_operand(bytecode, operand, operand_size);
-
-    bytecode += operand_size;
-    buffer += operand_size;
-  }
-
-  // Character classes
-
-  const size_t classes_size = sizeof(char_class_t) * regex->n_classes;
-
-  regex->classes = ALLOC(allocator, classes_size);
-
-  if (regex->classes == NULL) {
-    *status = CREX_E_NOMEM;
-    FREE(allocator, regex->bytecode);
-    FREE(allocator, regex);
-  }
-
-  safe_memcpy(regex->classes, buffer, classes_size);
-  buffer += classes_size;
-
-  assert(buffer == buf + size);
-
-  *status = CREX_OK;
-  return regex;
+  // FIXME: reimplement this later
+  (void)status;
+  (void)buffer;
+  (void)size;
+  (void)allocator;
+  return NULL;
 }
 
 #include "debug.c"

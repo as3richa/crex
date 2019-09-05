@@ -334,26 +334,26 @@ print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *cla
 }
 
 void crex_print_bytecode(const regex_t *regex, FILE *file) {
-  unsigned char *bytecode = regex->bytecode;
+  unsigned char *code = regex->bytecode.code;
 
   for (;;) {
-    size_t i = bytecode - regex->bytecode;
-    assert(i <= regex->size);
+    size_t i = code - regex->bytecode.code;
+    assert(i <= regex->bytecode.size);
 
     fprintf(file, "%05zd", i);
 
-    if (i == regex->size) {
+    if (i == regex->bytecode.size) {
       fputc('\n', file);
       break;
     }
 
-    const unsigned char byte = *(bytecode++);
+    const unsigned char byte = *(code++);
 
     const unsigned char opcode = VM_OPCODE(byte);
     const size_t operand_size = VM_OPERAND_SIZE(byte);
 
-    const size_t operand = deserialize_operand(bytecode, operand_size);
-    bytecode += operand_size;
+    const size_t operand = deserialize_operand(code, operand_size);
+    code += operand_size;
 
     i += (1 + operand_size);
 
@@ -398,7 +398,7 @@ void crex_print_bytecode(const regex_t *regex, FILE *file) {
         destination = i + operand;
       }
 
-      assert(destination < regex->size);
+      assert(destination < regex->bytecode.size);
 
       fprintf(file, " %zu (=> %zu)\n", operand, destination);
 
@@ -422,7 +422,7 @@ void crex_print_bytecode(const regex_t *regex, FILE *file) {
 
 void crex_dump_native_code(const regex_t *regex, FILE *file) {
   // FIXME: check IO errors in this and other debug functions?
-  fwrite(regex->native_code, 1, regex->native_code_size, file);
+  fwrite(regex->native_code.code, 1, regex->native_code.size, file);
 }
 
 #endif

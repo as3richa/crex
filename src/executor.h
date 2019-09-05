@@ -53,7 +53,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
   // (tracking every instruction in a bitmap). In development, we can check the compiler's
   // correctness by also tracking execution naively
 
-  const size_t visited_size = bitmap_size_for_bits(regex->size);
+  const size_t visited_size = bitmap_size_for_bits(regex->bytecode.size);
   const handle_t visited = internal_allocator_alloc(allocator, visited_size);
 
   if (visited == HANDLE_NULL) {
@@ -116,7 +116,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
       int keep = 1;
 
       for (;;) {
-        if (instr_pointer == regex->size) {
+        if (instr_pointer == regex->bytecode.size) {
 
 #ifdef MATCH_BOOLEAN
           *is_match = 1;
@@ -149,7 +149,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 #endif
         }
 
-        const unsigned char byte = regex->bytecode[instr_pointer++];
+        const unsigned char byte = regex->bytecode.code[instr_pointer++];
 
         const unsigned char opcode = VM_OPCODE(byte);
         const size_t operand_size = VM_OPERAND_SIZE(byte);
@@ -157,8 +157,9 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
         // FIMXE: think harder about this
         assert(opcode == VM_TEST_AND_SET_FLAG || !bitmap_test_and_set(VISITED, instr_pointer - 1));
 
-        assert(instr_pointer <= regex->size - operand_size);
-        const size_t operand = deserialize_operand(regex->bytecode + instr_pointer, operand_size);
+        assert(instr_pointer <= regex->bytecode.size - operand_size);
+        const size_t operand =
+            deserialize_operand(regex->bytecode.code + instr_pointer, operand_size);
         instr_pointer += operand_size;
 
         if (opcode == VM_CHARACTER) {
@@ -239,8 +240,8 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
             break;
           }
 
-          assert(instr_pointer <= regex->size);
-          assert(split_pointer <= regex->size);
+          assert(instr_pointer <= regex->bytecode.size);
+          assert(split_pointer <= regex->bytecode.size);
 
           if (!state_list_push_copy(&list, state, split_pointer)) {
             return CREX_E_NOMEM;

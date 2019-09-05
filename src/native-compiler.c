@@ -141,7 +141,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const alloc
   create_assembler(&as);
 
   // Preallocate static labels and bytecode instruction labels
-  for (size_t i = 0; i < N_STATIC_LABELS + regex->size; i++) {
+  for (size_t i = 0; i < N_STATIC_LABELS + regex->bytecode.size; i++) {
     const label_t label = create_label(&as);
 
 #ifndef NDEBUG
@@ -180,7 +180,7 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const alloc
 
   // Compiled regex program
 
-  for (size_t i = 0; i < regex->size;) {
+  for (size_t i = 0; i < regex->bytecode.size;) {
     CHECK_ERROR(compile_bytecode_instruction(&as, regex, &i, allocator));
   }
 
@@ -188,9 +188,9 @@ WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const alloc
 
 #undef CHECK_ERROR
 
-  regex->native_code = finalize_assembler(&regex->native_code_size, &as, allocator);
+  regex->native_code.code = finalize_assembler(&regex->native_code.size, &as, allocator);
 
-  if (regex->native_code == NULL) {
+  if (regex->native_code.code == NULL) {
     return CREX_E_NOMEM;
   }
 
@@ -776,12 +776,12 @@ static int compile_bytecode_instruction(assembler_t *as,
                                         const allocator_t *allocator) {
   ASM1(define_label, INSTR_LABEL(*index));
 
-  const unsigned char byte = regex->bytecode[(*index)++];
+  const unsigned char byte = regex->bytecode.code[(*index)++];
 
   const unsigned char opcode = VM_OPCODE(byte);
   const size_t operand_size = VM_OPERAND_SIZE(byte);
 
-  const size_t operand = deserialize_operand(regex->bytecode + *index, operand_size);
+  const size_t operand = deserialize_operand(regex->bytecode.code + *index, operand_size);
   *index += operand_size;
 
   switch (opcode) {
