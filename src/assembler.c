@@ -194,7 +194,7 @@ static void resize_assembler(assembler_t *as, unsigned char *end) {
   as->size = end - as->code;
 }
 
-#include "build/x64.h"
+#include "../build/x64.h"
 
 WARN_UNUSED_RESULT static label_t create_label(assembler_t *as) {
   return as->n_labels++;

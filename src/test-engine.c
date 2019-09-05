@@ -26,7 +26,7 @@ typedef struct {
   } groups[MAX_GROUPS];
 } testcase_t;
 
-#include "build/engine-testcases.h"
+#include "../build/engine-testcases.h"
 #include "crex.h"
 
 #define MAX_QUOTED_LENGTH 50000
