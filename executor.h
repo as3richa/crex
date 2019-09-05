@@ -173,7 +173,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
         }
 
         if (opcode == VM_CHAR_CLASS) {
-          keep = character != -1 && bitmap_test(regex->classes[operand].bitmap, character);
+          keep = character != -1 && bitmap_test(regex->classes[operand], character);
           break;
         }
 
@@ -312,13 +312,10 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
   } else {
     const char **pointer_buffer = LIST_POINTER_BUFFER(&list, matched_state);
 
-    if (pointer_buffer[0] == NULL || pointer_buffer[1] == NULL) {
-      match->begin = NULL;
-      match->end = NULL;
-    } else {
-      match->begin = pointer_buffer[0];
-      match->end = pointer_buffer[1];
-    }
+    assert((pointer_buffer[0] == NULL) == (pointer_buffer[1] == NULL));
+
+    match->begin = pointer_buffer[0];
+    match->end = pointer_buffer[1];
   }
 #elif defined(MATCH_GROUPS)
   if (matched_state == HANDLE_NULL) {
@@ -330,15 +327,10 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
     const char **pointer_buffer = LIST_POINTER_BUFFER(&list, matched_state);
 
     for (size_t i = 0; i < regex->n_capturing_groups; i++) {
-      if (pointer_buffer[0] == NULL || pointer_buffer[1] == NULL) {
-        matches[i].begin = NULL;
-        matches[i].end = NULL;
-      } else {
-        matches[i].begin = pointer_buffer[0];
-        matches[i].end = pointer_buffer[1];
-      }
+      assert((pointer_buffer[0] == NULL) == (pointer_buffer[1] == NULL));
 
-      pointer_buffer += 2;
+      matches[i].begin = pointer_buffer[2 * i];
+      matches[i].end = pointer_buffer[2 * i + 1];
     }
   }
 #endif

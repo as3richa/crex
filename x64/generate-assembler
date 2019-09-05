@@ -30,18 +30,6 @@ instructions = instructions.map do |hsh|
   hsh.map { |key, value| [key.to_sym, value] }.to_h
 end
 
-preamble = <<-EOF
-// Silence warnings in development for unused assembler functions
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(NDEBUG)
-#define MAYBE_UNUSED __attribute__((unused))
-#else
-#define MAYBE_UNUSED
-#endif
-
-EOF
-
-file.puts(preamble)
-
 first = true
 
 instructions.each do |name:, opcode:, encoding:, rex_w: false, extension: nil, special: nil|

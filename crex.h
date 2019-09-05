@@ -20,9 +20,7 @@ typedef enum {
   CREX_E_BAD_CHARACTER_CLASS,
   CREX_E_BAD_REPETITION,
   CREX_E_UNMATCHED_OPEN_PAREN,
-  CREX_E_UNMATCHED_CLOSE_PAREN,
-  CREX_E_UNKNOWN_VERSION,
-  CREX_E_INVALID_BUFFER_SIZE
+  CREX_E_UNMATCHED_CLOSE_PAREN
 } crex_status_t;
 
 typedef struct crex_regex crex_regex_t;
@@ -91,15 +89,6 @@ CREX_WARN_UNUSED_RESULT crex_status_t crex_match_groups_str(crex_match_t *matche
                                                             crex_context_t *context,
                                                             const crex_regex_t *regex,
                                                             const char *str);
-
-CREX_WARN_UNUSED_RESULT crex_status_t crex_context_reserve_is_match(crex_context_t *context,
-                                                                    const crex_regex_t *regex);
-
-CREX_WARN_UNUSED_RESULT crex_status_t crex_context_reserve_find(crex_context_t *context,
-                                                                const crex_regex_t *regex);
-
-CREX_WARN_UNUSED_RESULT crex_status_t crex_context_reserve_match_groups(crex_context_t *context,
-                                                                        const crex_regex_t *regex);
 
 CREX_WARN_UNUSED_RESULT unsigned char *
 crex_dump_regex(crex_status_t *status, size_t *size, const crex_regex_t *regex);

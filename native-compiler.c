@@ -1,5 +1,7 @@
 #ifdef NATIVE_COMPILER
 
+#include "assembler.c"
+
 #define R_SCRATCH RAX
 #define R_SCRATCH_2 RCX
 

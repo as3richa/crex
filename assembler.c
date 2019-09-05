@@ -1,5 +1,13 @@
 #ifdef NATIVE_COMPILER
 
+#include <sys/mman.h>
+#include <unistd.h>
+
+// It's spelled MAP_ANON on Darwin
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+
 #include "x64-encoding.c"
 
 typedef size_t label_t;
