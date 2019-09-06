@@ -51,7 +51,7 @@ static void serialize_operand(void *destination, size_t operand, size_t size) {
   }
 }
 
-static size_t deserialize_operand(void *source, size_t size) {
+static size_t deserialize_operand(const void *source, size_t size) {
   switch (size) {
   case 0:
     return 0;

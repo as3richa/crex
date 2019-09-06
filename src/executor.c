@@ -20,6 +20,8 @@ WARN_UNUSED_RESULT static status_t execute_regex(void *result,
     return CREX_E_NOMEM;
   }
 
+  const unsigned char *code = BYTECODE_CODE(regex->bytecode);
+
 #define FLAGS (context->buffer + flags)
 
 #ifndef NDEBUG
@@ -120,7 +122,7 @@ WARN_UNUSED_RESULT static status_t execute_regex(void *result,
           break;
         }
 
-        const unsigned char byte = regex->bytecode.code[instr_pointer++];
+        const unsigned char byte = code[instr_pointer++];
 
         const unsigned char opcode = VM_OPCODE(byte);
         const size_t operand_size = VM_OPERAND_SIZE(byte);
@@ -129,8 +131,8 @@ WARN_UNUSED_RESULT static status_t execute_regex(void *result,
         assert(opcode == VM_TEST_AND_SET_FLAG || !bitmap_test_and_set(VISITED, instr_pointer - 1));
 
         assert(instr_pointer <= regex->bytecode.size - operand_size);
-        const size_t operand =
-            deserialize_operand(regex->bytecode.code + instr_pointer, operand_size);
+
+        const size_t operand = deserialize_operand(code + instr_pointer, operand_size);
         instr_pointer += operand_size;
 
         if (opcode == VM_CHARACTER) {

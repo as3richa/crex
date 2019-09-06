@@ -2,27 +2,77 @@
 
 #define VM_OP(opcode, operand_size) ((opcode) | ((operand_size) << 5u))
 
+WARN_UNUSED_RESULT static unsigned char *
+create_bytecode(bytecode_t *bytecode, size_t size, const allocator_t *allocator) {
+  bytecode->size = size;
+
+  if (size <= BYTECODE_MAX_STACK_SIZE) {
+    return bytecode->code.stack_buffer;
+  }
+
+  bytecode->code.heap_buffer = ALLOC(allocator, size);
+
+  return bytecode->code.heap_buffer;
+}
+
+static void
+shrink_bytecode(bytecode_t *bytecode, unsigned char *code, const allocator_t *allocator) {
+  const size_t size = code - BYTECODE_CODE(*bytecode);
+  assert(size <= bytecode->size);
+
+  // If we initially allocated the bytecode's buffer on the heap, but in actual fact the code is
+  // within bounds to be allocated on the stack, copy it over. This is necessary because we
+  // distinguish heap- and stack-allocated bytecode buffers only by the bytecode's size
+
+  if (!BYTECODE_IS_HEAP_ALLOCATED(*bytecode) || size > BYTECODE_MAX_STACK_SIZE) {
+    bytecode->size = size;
+    return;
+  }
+
+  unsigned char *heap_buffer = bytecode->code.heap_buffer;
+
+  memcpy(bytecode->code.stack_buffer, heap_buffer, size);
+  FREE(allocator, heap_buffer);
+
+  bytecode->size = size;
+
+  assert(!BYTECODE_IS_HEAP_ALLOCATED(*bytecode));
+}
+
+WARN_UNUSED_RESULT static unsigned char *
+emit_bytecode(unsigned char *code, unsigned char opcode, size_t operand, size_t operand_size) {
+  *(code++) = opcode | (operand_size << 5u);
+
+  serialize_operand(code, operand, operand_size);
+  code += operand_size;
+
+  return code;
+}
+
+WARN_UNUSED_RESULT static unsigned char *emit_bytecode_copy(unsigned char *code,
+                                                            bytecode_t *source) {
+  safe_memcpy(code, BYTECODE_CODE(*source), source->size);
+  return code + source->size;
+}
+
 WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
                                                 size_t *n_flags,
                                                 parsetree_t *tree,
                                                 const allocator_t *allocator) {
   switch (tree->type) {
   case PT_EMPTY: {
-    bytecode->size = 0;
-    bytecode->code = NULL;
-    return 1;
+    unsigned char *code = create_bytecode(bytecode, 0, allocator);
+    return code != NULL;
   }
 
   case PT_CHARACTER: {
-    bytecode->size = 2;
-    bytecode->code = ALLOC(allocator, 2);
+    unsigned char *code = create_bytecode(bytecode, 2, allocator);
 
-    if (bytecode->code == NULL) {
+    if (code == NULL) {
       return 0;
     }
 
-    bytecode->code[0] = VM_OP(VM_CHARACTER, 1);
-    bytecode->code[1] = tree->data.character;
+    code = emit_bytecode(code, VM_CHARACTER, tree->data.character, 1);
 
     return 1;
   }
@@ -30,33 +80,32 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
   case PT_CHAR_CLASS:
   case PT_BUILTIN_CHAR_CLASS: {
     const size_t index = tree->data.char_class_index;
-    const size_t operand_size = size_for_operand(index);
+    const size_t index_size = size_for_operand(index);
 
-    bytecode->size = 1 + operand_size;
-    bytecode->code = ALLOC(allocator, bytecode->size);
+    unsigned char *code = create_bytecode(bytecode, 1 + index_size, allocator);
 
-    if (bytecode->code == NULL) {
+    if (code == NULL) {
       return 0;
     }
 
     const unsigned char opcode =
         (tree->type == PT_CHAR_CLASS) ? VM_CHAR_CLASS : VM_BUILTIN_CHAR_CLASS;
 
-    *bytecode->code = VM_OP(opcode, operand_size);
-    serialize_operand(bytecode->code + 1, index, operand_size);
+    code = emit_bytecode(code, opcode, index, index_size);
 
     return 1;
   }
 
   case PT_ANCHOR: {
-    bytecode->size = 1;
-    bytecode->code = ALLOC(allocator, 1);
+    unsigned char *code = create_bytecode(bytecode, 1, allocator);
 
-    if (bytecode->code == NULL) {
+    if (code == NULL) {
       return 0;
     }
 
-    *bytecode->code = VM_ANCHOR_BOF + tree->data.anchor_type;
+    const unsigned char opcode = VM_ANCHOR_BOF + tree->data.anchor_type;
+
+    code = emit_bytecode(code, opcode, 0, 0);
 
     return 1;
   }
@@ -71,24 +120,23 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
     bytecode_t right;
 
     if (!compile_parsetree(&right, n_flags, tree->data.children[1], allocator)) {
-      FREE(allocator, left.code);
+      DESTROY_BYTECODE(left, allocator);
       return 0;
     }
 
-    bytecode->size = left.size + right.size;
-    bytecode->code = ALLOC(allocator, bytecode->size);
+    unsigned char *code = create_bytecode(bytecode, left.size + right.size, allocator);
 
-    if (bytecode->code == NULL) {
-      FREE(allocator, left.code);
-      FREE(allocator, right.code);
+    if (code == NULL) {
+      DESTROY_BYTECODE(left, allocator);
+      DESTROY_BYTECODE(right, allocator);
       return 0;
     }
 
-    safe_memcpy(bytecode->code, left.code, left.size);
-    safe_memcpy(bytecode->code + left.size, right.code, right.size);
+    code = emit_bytecode_copy(code, &left);
+    code = emit_bytecode_copy(code, &right);
 
-    FREE(allocator, left.code);
-    FREE(allocator, right.code);
+    DESTROY_BYTECODE(left, allocator);
+    DESTROY_BYTECODE(right, allocator);
 
     return 1;
   }
@@ -103,7 +151,7 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
     bytecode_t right;
 
     if (!compile_parsetree(&right, n_flags, tree->data.children[1], allocator)) {
-      FREE(allocator, left.code);
+      DESTROY_BYTECODE(left, allocator);
       return 0;
     }
 
@@ -117,15 +165,13 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
 
     const size_t max_size = (1 + 4) + left.size + (1 + 4) + right.size + (1 + 4);
 
-    unsigned char *code = ALLOC(allocator, max_size);
+    unsigned char *code = create_bytecode(bytecode, max_size, allocator);
 
     if (code == NULL) {
-      FREE(allocator, left.code);
-      FREE(allocator, right.code);
+      DESTROY_BYTECODE(left, allocator);
+      DESTROY_BYTECODE(right, allocator);
       return 0;
     }
-
-    bytecode->code = code;
 
     const size_t jump_delta = right.size;
     const size_t jump_delta_size = size_for_operand(jump_delta);
@@ -136,28 +182,16 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
     const size_t flag = (*n_flags)++;
     const size_t flag_size = size_for_operand(flag);
 
-    *(code++) = VM_OP(VM_SPLIT_PASSIVE, split_delta_size);
-    serialize_operand(code, split_delta, split_delta_size);
-    code += split_delta_size;
+    code = emit_bytecode(code, VM_SPLIT_PASSIVE, split_delta, split_delta_size);
+    code = emit_bytecode_copy(code, &left);
+    code = emit_bytecode(code, VM_JUMP, jump_delta, jump_delta_size);
+    code = emit_bytecode_copy(code, &right);
+    code = emit_bytecode(code, VM_TEST_AND_SET_FLAG, flag, flag_size);
 
-    safe_memcpy(code, left.code, left.size);
-    code += left.size;
+    shrink_bytecode(bytecode, code, allocator);
 
-    *(code++) = VM_OP(VM_JUMP, jump_delta_size);
-    serialize_operand(code, jump_delta, jump_delta_size);
-    code += jump_delta_size;
-
-    safe_memcpy(code, right.code, right.size);
-    code += right.size;
-
-    *(code++) = VM_OP(VM_TEST_AND_SET_FLAG, flag_size);
-    serialize_operand(code, flag, flag_size);
-    code += flag_size;
-
-    bytecode->size = code - bytecode->code;
-
-    FREE(allocator, left.code);
-    FREE(allocator, right.code);
+    DESTROY_BYTECODE(left, allocator);
+    DESTROY_BYTECODE(right, allocator);
 
     return 1;
   }
@@ -183,14 +217,12 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
       max_size += (upper_bound - lower_bound) * ((1 + 4) + child.size) + (1 + 4);
     }
 
-    unsigned char *code = ALLOC(allocator, max_size);
+    unsigned char *code = create_bytecode(bytecode, max_size, allocator);
 
     if (code == NULL) {
-      FREE(allocator, child.code);
+      DESTROY_BYTECODE(child, allocator);
       return 0;
     }
-
-    bytecode->code = code;
 
     // <child.code>
     // <child.code>
@@ -199,8 +231,7 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
     // ...
 
     for (size_t i = 0; i < lower_bound; i++) {
-      safe_memcpy(code, child.code, child.size);
-      code += child.size;
+      code = emit_bytecode_copy(code, &child);
     }
 
     if (upper_bound == REPETITION_INFINITY) {
@@ -258,28 +289,16 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
 
       const size_t leading_split_delta =
           (1 + child_flag_size) + child.size + (1 + trailing_split_delta_size);
+
       const size_t leading_split_delta_size = size_for_operand(leading_split_delta);
 
-      *(code++) = VM_OP(leading_split_opcode, leading_split_delta_size);
-      serialize_operand(code, leading_split_delta, leading_split_delta_size);
-      code += leading_split_delta_size;
-
-      *(code++) = VM_OP(VM_TEST_AND_SET_FLAG, child_flag_size);
-      serialize_operand(code, child_flag, child_flag_size);
-      code += child_flag_size;
-
-      safe_memcpy(code, child.code, child.size);
-      code += child.size;
-
-      *(code++) = VM_OP(trailing_split_opcode, trailing_split_delta_size);
-      serialize_operand(code, trailing_split_delta, trailing_split_delta_size);
-      code += trailing_split_delta_size;
-
-      *(code++) = VM_OP(VM_TEST_AND_SET_FLAG, end_flag_size);
-      serialize_operand(code, end_flag, end_flag_size);
-      code += end_flag_size;
-
-      bytecode->size = code - bytecode->code;
+      code =
+          emit_bytecode(code, leading_split_opcode, leading_split_delta, leading_split_delta_size);
+      code = emit_bytecode(code, VM_TEST_AND_SET_FLAG, child_flag, child_flag_size);
+      code = emit_bytecode_copy(code, &child);
+      code = emit_bytecode(
+          code, trailing_split_opcode, trailing_split_delta, trailing_split_delta_size);
+      code = emit_bytecode(code, VM_TEST_AND_SET_FLAG, end_flag, end_flag_size);
     } else {
       //   ...
       //   VM_SPLIT_{PASSIVE,EAGER} end
@@ -303,39 +322,43 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
       // the end of the buffer; however, because the top level parsetree is necessarily a PT_GROUP,
       // we always free it before yielding the final compiled regex
 
-      unsigned char *end = bytecode->code + max_size;
+      unsigned char *end = BYTECODE_CODE(*bytecode) + max_size;
       unsigned char *begin = end;
 
       const size_t flag = (*n_flags)++;
       const size_t flag_size = size_for_operand(flag);
 
-      begin -= flag_size;
-      serialize_operand(begin, flag, flag_size);
-      *(--begin) = VM_OP(VM_TEST_AND_SET_FLAG, flag_size);
+      // Silence unused result warning
+      unsigned char *unused;
+
+      begin -= flag_size + 1;
+      unused = emit_bytecode(begin, VM_TEST_AND_SET_FLAG, flag, flag_size);
 
       for (size_t i = 0; i < upper_bound - lower_bound; i++) {
         begin -= child.size;
-        safe_memcpy(begin, child.code, child.size);
+        unused = emit_bytecode_copy(begin, &child);
 
         const size_t delta = (end - (1 + flag_size)) - begin;
         const size_t delta_size = size_for_operand(delta);
 
-        begin -= delta_size;
-        serialize_operand(begin, delta, delta_size);
-        *(--begin) = VM_OP(split_opcode, delta_size);
+        begin -= 1 + delta_size;
+        unused = emit_bytecode(begin, split_opcode, delta, delta_size);
       }
+
+      (void)unused;
 
       assert(code <= begin);
 
       if (code < begin) {
-        bytecode->size = max_size - (begin - code);
         memmove(code, begin, end - begin);
-      } else {
-        bytecode->size = max_size;
       }
+
+      code += end - begin;
     }
 
-    FREE(allocator, child.code);
+    shrink_bytecode(bytecode, code, allocator);
+
+    DESTROY_BYTECODE(child, allocator);
 
     return 1;
   }
@@ -357,32 +380,19 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
     const size_t leading_size = size_for_operand(leading_index);
     const size_t trailing_size = size_for_operand(trailing_index);
 
-    bytecode->size = 1 + leading_size + child.size + 1 + trailing_size;
-
-    unsigned char *code = ALLOC(allocator, bytecode->size);
+    unsigned char *code =
+        create_bytecode(bytecode, (1 + leading_size) + child.size + (1 + trailing_size), allocator);
 
     if (code == NULL) {
-      FREE(allocator, child.code);
+      DESTROY_BYTECODE(child, allocator);
       return 0;
     }
 
-    bytecode->code = code;
+    code = emit_bytecode(code, VM_WRITE_POINTER, leading_index, leading_size);
+    code = emit_bytecode_copy(code, &child);
+    code = emit_bytecode(code, VM_WRITE_POINTER, trailing_index, trailing_size);
 
-    *(code++) = VM_OP(VM_WRITE_POINTER, leading_size);
-
-    serialize_operand(code, leading_index, leading_size);
-    code += leading_size;
-
-    safe_memcpy(code, child.code, child.size);
-    code += child.size;
-
-    *(code++) = VM_OP(VM_WRITE_POINTER, trailing_size);
-    serialize_operand(code, trailing_index, trailing_size);
-    code += trailing_size;
-
-    assert(bytecode->size == (size_t)(code - bytecode->code));
-
-    FREE(allocator, child.code);
+    DESTROY_BYTECODE(child, allocator);
 
     return 1;
   }

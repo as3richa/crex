@@ -70,8 +70,11 @@ struct crex_regex {
   } native_code;
 #endif
 
-  void *allocator_context;
-  void (*free)(void *, void *);
+  // For crex_destroy_regex
+  struct {
+    void *context;
+    void (*free)(void *, void *);
+  } allocator;
 };
 
 // FIXME: clean up this tire fire
@@ -437,15 +440,15 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
   regex->classes = classes.buffer;
 
   // Stash the free part of the allocator, so it doesn't need to be passed into crex_regex_destroy
-  regex->allocator_context = allocator->context;
-  regex->free = allocator->free;
+  regex->allocator.context = allocator->context;
+  regex->allocator.free = allocator->free;
 
 #ifdef NATIVE_COMPILER
   *status = compile_to_native(regex, allocator);
 
   if (*status != CREX_OK) {
     FREE(allocator, regex->classes);
-    FREE(allocator, regex->bytecode.code);
+    DESTROY_BYTECODE(regex->bytecode, allocator);
     FREE(allocator, regex);
     return NULL;
   }
@@ -479,16 +482,16 @@ PUBLIC size_t crex_regex_n_capturing_groups(const regex_t *regex) {
 }
 
 PUBLIC void crex_destroy_regex(regex_t *regex) {
-  void *context = regex->allocator_context;
+  // regex->allocator isn't actually an allocator (it's missing alloc) but our macros don't care
 
-  regex->free(context, regex->bytecode.code);
-  regex->free(context, regex->classes);
+  DESTROY_BYTECODE(regex->bytecode, &regex->allocator);
+  FREE(&regex->allocator, regex->classes);
 
 #ifdef NATIVE_COMPILER
   munmap(regex->native_code.code, regex->native_code.size);
 #endif
 
-  regex->free(context, regex);
+  FREE(&regex->allocator, regex);
 }
 
 PUBLIC void crex_destroy_context(context_t *context) {

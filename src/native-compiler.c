@@ -776,12 +776,14 @@ static int compile_bytecode_instruction(assembler_t *as,
                                         const allocator_t *allocator) {
   ASM1(define_label, INSTR_LABEL(*index));
 
-  const unsigned char byte = regex->bytecode.code[(*index)++];
+  const unsigned char *bytecode = BYTECODE_CODE(regex->bytecode);
+
+  const unsigned char byte = bytecode[(*index)++];
 
   const unsigned char opcode = VM_OPCODE(byte);
   const size_t operand_size = VM_OPERAND_SIZE(byte);
 
-  const size_t operand = deserialize_operand(regex->bytecode.code + *index, operand_size);
+  const size_t operand = deserialize_operand(bytecode + *index, operand_size);
   *index += operand_size;
 
   switch (opcode) {
