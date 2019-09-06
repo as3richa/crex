@@ -169,8 +169,6 @@ static class_name_t builtin_class_names[N_NAMED_BUILTIN_CLASSES] = {{"alnum", 5}
 #define BCC_NOT_WORD 16
 #define BCC_ANY 17
 
-#define BCC_TEST(index, character) bitmap_test(builtin_classes[index], (character))
-
 static void bitmap_set(unsigned char *bitmap, size_t index) {
   bitmap[index >> 3u] |= 1u << (index & 7u);
 }
@@ -501,14 +499,31 @@ PUBLIC void crex_destroy_context(context_t *context) {
 
 #ifndef NATIVE_COMPILER
 
-#define MATCH_BOOLEAN
-#include "executor.h" // crex_is_match
+#include "executor.c"
 
-#define MATCH_LOCATION
-#include "executor.h" // crex_find
+PUBLIC crex_status_t crex_is_match(int *is_match,
+                                   crex_context_t *context,
+                                   const crex_regex_t *regex,
+                                   const char *str,
+                                   size_t size) {
+  return execute_regex(is_match, context, regex, str, size, 0);
+}
 
-#define MATCH_GROUPS
-#include "executor.h" // crex_match_groups
+PUBLIC crex_status_t crex_find(crex_match_t *match,
+                               crex_context_t *context,
+                               const crex_regex_t *regex,
+                               const char *str,
+                               size_t size) {
+  return execute_regex(match, context, regex, str, size, 2);
+}
+
+PUBLIC crex_status_t crex_match_groups(crex_match_t *matches,
+                                       crex_context_t *context,
+                                       const crex_regex_t *regex,
+                                       const char *str,
+                                       size_t size) {
+  return execute_regex(matches, context, regex, str, size, 2 * regex->n_capturing_groups);
+}
 
 #else
 

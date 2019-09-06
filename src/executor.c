@@ -1,37 +1,12 @@
-#ifdef MATCH_BOOLEAN
+WARN_UNUSED_RESULT static status_t execute_regex(void *result,
+                                                 context_t *context,
+                                                 const regex_t *regex,
+                                                 const char *str,
+                                                 size_t size,
+                                                 size_t n_pointers) {
+  assert(n_pointers == 0 || n_pointers == 2 || n_pointers == 2 * regex->n_capturing_groups);
 
-#define NAME crex_is_match
-#define RESULT int *is_match
-
-#elif defined(MATCH_LOCATION)
-
-#define NAME crex_find
-#define RESULT match_t *match
-
-#elif defined(MATCH_GROUPS)
-
-#define NAME crex_match_groups
-#define RESULT match_t *matches
-
-#endif
-
-PUBLIC status_t
-NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t size) {
-#ifdef MATCH_BOOLEAN
-  const size_t n_pointers = 0;
-#elif defined(MATCH_LOCATION)
-  const size_t n_pointers = 2;
-#elif defined(MATCH_GROUPS)
-  const size_t n_pointers = 2 * regex->n_capturing_groups;
-#endif
-
-#ifdef MATCH_BOOLEAN
-  *is_match = 0;
-#endif
-
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
   handle_t matched_state = HANDLE_NULL;
-#endif
 
   state_list_t list;
   state_list_init(&list, context, n_pointers);
@@ -76,11 +51,9 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
     bitmap_clear(VISITED, visited_size);
 #endif
 
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
     if (list.head == HANDLE_NULL && matched_state != HANDLE_NULL) {
       break;
     }
-#endif
 
     int initial_state_pushed = 0;
 
@@ -95,12 +68,10 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
           break;
         }
 
-#if defined(MATCH_LOCATION) || defined(MATCH_GROUPS)
         // Don't push the initial state if we've already found a match
         if (matched_state != HANDLE_NULL) {
           break;
         }
-#endif
 
         state = state_list_push_initial_state(&list, predecessor);
 
@@ -117,11 +88,12 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
 
       for (;;) {
         if (instr_pointer == regex->bytecode.size) {
+          if (n_pointers == 0) {
+            int *is_match = result;
+            *is_match = 1;
+            return CREX_OK;
+          }
 
-#ifdef MATCH_BOOLEAN
-          *is_match = 1;
-          return CREX_OK;
-#else
           // Deallocate the previously-matched state, if any
           if (matched_state != HANDLE_NULL) {
             internal_allocator_free(allocator, matched_state);
@@ -146,7 +118,6 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
           }
 
           break;
-#endif
         }
 
         const unsigned char byte = regex->bytecode.code[instr_pointer++];
@@ -179,33 +150,42 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
         }
 
         if (opcode == VM_BUILTIN_CHAR_CLASS) {
-          assert(operand <= N_BUILTIN_CLASSES);
-          keep = character != -1 && BCC_TEST(operand, character);
+          assert(operand < N_BUILTIN_CLASSES);
+          keep = character != -1 && bitmap_test(builtin_classes[operand], character);
           break;
         }
 
         switch (opcode) {
-        case VM_ANCHOR_BOF:
+        case VM_ANCHOR_BOF: {
           keep = prev_character == -1;
           break;
+        }
 
-        case VM_ANCHOR_BOL:
+        case VM_ANCHOR_BOL: {
           keep = prev_character == -1 || prev_character == '\n';
           break;
+        }
 
-        case VM_ANCHOR_EOF:
+        case VM_ANCHOR_EOF: {
           keep = character == -1;
           break;
+        }
 
-        case VM_ANCHOR_EOL:
+        case VM_ANCHOR_EOL: {
           keep = character == -1 || character == '\n';
           break;
+        }
 
         case VM_ANCHOR_WORD_BOUNDARY:
         case VM_ANCHOR_NOT_WORD_BOUNDARY: {
-          const int prev_is_word = prev_character != -1 && BCC_TEST(BCC_WORD, prev_character);
-          const int char_is_word = character != -1 && BCC_TEST(BCC_WORD, character);
-          keep = prev_is_word ^ char_is_word ^ (opcode == VM_ANCHOR_NOT_WORD_BOUNDARY);
+          const int prev_char_is_word =
+              prev_character != -1 && bitmap_test(builtin_classes[BCC_WORD], prev_character);
+
+          const int char_is_word =
+              character != -1 && bitmap_test(builtin_classes[BCC_WORD], character);
+
+          keep = prev_char_is_word ^ char_is_word ^ (opcode == VM_ANCHOR_NOT_WORD_BOUNDARY);
+
           break;
         }
 
@@ -251,20 +231,12 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
         }
 
         case VM_WRITE_POINTER: {
-#ifdef MATCH_BOOLEAN
-          (void)operand;
-#elif defined(MATCH_LOCATION)
-          const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
+          assert(operand < 2 * regex->n_capturing_groups);
 
-          if (operand <= 1) {
+          if (operand < n_pointers) {
+            const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
             pointer_buffer[operand] = str;
           }
-#elif defined(MATCH_GROUPS)
-          const char **pointer_buffer = LIST_POINTER_BUFFER(&list, state);
-
-          assert(operand < n_pointers);
-          pointer_buffer[operand] = str;
-#endif
 
           break;
         }
@@ -281,7 +253,7 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
         }
 
         default:
-          assert(0);
+          UNREACHABLE();
         }
 
         if (!keep) {
@@ -306,43 +278,32 @@ NAME(RESULT, context_t *context, const regex_t *regex, const char *str, size_t s
     str++;
   }
 
-#ifdef MATCH_LOCATION
-  if (matched_state == HANDLE_NULL) {
-    match->begin = NULL;
-    match->end = NULL;
+#undef FLAGS
+#undef VISITED
+
+  if (n_pointers == 0) {
+    int *is_match = result;
+    *is_match = 0;
   } else {
-    const char **pointer_buffer = LIST_POINTER_BUFFER(&list, matched_state);
+    match_t *matches = result;
 
-    assert((pointer_buffer[0] == NULL) == (pointer_buffer[1] == NULL));
+    if (matched_state == HANDLE_NULL) {
+      for (size_t i = 0; i < n_pointers / 2; i++) {
+        matches[i].begin = NULL;
+        matches[i].end = NULL;
+      }
+    } else {
+      const char **pointer_buffer = LIST_POINTER_BUFFER(&list, matched_state);
 
-    match->begin = pointer_buffer[0];
-    match->end = pointer_buffer[1];
-  }
-#elif defined(MATCH_GROUPS)
-  if (matched_state == HANDLE_NULL) {
-    for (size_t i = 0; i < regex->n_capturing_groups; i++) {
-      matches[i].begin = NULL;
-      matches[i].end = NULL;
-    }
-  } else {
-    const char **pointer_buffer = LIST_POINTER_BUFFER(&list, matched_state);
+      for (size_t i = 0; i < n_pointers / 2; i++) {
+        matches[i].begin = pointer_buffer[2 * i];
+        matches[i].end = pointer_buffer[2 * i + 1];
 
-    for (size_t i = 0; i < regex->n_capturing_groups; i++) {
-      assert((pointer_buffer[0] == NULL) == (pointer_buffer[1] == NULL));
-
-      matches[i].begin = pointer_buffer[2 * i];
-      matches[i].end = pointer_buffer[2 * i + 1];
+        assert(matches[i].begin <= matches[i].end);
+        assert((matches[i].begin == NULL) == (matches[i].end == NULL));
+      }
     }
   }
-#endif
 
   return CREX_OK;
 }
-
-#undef FLAGS
-#undef VISITED
-#undef MATCH_BOOLEAN
-#undef MATCH_LOCATION
-#undef MATCH_GROUPS
-#undef NAME
-#undef RESULT

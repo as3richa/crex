@@ -13,7 +13,7 @@ typedef enum {
   PT_CHARACTER,
   PT_CHAR_CLASS,
   PT_BUILTIN_CHAR_CLASS,
-  PT_ANCHOR,
+  PT_ANCHOR
 } parsetree_type_t;
 
 typedef struct parsetree {
