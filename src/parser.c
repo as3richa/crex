@@ -202,34 +202,48 @@ WARN_UNUSED_RESULT static parsetree_t *parse(status_t *status,
 }
 
 static void destroy_parsetree(parsetree_t *tree, const allocator_t *allocator) {
-  switch (tree->type) {
-  case PT_EMPTY:
-  case PT_CHARACTER:
-  case PT_CHAR_CLASS:
-  case PT_BUILTIN_CHAR_CLASS:
-  case PT_ANCHOR:
-    break;
+  for (;;) {
+    switch (tree->type) {
+    case PT_EMPTY:
+    case PT_CHARACTER:
+    case PT_CHAR_CLASS:
+    case PT_BUILTIN_CHAR_CLASS:
+    case PT_ANCHOR: {
+      FREE(allocator, tree);
+      return;
+    }
 
-  case PT_CONCATENATION:
-  case PT_ALTERNATION:
-    destroy_parsetree(tree->data.children[0], allocator);
-    destroy_parsetree(tree->data.children[1], allocator);
-    break;
+    case PT_CONCATENATION:
+    case PT_ALTERNATION: {
+      // Destroy one subtree recursively
+      destroy_parsetree(tree->data.children[0], allocator);
 
-  case PT_GREEDY_REPETITION:
-  case PT_LAZY_REPETITION:
-    destroy_parsetree(tree->data.repetition.child, allocator);
-    break;
+      // Destroy the other iteratively
+      parsetree_t *child = tree->data.children[1];
+      FREE(allocator, tree);
+      tree = child;
+      break;
+    }
 
-  case PT_GROUP:
-    destroy_parsetree(tree->data.group.child, allocator);
-    break;
+    case PT_GREEDY_REPETITION:
+    case PT_LAZY_REPETITION: {
+      parsetree_t *child = tree->data.repetition.child;
+      FREE(allocator, tree);
+      tree = child;
+      break;
+    }
 
-  default:
-    assert(0);
+    case PT_GROUP: {
+      parsetree_t *child = tree->data.group.child;
+      FREE(allocator, tree);
+      tree = child;
+      break;
+    }
+
+    default:
+      UNREACHABLE();
+    }
   }
-
-  FREE(allocator, tree);
 }
 
 static int push_tree(tree_stack_t *trees, parsetree_t *tree, const allocator_t *allocator) {
