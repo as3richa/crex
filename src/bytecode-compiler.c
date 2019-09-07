@@ -15,30 +15,6 @@ create_bytecode(bytecode_t *bytecode, size_t size, const allocator_t *allocator)
   return bytecode->code.heap_buffer;
 }
 
-static void
-shrink_bytecode(bytecode_t *bytecode, unsigned char *code, const allocator_t *allocator) {
-  const size_t size = code - BYTECODE_CODE(*bytecode);
-  assert(size <= bytecode->size);
-
-  // If we initially allocated the bytecode's buffer on the heap, but in actual fact the code is
-  // within bounds to be allocated on the stack, copy it over. This is necessary because we
-  // distinguish heap- and stack-allocated bytecode buffers only by the bytecode's size
-
-  if (!BYTECODE_IS_HEAP_ALLOCATED(*bytecode) || size > BYTECODE_MAX_STACK_SIZE) {
-    bytecode->size = size;
-    return;
-  }
-
-  unsigned char *heap_buffer = bytecode->code.heap_buffer;
-
-  memcpy(bytecode->code.stack_buffer, heap_buffer, size);
-  FREE(allocator, heap_buffer);
-
-  bytecode->size = size;
-
-  assert(!BYTECODE_IS_HEAP_ALLOCATED(*bytecode));
-}
-
 WARN_UNUSED_RESULT static unsigned char *
 emit_bytecode(unsigned char *code, unsigned char opcode, size_t operand, size_t operand_size) {
   *(code++) = opcode | (operand_size << 5u);
@@ -53,6 +29,30 @@ WARN_UNUSED_RESULT static unsigned char *emit_bytecode_copy(unsigned char *code,
                                                             bytecode_t *source) {
   safe_memcpy(code, BYTECODE_CODE(*source), source->size);
   return code + source->size;
+}
+
+static void
+shrink_bytecode(bytecode_t *bytecode, unsigned char *code, const allocator_t *allocator) {
+  const size_t size = code - BYTECODE_CODE(*bytecode);
+  assert(size <= bytecode->size);
+
+  // If we initially allocated the bytecode's buffer on the heap, but in actual fact the code is
+  // within bounds to be allocated on the stack, copy it over. This is necessary because we
+  // distinguish heap- and stack-allocated bytecode buffers only by bytecode->size
+
+  if (!BYTECODE_IS_HEAP_ALLOCATED(*bytecode) || size > BYTECODE_MAX_STACK_SIZE) {
+    bytecode->size = size;
+    return;
+  }
+
+  unsigned char *heap_buffer = bytecode->code.heap_buffer;
+
+  memcpy(bytecode->code.stack_buffer, heap_buffer, size);
+  FREE(allocator, heap_buffer);
+
+  bytecode->size = size;
+
+  assert(!BYTECODE_IS_HEAP_ALLOCATED(*bytecode));
 }
 
 WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
