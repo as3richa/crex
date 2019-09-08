@@ -77,9 +77,6 @@ struct crex_regex {
   } allocator;
 };
 
-// FIXME: clean up this tire fire
-#include "serialization.c"
-
 // FIXME: put this somewhere smart
 #define NON_CAPTURING_GROUP SIZE_MAX
 
@@ -200,15 +197,14 @@ MAYBE_UNUSED static size_t bitmap_size_for_bits(size_t bits) {
   return (bits + 7) / 8;
 }
 
+#include "serialization.c" // FIXME: clean up this tire fire
+
 #include "allocator.c"
-
-#include "lexer.c"
-
-#include "parser.c"
-
 #include "bytecode-compiler.c"
-
+#include "lexer.c"
 #include "native-compiler.c"
+#include "parser.c"
+#include "vm.c"
 
 /** Public API **/
 

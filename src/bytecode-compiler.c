@@ -1,6 +1,5 @@
 #include "bytecode-compiler.h"
-
-#define VM_OP(opcode, operand_size) ((opcode) | ((operand_size) << 5u))
+#include "vm.h"
 
 WARN_UNUSED_RESULT static unsigned char *
 create_bytecode(bytecode_t *bytecode, size_t size, const allocator_t *allocator) {
