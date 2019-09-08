@@ -305,23 +305,30 @@ WARN_UNUSED_RESULT static status_t execute_regex(void *result,
           size_t split_pointer;
 
           switch (opcode) {
-          case VM_SPLIT_PASSIVE:
+          case VM_SPLIT_PASSIVE: {
             split_pointer = instr_pointer + operand;
             break;
+          }
 
-          case VM_SPLIT_EAGER:
+          case VM_SPLIT_EAGER: {
             split_pointer = instr_pointer;
             instr_pointer += operand;
             break;
+          }
 
-          case VM_SPLIT_BACKWARDS_PASSIVE:
+          case VM_SPLIT_BACKWARDS_PASSIVE: {
             split_pointer = instr_pointer - operand;
             break;
+          }
 
-          case VM_SPLIT_BACKWARDS_EAGER:
+          case VM_SPLIT_BACKWARDS_EAGER: {
             split_pointer = instr_pointer;
             instr_pointer -= operand;
             break;
+          }
+
+          default:
+            UNREACHABLE();
           }
 
           assert(instr_pointer <= regex->bytecode.size);
