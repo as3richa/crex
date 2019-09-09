@@ -51,29 +51,8 @@ WARN_UNUSED_RESULT static size_t my_rand(void) {
   return result;
 }
 
-WARN_UNUSED_RESULT static size_t select_from_distribution(size_t *distribution, size_t size) {
-  size_t total_weight = 0;
-
-  for (size_t i = 0; i < size; i++) {
-    total_weight += distribution[i];
-  }
-
-  size_t goal = my_rand() % total_weight;
-
-  for (size_t i = 0; i < size; i++) {
-    if (goal < distribution[i]) {
-      return i;
-    }
-
-    goal -= distribution[i];
-  }
-
-  UNREACHABLE();
-  return 0;
-}
-
 typedef struct {
-  size_t lifespan;
+  unsigned int initialized : 1;
 
   unsigned int is_matching : 1;
   unsigned int eof_acceptable : 1;
@@ -93,15 +72,17 @@ WARN_UNUSED_RESULT static thread_status_t interesting_step_thread(vm_t *vm,
                                                                   const char *str,
                                                                   int character,
                                                                   int prev_character) {
+  // character contains garbage
+  (void)character;
+
   thread_state_t *state = EXTRA_DATA(*vm, thread);
 
-  // The VM initially memsets the per-thread data to all zeroes on spawn; this guarantees that
-  // lifespan is zero immediately after spawn (and never again)
-  if (state->lifespan == 0) {
+  // The VM initially memsets the per-thread data to all-zeroes on spawn, in which case
+  // state->initialized == 0
+  if (state->initialized == 0) {
     reset_thread_state(state);
+    state->initialized = 1;
   }
-
-  state->lifespan++;
 
   const unsigned char byte = vm->code[*instr_pointer];
 
@@ -192,8 +173,7 @@ WARN_UNUSED_RESULT static thread_status_t interesting_step_thread(vm_t *vm,
   }
 
   default: {
-    const thread_status_t status =
-        step_thread(vm, thread, instr_pointer, str, character, prev_character);
+    const thread_status_t status = step_thread(vm, thread, instr_pointer, str, -1, prev_character);
 
     // VM_WRITE_POINTER 1 is always and solely the final instruction of a compiled regex, and
     // moreover the structure of the program guarantees that this instruction can't be jumped over.
@@ -212,6 +192,8 @@ WARN_UNUSED_RESULT static thread_status_t interesting_step_thread(vm_t *vm,
 
 WARN_UNUSED_RESULT static status_t
 generate_interesting_string(string_builder_t *result, context_t *context, const regex_t *regex) {
+  result->size = 0;
+
   vm_t vm;
 
   if (!create_vm(&vm, context, regex, 2 * regex->n_capturing_groups, sizeof(thread_state_t))) {
@@ -222,9 +204,7 @@ generate_interesting_string(string_builder_t *result, context_t *context, const 
   const char *str = str_base;
 
   int prev_character = -1;
-  size_t character;
-
-  result->size = 0;
+  int character;
 
   for (;;) {
     vm_status_t status = run_threads(&vm, interesting_step_thread, str, -1, prev_character);
@@ -239,56 +219,90 @@ generate_interesting_string(string_builder_t *result, context_t *context, const 
 
     assert(status == VM_STATUS_CONTINUE);
 
-    size_t distribution[257];
+    // Uniformly and at random, select an active thread
+    vm_handle_t special_thread = NULL_HANDLE;
+    size_t n_threads = 0;
 
-    // Every character and EOF has a non-zero probability, but the base probability of printable
-    // characters is higher
-    for (size_t i = 0; i <= 256; i++) {
-      distribution[i] = (i != 256 && isprint(i)) ? 10 : 0;
-    }
+    // In paralel, track the set of characters that would cause every thread to reject
+    char_class_t rejects_all;
+    memset(rejects_all, 0xff, 32);
+    int eof_rejects_all = 1;
 
     for (vm_handle_t thread = vm.head; thread != NULL_HANDLE; thread = NEXT(vm, thread)) {
+      if (my_rand() % (++n_threads) == 0) {
+        special_thread = thread;
+      }
+
       thread_state_t *state = EXTRA_DATA(vm, thread);
 
-      // Skip over any plausibly-matching threads, because we'd prefer a later, more interesting
-      // match
-      if (state->is_matching) {
+      if (state->eof_acceptable) {
+        eof_rejects_all = 0;
+      }
+
+      for (size_t i = 0; i < 32; i++) {
+        rejects_all[i] &= ~state->char_class[i];
+      }
+    }
+
+    assert(special_thread != NULL_HANDLE || n_threads == 0);
+
+    // It can be shown by induction that special_thread is uniformly distributed over the set of
+    // active threads, assuming that there exists at least one active thread. With 99% probability,
+    // attempt to select a character that will allow special_thread to progress; with 1%
+    // probability, attempt to select a character that will cause every thread to reject. If no
+    // active threads exist, this degrades to picking a character or EOF at random
+
+    if (my_rand() % 50 == 0) {
+      special_thread = NULL_HANDLE;
+    }
+
+    int eof_acceptable;
+    unsigned char *char_class;
+
+    if (special_thread == NULL_HANDLE) {
+      eof_acceptable = eof_rejects_all;
+      char_class = rejects_all;
+    } else {
+      thread_state_t *state = EXTRA_DATA(vm, special_thread);
+      eof_acceptable = state->eof_acceptable;
+      char_class = state->char_class;
+    }
+
+    // If no character matches our goal, pick a character or EOF uniformly at random
+    character = my_rand() % 257 - 1;
+
+    size_t n_options = 0;
+
+    if (eof_acceptable) {
+      n_options++;
+      character = -1;
+    }
+
+    for (size_t i = 0; i <= 255; i++) {
+      if (!bitmap_test(char_class, i)) {
         continue;
       }
 
-      // Increase the probability of any character or EOF acceptable to this thread, proportional to
-      // the thread's lifespan
-
-      for (size_t i = 0; i < 256; i++) {
-        if (!bitmap_test(state->char_class, i)) {
-          continue;
-        }
-
-        distribution[i] += 100 * state->lifespan;
-      }
-
-      if (state->eof_acceptable) {
-        distribution[256] += 20 * state->lifespan;
+      if (my_rand() % (++n_options) == 0) {
+        character = i;
       }
     }
 
-    character = select_from_distribution(distribution, 257);
+    // fprintf(stderr, "%zu %d\n", n_options, character);
 
-    vm_handle_t prev_thread = NULL_HANDLE;
-
-    for (vm_handle_t thread = vm.head; thread != NULL_HANDLE;) {
+    for (vm_handle_t thread = vm.head, prev_thread = NULL_HANDLE; thread != NULL_HANDLE;) {
       thread_state_t *state = EXTRA_DATA(vm, thread);
 
       const int okay =
-          (character == 256) ? state->eof_acceptable : bitmap_test(state->char_class, character);
-
-      reset_thread_state(state);
+          (character == -1) ? state->eof_acceptable : bitmap_test(state->char_class, character);
 
       // Discard threads that would not accept the chosen character
       if (!okay) {
         thread = destroy_thread(&vm, thread, prev_thread);
         continue;
       }
+
+      reset_thread_state(state);
 
       // No special handling is needed for non-matching states
       if (!state->is_matching) {
@@ -301,11 +315,10 @@ generate_interesting_string(string_builder_t *result, context_t *context, const 
       const vm_status_t status = on_match(&vm, thread, prev_thread);
       assert(status == VM_STATUS_CONTINUE);
       (void)status;
-
       break;
     }
 
-    if (character == 256) {
+    if (character == -1) {
       break;
     }
 
@@ -313,24 +326,20 @@ generate_interesting_string(string_builder_t *result, context_t *context, const 
       return CREX_E_NOMEM;
     }
 
-    prev_character = (character == 256) ? -1 : (int)character;
+    prev_character = character;
     str++;
   }
+
+  fprintf(stderr, "!! %zu\n", vm.matched_thread);
 
   // If we haven't yet explicitly recorded EOF, we can output a suffix of random characters without
   // affecting the result
 
-  if (character != 256) {
+  if (character != -1) {
     const size_t suffix_size = my_rand() % 32;
 
     for (size_t i = 0; i < suffix_size; i++) {
-      const int unprintable = my_rand() % 10 == 11;
-
-      if (unprintable) {
-        character = my_rand() % 256;
-      } else {
-        character = ' ' + my_rand() % ('~' - ' ' + 1);
-      }
+      character = ' ' + my_rand() % ('~' - ' ' + 1);
 
       if (!string_builder_push(result, character)) {
         return CREX_E_NOMEM;
@@ -404,7 +413,7 @@ static int print_string_literal(const char *str, size_t size, FILE *file) {
 int main(void) {
   srand(time(NULL));
 
-  const char *pattern = "\\([0-9]{3}\\)-[0-9]{3}-[0-9]{4}";
+  const char *pattern = "([1-9][0-9]*)(?:\\.([0-9]+))?(?:[eE](-?[1-9][0-9]*))?";
 
   crex_status_t status;
 
@@ -424,15 +433,17 @@ int main(void) {
   string_builder_t sb;
   create_string_builder(&sb);
 
-  if (generate_interesting_string(&sb, context, regex) != CREX_OK) {
-    crex_destroy_regex(regex);
-    crex_destroy_context(context);
-    destroy_string_builder(&sb);
-    return 1;
-  }
+  for (size_t i = 0; i < 24; i++) {
+    if (generate_interesting_string(&sb, context, regex) != CREX_OK) {
+      crex_destroy_regex(regex);
+      crex_destroy_context(context);
+      destroy_string_builder(&sb);
+      return 1;
+    }
 
-  print_string_literal(sb.str, sb.size, stdout);
-  putchar('\n');
+    print_string_literal(sb.str, sb.size, stdout);
+    putchar('\n');
+  }
 
   crex_destroy_regex(regex);
   crex_destroy_context(context);
