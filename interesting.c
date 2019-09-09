@@ -3,6 +3,42 @@
 #include "src/crex.c"
 #include "src/vm.h"
 
+typedef struct {
+  size_t capacity;
+  size_t size;
+  char *str;
+} string_builder_t;
+
+void create_string_builder(string_builder_t *sb) {
+  sb->capacity = 0;
+  sb->size = 0;
+  sb->str = NULL;
+}
+
+int string_builder_push(string_builder_t *sb, char c) {
+  assert(sb->size <= sb->capacity);
+
+  if (sb->size == sb->capacity) {
+    const size_t capacity = 2 * sb->capacity + 1;
+    char *str = realloc(sb->str, capacity);
+
+    if (str == NULL) {
+      return 0;
+    }
+
+    sb->capacity = capacity;
+    sb->str = str;
+  }
+
+  sb->str[sb->size++] = c;
+
+  return 1;
+}
+
+void destroy_string_builder(string_builder_t *sb) {
+  free(sb->str);
+}
+
 WARN_UNUSED_RESULT static size_t my_rand(void) {
   // Assume rand is absolutely awful. Performance is not a major concern here
 
@@ -66,8 +102,6 @@ WARN_UNUSED_RESULT static thread_status_t interesting_step_thread(vm_t *vm,
   }
 
   state->lifespan++;
-
-  fprintf(stderr, "!! %zu %zu\n", *instr_pointer, state->lifespan);
 
   const unsigned char byte = vm->code[*instr_pointer];
 
@@ -177,9 +211,7 @@ WARN_UNUSED_RESULT static thread_status_t interesting_step_thread(vm_t *vm,
 }
 
 WARN_UNUSED_RESULT static status_t
-generate_interesting_string(void *result, context_t *context, const regex_t *regex) {
-  (void)result;
-
+generate_interesting_string(string_builder_t *result, context_t *context, const regex_t *regex) {
   vm_t vm;
 
   if (!create_vm(&vm, context, regex, 2 * regex->n_capturing_groups, sizeof(thread_state_t))) {
@@ -191,6 +223,8 @@ generate_interesting_string(void *result, context_t *context, const regex_t *reg
 
   int prev_character = -1;
   size_t character;
+
+  result->size = 0;
 
   for (;;) {
     vm_status_t status = run_threads(&vm, interesting_step_thread, str, -1, prev_character);
@@ -238,30 +272,15 @@ generate_interesting_string(void *result, context_t *context, const regex_t *reg
       }
     }
 
-    for (size_t i = 0; i <= 256; i++) {
-      if (distribution[i] <= 1)
-        continue;
-      fprintf(stderr, "%zu: %zu\n", i, distribution[i]);
-    }
-    fprintf(stderr, "\n\n");
-
     character = select_from_distribution(distribution, 257);
-
-    fprintf(stderr, "%zu\n", character);
 
     vm_handle_t prev_thread = NULL_HANDLE;
 
     for (vm_handle_t thread = vm.head; thread != NULL_HANDLE;) {
       thread_state_t *state = EXTRA_DATA(vm, thread);
 
-      fprintf(stderr, "=> %zu ", INSTR_POINTER(vm, thread));
-      print_char_class(state->char_class, stderr);
-      fprintf(stderr, " %c ", (int)character);
-
       const int okay =
           (character == 256) ? state->eof_acceptable : bitmap_test(state->char_class, character);
-
-      fprintf(stderr, "%d\n", okay);
 
       reset_thread_state(state);
 
@@ -290,8 +309,9 @@ generate_interesting_string(void *result, context_t *context, const regex_t *reg
       break;
     }
 
-    // FIXME
-    putchar(character);
+    if (!string_builder_push(result, character)) {
+      return CREX_E_NOMEM;
+    }
 
     prev_character = (character == 256) ? -1 : (int)character;
     str++;
@@ -312,11 +332,73 @@ generate_interesting_string(void *result, context_t *context, const regex_t *reg
         character = ' ' + my_rand() % ('~' - ' ' + 1);
       }
 
-      putchar(character);
+      if (!string_builder_push(result, character)) {
+        return CREX_E_NOMEM;
+      }
     }
   }
 
   return CREX_OK;
+}
+
+static int print_string_literal(const char *str, size_t size, FILE *file) {
+  if (fputc('"', file) == EOF) {
+    return EOF;
+  }
+
+  for (size_t i = 0; i < size; i++) {
+    const int c = str[i];
+
+    switch (c) {
+    case '"': {
+      if (fputs("\\\"", file) == EOF) {
+        return EOF;
+      }
+      break;
+    }
+
+    case '\n': {
+      if (fputs("\\n", file) == EOF) {
+        return EOF;
+      }
+      break;
+    }
+
+    case '\t': {
+      if (fputs("\\t", file) == EOF) {
+        return EOF;
+      }
+      break;
+    }
+
+    case '\\': {
+      if (fputs("\\\\", file) == EOF) {
+        return EOF;
+      }
+      break;
+    }
+
+    default: {
+      if (' ' <= c && c <= '~') {
+        if (fputc(c, file) == EOF) {
+          return EOF;
+        }
+
+        break;
+      }
+
+      if (fprintf(file, "\\x%02x", (unsigned char)c) < 0) {
+        return 0;
+      }
+    }
+    }
+  }
+
+  if (fputc('"', file) == EOF) {
+    return EOF;
+  }
+
+  return 0;
 }
 
 int main(void) {
@@ -339,14 +421,22 @@ int main(void) {
     return 1;
   }
 
-  if (generate_interesting_string(NULL, context, regex) != CREX_OK) {
+  string_builder_t sb;
+  create_string_builder(&sb);
+
+  if (generate_interesting_string(&sb, context, regex) != CREX_OK) {
     crex_destroy_regex(regex);
     crex_destroy_context(context);
+    destroy_string_builder(&sb);
     return 1;
   }
 
+  print_string_literal(sb.str, sb.size, stdout);
+  putchar('\n');
+
   crex_destroy_regex(regex);
   crex_destroy_context(context);
+  destroy_string_builder(&sb);
 
   return 0;
 }
