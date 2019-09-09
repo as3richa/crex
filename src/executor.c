@@ -8,7 +8,7 @@ WARN_UNUSED_RESULT static status_t execute_regex(void *result,
                                                  size_t n_pointers) {
   vm_t vm;
 
-  if (!create_vm(&vm, context, regex, n_pointers)) {
+  if (!create_vm(&vm, context, regex, n_pointers, 0)) {
     return CREX_E_NOMEM;
   }
 

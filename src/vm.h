@@ -34,6 +34,7 @@ typedef size_t vm_handle_t;
 typedef struct {
   context_t *context;
   size_t n_pointers;
+  size_t extra_size;
 
   size_t capacity;
   unsigned char *buffer;
@@ -66,10 +67,12 @@ typedef enum { VM_STATUS_CONTINUE, VM_STATUS_DONE, VM_STATUS_E_NOMEM } vm_status
 typedef thread_status_t (*step_function_t)(vm_t *, size_t, size_t *, const char *, int, int);
 
 WARN_UNUSED_RESULT static int
-create_vm(vm_t *vm, context_t *context, const regex_t *regex, size_t n_pointers);
+create_vm(vm_t *vm, context_t *context, const regex_t *regex, size_t n_pointers, size_t extra_size);
 
 WARN_UNUSED_RESULT static vm_status_t
 run_threads(vm_t *vm, step_function_t step, const char *str, int character, int prev_character);
+
+// FIXME: semantically, the following two prototypes are private
 
 WARN_UNUSED_RESULT static thread_status_t step_thread(vm_t *vm,
                                                       vm_handle_t thread,
@@ -77,6 +80,9 @@ WARN_UNUSED_RESULT static thread_status_t step_thread(vm_t *vm,
                                                       const char *str,
                                                       int character,
                                                       int prev_character);
+
+WARN_UNUSED_RESULT static vm_status_t
+on_match(vm_t *vm, vm_handle_t thread, vm_handle_t prev_thread);
 
 #define BLOCK_SIZE                                                                                 \
   sizeof(union {                                                                                   \
@@ -87,5 +93,7 @@ WARN_UNUSED_RESULT static thread_status_t step_thread(vm_t *vm,
 #define NEXT(vm, thread) (*(size_t *)((vm).buffer + (thread)))
 #define INSTR_POINTER(vm, thread) (*(size_t *)((vm).buffer + (thread) + BLOCK_SIZE))
 #define POINTER_BUFFER(vm, thread) ((const char **)((vm).buffer + (thread) + 2 * BLOCK_SIZE))
+#define EXTRA_DATA(vm, thread)                                                                     \
+  ((void *)((vm).buffer + (thread) + (2 + (vm).n_pointers) * BLOCK_SIZE))
 
 #endif

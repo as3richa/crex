@@ -2,16 +2,19 @@
 
 #define FLAGS(vm) (unsigned char *)(vm).buffer
 
-#define THREAD_SIZE(vm) (BLOCK_SIZE * (2 + (vm).n_pointers))
+#define THREAD_SIZE(vm) (BLOCK_SIZE * (2 + (vm).n_pointers) + (vm).extra_size)
 
 WARN_UNUSED_RESULT static vm_handle_t vm_alloc(vm_t *vm, size_t size);
 
-WARN_UNUSED_RESULT static int
-create_vm(vm_t *vm, context_t *context, const regex_t *regex, size_t n_pointers) {
+WARN_UNUSED_RESULT static int create_vm(
+    vm_t *vm, context_t *context, const regex_t *regex, size_t n_pointers, size_t extra_size) {
   assert(n_pointers == 0 || n_pointers == 2 || n_pointers == 2 * regex->n_capturing_groups);
 
   vm->context = context;
   vm->n_pointers = n_pointers;
+
+  // FIXME: consider making this conditional
+  vm->extra_size = extra_size;
 
   vm->buffer = context->buffer;
   vm->capacity = context->capacity;
@@ -59,7 +62,7 @@ WARN_UNUSED_RESULT static vm_handle_t vm_alloc(vm_t *vm, size_t size) {
 
   if (vm->freelist != NULL_HANDLE) {
     const vm_handle_t result = vm->freelist;
-    vm->freelist = NEXT(*vm, vm->freelist);
+    vm->freelist = NEXT(*vm, result);
 
     return result;
   }
@@ -107,6 +110,8 @@ WARN_UNUSED_RESULT static vm_handle_t spawn_thread(vm_t *vm, vm_handle_t prev_th
     POINTER_BUFFER(*vm, thread)[i] = NULL;
   }
 
+  memset(EXTRA_DATA(*vm, thread), 0, vm->extra_size);
+
   if (prev_thread == NULL_HANDLE) {
     vm->head = thread;
   } else {
@@ -131,15 +136,17 @@ split_thread(vm_t *vm, size_t instr_pointer, vm_handle_t prev_thread) {
   NEXT(*vm, thread) = NEXT(*vm, prev_thread);
   INSTR_POINTER(*vm, thread) = instr_pointer;
 
-  const size_t size = BLOCK_SIZE * vm->n_pointers;
-  memcpy(POINTER_BUFFER(*vm, thread), POINTER_BUFFER(*vm, prev_thread), size);
+  const size_t pointer_buffer_size = BLOCK_SIZE * vm->n_pointers;
+  memcpy(POINTER_BUFFER(*vm, thread), POINTER_BUFFER(*vm, prev_thread), pointer_buffer_size);
+
+  memcpy(EXTRA_DATA(*vm, thread), EXTRA_DATA(*vm, prev_thread), vm->extra_size);
 
   NEXT(*vm, prev_thread) = thread;
 
   return 1;
 }
 
-static vm_handle_t remove_thread(vm_t *vm, vm_handle_t thread, vm_handle_t prev_thread) {
+static vm_handle_t destroy_thread(vm_t *vm, vm_handle_t thread, vm_handle_t prev_thread) {
   vm_handle_t next_thread = NEXT(*vm, thread);
 
   if (prev_thread == NULL_HANDLE) {
@@ -147,12 +154,6 @@ static vm_handle_t remove_thread(vm_t *vm, vm_handle_t thread, vm_handle_t prev_
   } else {
     NEXT(*vm, prev_thread) = next_thread;
   }
-
-  return next_thread;
-}
-
-static vm_handle_t destroy_thread(vm_t *vm, vm_handle_t thread, vm_handle_t prev_thread) {
-  vm_handle_t next_thread = remove_thread(vm, thread, prev_thread);
 
   vm_free(vm, thread);
 
@@ -351,34 +352,7 @@ run_threads(vm_t *vm, step_function_t step, const char *str, int character, int 
     }
 
     case TS_MATCHED: {
-      // Short-circuit for boolean searches
-      if (vm->n_pointers == 0) {
-        vm->matched_thread = thread;
-        return VM_STATUS_DONE;
-      }
-
-      // Deallocate the previously-matched thread, if any
-      if (vm->matched_thread != NULL_HANDLE) {
-        vm_free(vm, vm->matched_thread);
-      }
-
-      vm->matched_thread = thread;
-
-      // We can discard any successor of thread, because any match coming from a
-      // successor would be of lower priority
-
-      // FIXME: free rather than destroy to avoid touch thread's next pointer
-
-      vm_handle_t tail = NEXT(*vm, thread);
-
-      while (tail != NULL_HANDLE) {
-        tail = destroy_thread(vm, tail, thread);
-      }
-
-      // Remove the matching thread from the list of active threads (but don't destroy it)
-      thread = remove_thread(vm, thread, prev_thread);
-
-      break;
+      return on_match(vm, thread, prev_thread);
     }
 
     case TS_DONE: {
@@ -395,6 +369,45 @@ run_threads(vm_t *vm, step_function_t step, const char *str, int character, int 
     default:
       UNREACHABLE();
     }
+  }
+
+  return VM_STATUS_CONTINUE;
+}
+
+static vm_status_t on_match(vm_t *vm, vm_handle_t thread, vm_handle_t prev_thread) {
+  // Short-circuit for boolean searches
+  if (vm->n_pointers == 0) {
+    vm->matched_thread = thread;
+    return VM_STATUS_DONE;
+  }
+
+  // Deallocate the previously-matched thread, if any
+  if (vm->matched_thread != NULL_HANDLE) {
+    vm_free(vm, vm->matched_thread);
+  }
+
+  vm->matched_thread = thread;
+
+  // We can discard any successor of thread, because any match coming from a
+  // successor would be of lower priority
+
+  vm_handle_t tail_thread = NEXT(*vm, thread);
+
+  while (tail_thread != NULL_HANDLE) {
+    vm_handle_t next_thread = NEXT(*vm, tail_thread);
+
+    // Use vm_free rather than destroy_thread, because we needn't worry about maintaining outgoing
+    // pointers
+    vm_free(vm, tail_thread);
+
+    tail_thread = next_thread;
+  }
+
+  // Manually remove the thread from the list, but don't destroy it
+  if (prev_thread == NULL_HANDLE) {
+    vm->head = NULL_HANDLE;
+  } else {
+    NEXT(*vm, prev_thread) = NULL_HANDLE;
   }
 
   return VM_STATUS_CONTINUE;
