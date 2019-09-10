@@ -52,7 +52,7 @@ WARN_UNUSED_RESULT static size_t my_rand(void) {
 }
 
 typedef struct {
-  unsigned int initialized : 1;
+  size_t lifespan;
 
   unsigned int is_matching : 1;
   unsigned int eof_acceptable : 1;
@@ -78,11 +78,12 @@ WARN_UNUSED_RESULT static thread_status_t interesting_step_thread(vm_t *vm,
   thread_state_t *state = EXTRA_DATA(*vm, thread);
 
   // The VM initially memsets the per-thread data to all-zeroes on spawn, in which case
-  // state->initialized == 0
-  if (state->initialized == 0) {
+  // state->lifespan == 0
+  if (state->lifespan == 0) {
     reset_thread_state(state);
-    state->initialized = 1;
   }
+
+  state->lifespan++;
 
   const unsigned char byte = vm->code[*instr_pointer];
 
@@ -192,8 +193,6 @@ WARN_UNUSED_RESULT static thread_status_t interesting_step_thread(vm_t *vm,
 
 WARN_UNUSED_RESULT static status_t
 generate_interesting_string(string_builder_t *result, context_t *context, const regex_t *regex) {
-  result->size = 0;
-
   vm_t vm;
 
   if (!create_vm(&vm, context, regex, 2 * regex->n_capturing_groups, sizeof(thread_state_t))) {
@@ -219,21 +218,23 @@ generate_interesting_string(string_builder_t *result, context_t *context, const 
 
     assert(status == VM_STATUS_CONTINUE);
 
-    // Uniformly and at random, select an active thread
+    // Select a random thread, weighted by thread lifespan
     vm_handle_t special_thread = NULL_HANDLE;
-    size_t n_threads = 0;
+    size_t total_lifespan = 0;
 
-    // In paralel, track the set of characters that would cause every thread to reject
+    // In parallel, track the set of characters that would cause every thread to reject
     char_class_t rejects_all;
     memset(rejects_all, 0xff, 32);
     int eof_rejects_all = 1;
 
     for (vm_handle_t thread = vm.head; thread != NULL_HANDLE; thread = NEXT(vm, thread)) {
-      if (my_rand() % (++n_threads) == 0) {
+      thread_state_t *state = EXTRA_DATA(vm, thread);
+
+      total_lifespan += state->lifespan;
+
+      if (my_rand() % total_lifespan < state->lifespan) {
         special_thread = thread;
       }
-
-      thread_state_t *state = EXTRA_DATA(vm, thread);
 
       if (state->eof_acceptable) {
         eof_rejects_all = 0;
@@ -244,15 +245,15 @@ generate_interesting_string(string_builder_t *result, context_t *context, const 
       }
     }
 
-    assert(special_thread != NULL_HANDLE || n_threads == 0);
+    assert((special_thread == NULL_HANDLE) == (total_lifespan == 0));
 
     // It can be shown by induction that special_thread is uniformly distributed over the set of
-    // active threads, assuming that there exists at least one active thread. With 99% probability,
-    // attempt to select a character that will allow special_thread to progress; with 1%
-    // probability, attempt to select a character that will cause every thread to reject. If no
+    // active threads, assuming that there exists at least one active thread. With high probability
+    // attempt to select a character that will allow special_thread to progress; with
+    // low probability, attempt to select a character that will cause every thread to reject. If no
     // active threads exist, this degrades to picking a character or EOF at random
 
-    if (my_rand() % 50 == 0) {
+    if (total_lifespan != 0 && my_rand() % total_lifespan == 0) {
       special_thread = NULL_HANDLE;
     }
 
@@ -268,8 +269,9 @@ generate_interesting_string(string_builder_t *result, context_t *context, const 
       char_class = state->char_class;
     }
 
-    // If no character matches our goal, pick a character or EOF uniformly at random
-    character = my_rand() % 257 - 1;
+    // If no character satisfies our goal, pick EOF with low probability, or a random character with
+    // high probability
+    character = (my_rand() % 100 == 0) ? -1 : (int)(my_rand() % 256);
 
     size_t n_options = 0;
 
@@ -287,8 +289,6 @@ generate_interesting_string(string_builder_t *result, context_t *context, const 
         character = i;
       }
     }
-
-    // fprintf(stderr, "%zu %d\n", n_options, character);
 
     for (vm_handle_t thread = vm.head, prev_thread = NULL_HANDLE; thread != NULL_HANDLE;) {
       thread_state_t *state = EXTRA_DATA(vm, thread);
@@ -330,21 +330,9 @@ generate_interesting_string(string_builder_t *result, context_t *context, const 
     str++;
   }
 
-  fprintf(stderr, "!! %zu\n", vm.matched_thread);
-
-  // If we haven't yet explicitly recorded EOF, we can output a suffix of random characters without
-  // affecting the result
-
-  if (character != -1) {
-    const size_t suffix_size = my_rand() % 32;
-
-    for (size_t i = 0; i < suffix_size; i++) {
-      character = ' ' + my_rand() % ('~' - ' ' + 1);
-
-      if (!string_builder_push(result, character)) {
-        return CREX_E_NOMEM;
-      }
-    }
+  // If we haven't reached EOF, maybe append another interesting string
+  if (character != -1 && my_rand() % 4 < 3) {
+    return generate_interesting_string(result, context, regex);
   }
 
   return CREX_OK;
@@ -396,7 +384,7 @@ static int print_string_literal(const char *str, size_t size, FILE *file) {
         break;
       }
 
-      if (fprintf(file, "\\x%02x", (unsigned char)c) < 0) {
+      if (fprintf(file, "\\%03o", (unsigned char)c) < 0) {
         return 0;
       }
     }
@@ -413,7 +401,11 @@ static int print_string_literal(const char *str, size_t size, FILE *file) {
 int main(void) {
   srand(time(NULL));
 
-  const char *pattern = "([1-9][0-9]*)(?:\\.([0-9]+))?(?:[eE](-?[1-9][0-9]*))?";
+  const char *pattern =
+      "\\b(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\b";
+  // const char *pattern = "0x([0-9a-fA-F]{4}){1,2}";
+  // const char* pattern =
+  // "{(?:\\s*([1-9][0-9]*)(?:\\.([0-9]+))?(?:[eE](-?[1-9][0-9]*))?,)*\\s*([1-9][0-9]*)(?:\\.([0-9]+))?(?:[eE](-?[1-9][0-9]*))?\\s*}";
 
   crex_status_t status;
 
@@ -434,6 +426,8 @@ int main(void) {
   create_string_builder(&sb);
 
   for (size_t i = 0; i < 24; i++) {
+    sb.size = 0;
+
     if (generate_interesting_string(&sb, context, regex) != CREX_OK) {
       crex_destroy_regex(regex);
       crex_destroy_context(context);
