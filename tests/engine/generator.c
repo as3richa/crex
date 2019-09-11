@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <string.h>
 
 #include "framework.h"
 
@@ -22,6 +23,19 @@ int main(void) {
                     SUBSTR("0"),
                     SUBSTR_AT("0", 6),
                     SUBSTR_AT("1", 8));
+
+  {
+    emit_pattern_str(suite, "a{13,37}", 1);
+
+    char str_of_a[100];
+    memset(str_of_a, 'a', sizeof(str_of_a));
+
+    for (size_t i = 0; i <= sizeof(str_of_a); i++) {
+      emit_testcase(suite, str_of_a, i, ((13 <= i) ? SPAN(0, (i <= 37) ? i : 37) : UNMATCHED));
+    }
+  }
+
+  close_test_suite(suite);
 
   return 0;
 }

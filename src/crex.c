@@ -301,6 +301,10 @@ PUBLIC size_t crex_regex_n_capturing_groups(const regex_t *regex) {
 }
 
 PUBLIC void crex_destroy_regex(regex_t *regex) {
+  if (regex == NULL) {
+    return;
+  }
+
   // regex->allocator isn't actually an allocator (it's missing alloc) but our macros don't care
 
   DESTROY_BYTECODE(regex->bytecode, &regex->allocator);
@@ -314,6 +318,10 @@ PUBLIC void crex_destroy_regex(regex_t *regex) {
 }
 
 PUBLIC void crex_destroy_context(context_t *context) {
+  if (context == NULL) {
+    return;
+  }
+
   const allocator_t *allocator = &context->allocator;
   FREE(allocator, context->buffer);
   FREE(allocator, context);
