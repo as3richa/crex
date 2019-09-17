@@ -1,4 +1,3 @@
-#include <assert.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -103,8 +102,9 @@ void emit_pattern_str(test_suite_builder_t *suite, const char *pattern, size_t n
   emit_pattern(suite, pattern, strlen(pattern), n_capturing_groups);
 }
 
-void v_emit_testcase(test_suite_builder_t *suite, const char *str, size_t size, va_list args) {
-  assert(suite->last_n_capturing_groups != SIZE_MAX);
+static void
+variadic_emit_testcase(test_suite_builder_t *suite, const char *str, size_t size, va_list args) {
+  ASSERT(suite->last_n_capturing_groups != SIZE_MAX);
 
   fputc(TS_CMD_TESTCASE, suite->file);
   fwrite_u32(size, suite->file);
@@ -166,23 +166,35 @@ void v_emit_testcase(test_suite_builder_t *suite, const char *str, size_t size, 
 void emit_testcase(test_suite_builder_t *suite, const char *str, size_t size, ...) {
   va_list args;
   va_start(args, size);
-  v_emit_testcase(suite, str, size, args);
+  variadic_emit_testcase(suite, str, size, args);
   va_end(args);
 }
 
 void emit_testcase_str(test_suite_builder_t *suite, const char *str, ...) {
   va_list args;
   va_start(args, str);
-  v_emit_testcase(suite, str, strlen(str), args);
+  variadic_emit_testcase(suite, str, strlen(str), args);
   va_end(args);
 }
 
 #undef CHECK_ERROR
 
-void *default_executor_compile_regex(void *data,
-                                     const char *pattern,
-                                     size_t size,
-                                     size_t n_capturing_groups) {
+void *default_create(char **args, size_t n_args) {
+  (void)args;
+  (void)n_args;
+
+  context_t *context = crex_create_context(NULL);
+  ASSERT(context != NULL);
+
+  return context;
+}
+
+void default_destroy(void *context) {
+  crex_destroy_context(context);
+}
+
+void *
+default_compile_regex(void *data, const char *pattern, size_t size, size_t n_capturing_groups) {
   (void)data;
 
   status_t status;
@@ -195,12 +207,12 @@ void *default_executor_compile_regex(void *data,
   return regex;
 }
 
-void default_executor_destroy_regex(void *data, void *regex) {
+void default_destroy_regex(void *data, void *regex) {
   (void)data;
   crex_destroy_regex(regex);
 }
 
-int run_tests(int argc, char **argv, test_executor_t *tx) {
+int run(int argc, char **argv, test_executor_t *tx) {
   argv0 = argv[0];
 
   char **paths = argv + 1;
@@ -216,27 +228,6 @@ int run_tests(int argc, char **argv, test_executor_t *tx) {
 
   char **args = paths + n_paths + 1;
   const size_t n_args = argc - (1 + n_paths + 1);
-
-  void *tx_data;
-
-  // Both or neither of tx->{create,destroy} must be given
-  ASSERT((tx->create == NULL) == (tx->destroy == NULL));
-
-  if (tx->create != NULL) {
-    tx_data = tx->create(args, n_args);
-  } else {
-    status_t status;
-    tx_data = crex_create_context(&status);
-    ASSERT(tx_data != NULL);
-  }
-
-  if (tx->compile_regex == NULL) {
-    tx->compile_regex = default_executor_compile_regex;
-  }
-
-  if (tx->destroy_regex == NULL) {
-    tx->destroy_regex = default_executor_destroy_regex;
-  }
 
   // fopen all the suite files ahead of time to fail early in the case of a bad path
   FILE **files = malloc(sizeof(FILE *) * n_paths);
@@ -256,10 +247,13 @@ int run_tests(int argc, char **argv, test_executor_t *tx) {
   } buffer = {0, 0, NULL};
 
   match_t *expectation = NULL;
-  size_t max_groups;
+  match_t *matches = NULL;
+  size_t max_groups = 0;
 
   size_t n_tests = 0;
   size_t n_passed = 0;
+
+  void *tx_data = tx->create(args, n_args);
 
   for (size_t i = 0; i < n_paths; i++) {
     void *regex = NULL;
@@ -297,10 +291,15 @@ int run_tests(int argc, char **argv, test_executor_t *tx) {
         regex = tx->compile_regex(tx_data, buffer.str, buffer.size, n_capturing_groups);
         compiled = 1;
 
-        if (max_groups < n_capturing_groups) {
+        if (!tx->is_benchmark && max_groups < n_capturing_groups) {
           max_groups = 2 * n_capturing_groups;
+
+          free(expectation);
           expectation = malloc(sizeof(match_t) * 2 * max_groups);
           ASSERT(expectation != NULL);
+
+          free(matches);
+          matches = malloc(sizeof(match_t) * 2 * max_groups);
         }
 
         continue;
@@ -333,7 +332,11 @@ int run_tests(int argc, char **argv, test_executor_t *tx) {
         }
       }
 
-      n_passed += !!tx->run_test(tx_data, regex, buffer.str, buffer.size, expectation);
+      tx->run_test(matches, tx_data, regex, buffer.str, buffer.size);
+
+      if (!tx->is_benchmark) {
+        n_passed += memcmp(matches, expectation, sizeof(match_t) * n_capturing_groups) == 0;
+      }
     }
 
     ASSERT(!ferror(files[i]));
@@ -349,18 +352,18 @@ int run_tests(int argc, char **argv, test_executor_t *tx) {
   free(expectation);
   free(files);
 
-  if (tx->destroy != NULL) {
-    tx->destroy(tx_data);
-  } else {
-    crex_destroy_context(tx_data);
+  tx->destroy(tx_data);
+
+  if (tx->is_benchmark) {
+    // FIXME
+    return 0;
   }
 
   if (n_passed == n_tests && n_tests > 0) {
     fprintf(stderr, "\x1b[32m%zu/%zu test(s) passed\x1b[0m\n", n_passed, n_tests);
-    return 0;
+    return 1;
   }
 
   fprintf(stderr, "\x1b[33m%zu/%zu test(s) passed\x1b[0m\n", n_passed, n_tests);
-
-  return 1;
+  return 0;
 }

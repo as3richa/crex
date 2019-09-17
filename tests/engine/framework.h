@@ -51,11 +51,22 @@ void emit_testcase_str(test_suite_builder_t *suite, const char *str, ...);
 // Test executor
 
 typedef struct {
+  const char *name;
+  unsigned int is_benchmark : 1;
+  unsigned int compilation_only : 1;
+
   void *(*create)(char **, size_t);
+  void (*destroy)(void *);
+
   void *(*compile_regex)(void *, const char *, size_t, size_t);
   void (*destroy_regex)(void *, void *);
-  int (*run_test)(void *, const void *, const char *, size_t, match_t *expectation);
-  void (*destroy)(void *);
+
+  void (*run_test)(match_t *, void *, const void *, const char *, size_t);
 } test_executor_t;
 
-int run_tests(int argc, char **argv, test_executor_t *tx);
+void *default_create(char **, size_t);
+void default_destroy(void *);
+void *default_compile_regex(void *, const char *, size_t, size_t);
+void default_destroy_regex(void *, void *);
+
+int run(int argc, char **argv, test_executor_t *tx);

@@ -285,13 +285,20 @@ PUBLIC context_t *crex_create_context_with_allocator(crex_status_t *status,
   context_t *context = ALLOC(allocator, sizeof(context_t));
 
   if (context == NULL) {
-    *status = CREX_E_NOMEM;
+    if(status != NULL) {
+      *status = CREX_E_NOMEM;
+    }
+
     return NULL;
   }
 
   context->buffer = NULL;
   context->capacity = 0;
   context->allocator = *allocator;
+
+  if(status != NULL) {
+    *status = CREX_OK;
+  }
 
   return context;
 }
