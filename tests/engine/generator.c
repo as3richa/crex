@@ -35,7 +35,7 @@ int main(void) {
     }
   }
 
-  close_test_suite(suite);
+  finalize_test_suite(suite);
 
   return 0;
 }

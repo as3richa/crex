@@ -22,7 +22,7 @@ typedef struct test_suite_builder test_suite_builder_t;
 // Functions for creating test suite files
 
 test_suite_builder_t *create_test_suite(const char *path);
-void close_test_suite(test_suite_builder_t *suite);
+void finalize_test_suite(test_suite_builder_t *suite);
 
 void emit_pattern(test_suite_builder_t *suite,
                   const char *pattern,
@@ -55,7 +55,7 @@ typedef struct {
   unsigned int is_benchmark : 1;
   unsigned int compilation_only : 1;
 
-  void *(*create)(char **, size_t);
+  void *(*create)(void);
   void (*destroy)(void *);
 
   void *(*compile_regex)(void *, const char *, size_t, size_t);
@@ -64,7 +64,7 @@ typedef struct {
   void (*run_test)(match_t *, void *, const void *, const char *, size_t);
 } test_executor_t;
 
-void *default_create(char **, size_t);
+void *default_create(void);
 void default_destroy(void *);
 void *default_compile_regex(void *, const char *, size_t, size_t);
 void default_destroy_regex(void *, void *);
