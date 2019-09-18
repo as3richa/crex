@@ -226,6 +226,16 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
                                             const char *pattern,
                                             size_t size,
                                             const allocator_t *allocator) {
+  status_t local_status;
+
+  if(status == NULL) {
+    status = &local_status;
+  }
+
+  if(allocator == NULL) {
+    allocator = &default_allocator;
+  }
+
   regex_t *regex = ALLOC(allocator, sizeof(regex_t));
 
   if (regex == NULL) {
@@ -282,6 +292,10 @@ PUBLIC context_t *crex_create_context(status_t *status) {
 
 PUBLIC context_t *crex_create_context_with_allocator(crex_status_t *status,
                                                      const allocator_t *allocator) {
+  if(allocator == NULL) {
+    allocator = &default_allocator;
+  }
+
   context_t *context = ALLOC(allocator, sizeof(context_t));
 
   if (context == NULL) {

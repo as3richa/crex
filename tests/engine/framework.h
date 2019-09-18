@@ -12,10 +12,17 @@ NO_RETURN void die(const char *format, ...);
   (void)(condition || (die("%s:%u: assertion failed: %s", __FILE__, __LINE__, #condition), 1))
 
 // For brevity
+typedef crex_allocator_t allocator_t;
 typedef crex_status_t status_t;
 typedef crex_context_t context_t;
 typedef crex_regex_t regex_t;
 typedef crex_match_t match_t;
+
+typedef struct {
+  void *context;
+  void *(*alloc)(size_t, void *);
+  void (*free)(void *, void *);
+} pcre_allocator_t;
 
 typedef struct test_suite_builder test_suite_builder_t;
 
@@ -50,23 +57,19 @@ void emit_testcase_str(test_suite_builder_t *suite, const char *str, ...);
 
 // Test executor
 
-typedef struct {
-  const char *name;
-  unsigned int is_benchmark : 1;
-  unsigned int compilation_only : 1;
+typedef enum { BM_NONE, BM_TIME, BM_TIME_MEMORY_CREX, BM_TIME_MEMORY_PCRE } benchmark_type_t;
 
-  void *(*create)(void);
+typedef struct {
+  benchmark_type_t benchmark_type;
+  unsigned int compile_only : 1;
+
+  void *(*create)(const void *);
   void (*destroy)(void *);
 
-  void *(*compile_regex)(void *, const char *, size_t, size_t);
+  void *(*compile_regex)(void *, const char *, size_t, size_t, const void *);
   void (*destroy_regex)(void *, void *);
 
   void (*run_test)(match_t *, void *, const void *, const char *, size_t);
-} test_executor_t;
+} test_harness_t;
 
-void *default_create(void);
-void default_destroy(void *);
-void *default_compile_regex(void *, const char *, size_t, size_t);
-void default_destroy_regex(void *, void *);
-
-int run(int argc, char **argv, test_executor_t *tx);
+int run(int argc, char **argv, const test_harness_t *harness);

@@ -248,67 +248,78 @@ void emit_testcase_str(test_suite_builder_t *suite, const char *str, ...) {
 
 #undef CHECK_ERROR
 
-void *default_create(void) {
-  (void)args;
-  (void)n_args;
+static size_t parse_size(char *str) {
+  size_t value = 0;
 
-  context_t *context = crex_create_context(NULL);
-  ASSERT(context != NULL);
+  while (*str != 0) {
+    size_t digit = *str - '0';
+    ASSERT(digit <= 9 && value <= (SIZE_MAX - digit) / 10);
+    value = 10 * value + digit;
+  }
 
-  return context;
+  return value;
 }
 
-void default_destroy(void *context) {
-  crex_destroy_context(context);
-}
-
-void *
-default_compile_regex(void *data, const char *pattern, size_t size, size_t n_capturing_groups) {
-  (void)data;
-
-  status_t status;
-
-  regex_t *regex = crex_compile(&status, pattern, size);
-  ASSERT(regex != NULL);
-
-  ASSERT(crex_regex_n_capturing_groups(regex) == n_capturing_groups);
-
-  return regex;
-}
-
-void default_destroy_regex(void *data, void *regex) {
-  (void)data;
-  crex_destroy_regex(regex);
-}
-
-int run(int argc, char **argv, test_executor_t *tx) {
+int run(int argc, char **argv, const test_harness_t *harness) {
   argv0 = argv[0];
 
   char **paths = argv + 1;
-  size_t n_paths = 0;
+  size_t n_suites = 0;
 
-  while (n_paths + 1 < (size_t)argc) {
-    if (strcmp(paths[n_paths], "--") == 0) {
-      break;
+  struct {
+    int verbose;
+    size_t suite_iterations;
+    size_t compile_iterations;
+    size_t testcase_iterations;
+  } options;
+
+  options.verbose = 0;
+  options.suite_iterations = 1;
+
+  options.compile_iterations =
+      (harness->benchmark_type != BM_NONE && harness->compile_only) ? 1000 : 1;
+
+  options.testcase_iterations =
+      (harness->benchmark_type == BM_NONE) ? !harness->compile_only : 1000;
+
+  for (int i = 0; i < argc - 1; i++) {
+    if (strcmp(paths[i], "-v") == 0) {
+      options.verbose = 1;
+      continue;
     }
 
-    n_paths++;
+    if (strcmp(paths[i], "--suite-iterations") == 0 || strcmp(paths[i], "-s") == 0) {
+      ASSERT(i < argc - 2);
+      options.suite_iterations = parse_size(paths[++i]);
+      continue;
+    }
+
+    if (strcmp(paths[i], "--compile-iterations") == 0 || strcmp(paths[i], "-c") == 0) {
+      ASSERT(i < argc - 2);
+      options.compile_iterations = parse_size(paths[++i]);
+      continue;
+    }
+
+    if (strcmp(paths[i], "--testcase-iterations") == 0 || strcmp(paths[i], "-t") == 0) {
+      ASSERT(i < argc - 2);
+      options.testcase_iterations = parse_size(paths[++i]);
+      continue;
+    }
+
+    paths[n_suites++] = paths[i];
   }
 
-  char **args = paths + n_paths + 1;
-  const size_t n_args = argc - (1 + n_paths + 1);
-
-  // Eagerly mmap all the suites to fail fast in the event of a bad path
+  // Eagerly mmap all the suites, in order to fail fast in the event of a bad path
 
   struct {
     size_t size;
     void *mapping;
   } * suites;
 
-  suites = malloc(sizeof(*suites) * n_paths);
+  suites = malloc(sizeof(*suites) * n_suites);
   ASSERT(suites != NULL);
 
-  for (size_t i = 0; i < n_paths; i++) {
+  for (size_t i = 0; i < n_suites; i++) {
     const int fd = open(paths[i], O_RDONLY);
     ASSERT(fd != -1);
 
@@ -324,15 +335,35 @@ int run(int argc, char **argv, test_executor_t *tx) {
     close(fd);
   }
 
+  union {
+    allocator_t crex;
+    pcre_allocator_t pcre;
+  } allocator_struct;
+
+  void *allocator;
+
+  switch (harness->benchmark_type) {
+  case BM_TIME_MEMORY_CREX:
+    // FIXME
+    break;
+
+  case BM_TIME_MEMORY_PCRE:
+    // FIXME
+    break;
+
+  default:
+    allocator = NULL;
+  }
+
+  void *harness_data = harness->create(allocator);
+
   match_t *matches = NULL;
   size_t max_groups = 0;
 
   size_t n_tests = 0;
   size_t n_passed = 0;
 
-  void *tx_data = tx->create(args, n_args);
-
-  for (size_t i = 0; i < n_paths; i++) {
+  for (size_t i = 0; i < n_suites; i++) {
     void *regex = NULL;
     size_t n_capturing_groups = SIZE_MAX;
 
@@ -346,11 +377,11 @@ int run(int argc, char **argv, test_executor_t *tx) {
         k += TS_PATTERN_SIZE(pattern->size);
 
         if (regex != NULL) {
-          tx->destroy_regex(tx_data, regex);
+          harness->destroy_regex(harness_data, regex);
         }
 
-        regex = tx->compile_regex(
-            tx_data, pattern->pattern, pattern->size, pattern->n_capturing_groups);
+        regex = harness->compile_regex(
+            harness_data, pattern->pattern, pattern->size, pattern->n_capturing_groups, allocator);
 
         n_capturing_groups = pattern->n_capturing_groups;
 
@@ -372,12 +403,12 @@ int run(int argc, char **argv, test_executor_t *tx) {
         ASSERT(matches != NULL);
       }
 
-      tx->run_test(matches, tx_data, regex, str->str, str->size);
+      harness->run_test(matches, harness_data, regex, str->str, str->size);
 
       match_t *expectation = suites[i].mapping + k;
       k += sizeof(match_t) * n_capturing_groups;
 
-      if (!tx->is_benchmark) {
+      if (harness->benchmark_type == BM_NONE) {
         for (size_t j = 0; j < n_capturing_groups; j++) {
           if (expectation[j].begin == NULL) {
             ASSERT(expectation[j].end == NULL);
@@ -394,12 +425,10 @@ int run(int argc, char **argv, test_executor_t *tx) {
 
     ASSERT(k == suites[i].size);
 
-    tx->destroy_regex(tx_data, regex);
+    harness->destroy_regex(harness_data, regex);
   }
 
-  tx->destroy(tx_data);
-
-  if (tx->is_benchmark) {
+  if (harness->benchmark_type != BM_NONE) {
     // FIXME
     return 0;
   }
