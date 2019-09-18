@@ -3,9 +3,11 @@
 
 #include <stdlib.h>
 
-#include "framework.h"
+#include "test-harness.h"
 
-extern const test_harness_t crex_correctness;
+extern const test_harness_t crex_correctness_default;
+extern const test_harness_t crex_bench_default;
+extern const test_harness_t crex_bench_compile_default;
 
 #define HARNESS_MAIN(harness)                                                                      \
   int main(int argc, char **argv) {                                                                \

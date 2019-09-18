@@ -228,11 +228,11 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
                                             const allocator_t *allocator) {
   status_t local_status;
 
-  if(status == NULL) {
+  if (status == NULL) {
     status = &local_status;
   }
 
-  if(allocator == NULL) {
+  if (allocator == NULL) {
     allocator = &default_allocator;
   }
 
@@ -292,14 +292,14 @@ PUBLIC context_t *crex_create_context(status_t *status) {
 
 PUBLIC context_t *crex_create_context_with_allocator(crex_status_t *status,
                                                      const allocator_t *allocator) {
-  if(allocator == NULL) {
+  if (allocator == NULL) {
     allocator = &default_allocator;
   }
 
   context_t *context = ALLOC(allocator, sizeof(context_t));
 
   if (context == NULL) {
-    if(status != NULL) {
+    if (status != NULL) {
       *status = CREX_E_NOMEM;
     }
 
@@ -310,7 +310,7 @@ PUBLIC context_t *crex_create_context_with_allocator(crex_status_t *status,
   context->capacity = 0;
   context->allocator = *allocator;
 
-  if(status != NULL) {
+  if (status != NULL) {
     *status = CREX_OK;
   }
 
