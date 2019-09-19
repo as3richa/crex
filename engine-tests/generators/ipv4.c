@@ -1,12 +1,10 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "builder.h"
+#include "../framework/builder.h"
 
-#define MATCH(str, position)
-
-int main(void) {
-  test_suite_builder_t *suite = create_test_suite("ipv4.bin");
+int main(int argc, char **argv) {
+  test_suite_builder_t *suite = create_test_suite_argv(argc, argv);
 
   emit_pattern_str(
       suite,

@@ -1,3 +1,8 @@
+#undef NDEBUG
+
+// FIXME: need this for clock_gettime; this doesn't work on OSX
+#define _GNU_SOURCE
+
 #include <assert.h>
 #include <fcntl.h>
 #include <stddef.h>
@@ -7,6 +12,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -101,7 +107,7 @@ int run(int argc, char **argv, const test_harness_t *harness) {
 
   struct {
     size_t size;
-    void *mapping;
+    char *mapping;
   } * suites;
 
   suites = malloc(sizeof(*suites) * n_suites);
@@ -167,8 +173,8 @@ int run(int argc, char **argv, const test_harness_t *harness) {
     void *regex = NULL;
     size_t n_capturing_groups = SIZE_MAX;
 
-    for (void *cursor = suites[i].mapping; cursor < suites[i].mapping + suites[i].size;) {
-      ts_cmd_t *cmd = cursor;
+    for (char *cursor = suites[i].mapping; cursor < suites[i].mapping + suites[i].size;) {
+      ts_cmd_t *cmd = (ts_cmd_t *)cursor;
 
       if (cmd->type == TS_CMD_PATTERN) {
         ts_pattern_t *pattern = &cmd->u.pattern;
@@ -208,7 +214,7 @@ int run(int argc, char **argv, const test_harness_t *harness) {
         assert(matches != NULL);
       }
 
-      match_t *expectation = cursor;
+      match_t *expectation = (match_t *)cursor;
       cursor += sizeof(match_t) * n_capturing_groups;
 
       if (harness->benchmark_type == BM_NONE) {

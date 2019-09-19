@@ -1,9 +1,14 @@
 #ifndef BUILDER_H
 #define BUILDER_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 typedef struct test_suite_builder test_suite_builder_t;
 
 test_suite_builder_t *create_test_suite(const char *path);
+test_suite_builder_t *create_test_suite_argv(int argc, char **argv);
+
 void finalize_test_suite(test_suite_builder_t *suite);
 
 void emit_pattern(test_suite_builder_t *suite,

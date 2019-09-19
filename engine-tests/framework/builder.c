@@ -1,3 +1,8 @@
+#undef NDEBUG
+
+// For ftruncate. FIXME
+#define _GNU_SOURCE
+
 #include <assert.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -20,7 +25,7 @@ struct test_suite_builder {
   size_t page_size;
   size_t capacity;
 
-  void *mapping;
+  char *mapping;
 
   size_t n_capturing_groups;
 };
@@ -28,39 +33,7 @@ struct test_suite_builder {
 #define CHECK_ERROR(condition, suite)                                                              \
   (condition || ((delete_test_suite(suite), 1) && (assert(condition), 1)))
 
-static void delete_test_suite(test_suite_builder_t *suite) {
-  unlink(suite->path);
-}
-
-void *append_to_suite(test_suite_builder_t *suite, size_t size) {
-  if (suite->size + size <= suite->capacity) {
-    void *result = suite->mapping + suite->size;
-    suite->size += size;
-
-    return result;
-  }
-
-  int status = msync(suite->mapping, suite->capacity, MS_SYNC);
-  CHECK_ERROR(status != -1, suite);
-
-  munmap(suite->mapping, suite->capacity);
-
-  suite->capacity = 2 * suite->capacity + suite->page_size;
-  assert(suite->size + size <= suite->capacity);
-
-  status = ftruncate(suite->fd, suite->capacity);
-  CHECK_ERROR(status != -1, suite);
-
-  void *mapping = mmap(NULL, suite->capacity, PROT_WRITE, MAP_SHARED, suite->fd, 0);
-  CHECK_ERROR(mapping != MAP_FAILED, suite);
-
-  suite->mapping = mapping;
-
-  void *result = suite->mapping + suite->size;
-  suite->size += size;
-
-  return result;
-}
+static void delete_test_suite(test_suite_builder_t *suite);
 
 test_suite_builder_t *create_test_suite(const char *path) {
   test_suite_builder_t *suite = malloc(sizeof(test_suite_builder_t));
@@ -82,12 +55,26 @@ test_suite_builder_t *create_test_suite(const char *path) {
   return suite;
 }
 
+test_suite_builder_t *create_test_suite_argv(int argc, char **argv) {
+  assert(argc == 2);
+  return create_test_suite(argv[1]);
+}
+
+static void delete_test_suite(test_suite_builder_t *suite) {
+  unlink(suite->path);
+}
+
 void finalize_test_suite(test_suite_builder_t *suite) {
   ftruncate(suite->fd, suite->size);
   close(suite->fd);
+
   munmap(suite->mapping, suite->capacity);
+  munmap(suite->mapping, suite->capacity);
+
   free(suite);
 }
+
+static void *append_to_suite(test_suite_builder_t *suite, size_t size);
 
 void emit_pattern(test_suite_builder_t *suite,
                   const char *pattern,
@@ -193,6 +180,36 @@ void emit_testcase_str(test_suite_builder_t *suite, const char *str, ...) {
   va_start(args, str);
   variadic_emit_testcase(suite, str, strlen(str), args);
   va_end(args);
+}
+
+static void *append_to_suite(test_suite_builder_t *suite, size_t size) {
+  if (suite->size + size <= suite->capacity) {
+    char *result = suite->mapping + suite->size;
+    suite->size += size;
+
+    return result;
+  }
+
+  int status = msync(suite->mapping, suite->capacity, MS_SYNC);
+  CHECK_ERROR(status != -1, suite);
+
+  munmap(suite->mapping, suite->capacity);
+
+  suite->capacity = 2 * suite->capacity + suite->page_size;
+  assert(suite->size + size <= suite->capacity);
+
+  status = ftruncate(suite->fd, suite->capacity);
+  CHECK_ERROR(status != -1, suite);
+
+  void *mapping = mmap(NULL, suite->capacity, PROT_WRITE, MAP_SHARED, suite->fd, 0);
+  CHECK_ERROR(mapping != MAP_FAILED, suite);
+
+  suite->mapping = mapping;
+
+  void *result = suite->mapping + suite->size;
+  suite->size += size;
+
+  return result;
 }
 
 #undef CHECK_ERROR

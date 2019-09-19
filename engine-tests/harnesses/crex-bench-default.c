@@ -1,3 +1,3 @@
-#include "harnesses.h"
+#include "../framework/harnesses.h"
 
-HARNESS_MAIN(crex_bench_default);
+HARNESS_MAIN(crex_bench_default)
