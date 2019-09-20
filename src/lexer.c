@@ -345,7 +345,7 @@ static status_t lex_char_class(char_classes_t *classes,
       return CREX_E_NOMEM;
     }
 
-    safe_memcpy(buffer, classes->buffer, sizeof(char_class_t) * classes->size);
+    memcpy(buffer, classes->buffer, sizeof(char_class_t) * classes->size);
     FREE(allocator, classes->buffer);
 
     classes->capacity = capacity;
@@ -377,7 +377,10 @@ static status_t lex_char_class(char_classes_t *classes,
   do {                                                                                             \
     if (is_range) {                                                                                \
       assert(prev_character != -1);                                                                \
-      for (unsigned char i = prev_character + 1; i <= character; i++) {                            \
+      if (character < prev_character) {                                                            \
+        return CREX_E_BAD_CHARACTER_CLASS;                                                         \
+      }                                                                                            \
+      for (size_t i = (size_t)prev_character + 1; i <= character; i++) {                           \
         bitmap_set(bitmap, i);                                                                     \
       }                                                                                            \
       prev_character = -1;                                                                         \
@@ -465,7 +468,7 @@ static status_t lex_char_class(char_classes_t *classes,
         const size_t index = token->data.char_class_index;
         const unsigned char *other_bitmap = builtin_classes[index];
 
-        bitmap_union(bitmap, other_bitmap, sizeof(bitmap));
+        bitmap_union(bitmap, other_bitmap, sizeof(char_class_t));
 
         prev_character = -1;
 
@@ -488,7 +491,6 @@ static status_t lex_char_class(char_classes_t *classes,
 
     default:
       PUSH_CHAR(character);
-      break;
     }
   }
 

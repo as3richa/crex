@@ -22,50 +22,50 @@ int read_line(string_t *str);
 void print(const string_t *str);
 
 int main(void) {
-  string_t pattern = {0, 0, NULL};
+  string_t str = {0, 0, NULL};
 
   fputs("pattern> ", stdout);
 
-  if (!read_line(&pattern)) {
-    free(pattern.buffer);
+  if (!read_line(&str)) {
+    free(str.buffer);
     return 1;
   }
 
   putchar('\n');
 
-  print(&pattern);
+  print(&str);
 
   puts("\n");
 
   crex_status_t status;
 
-  status = crex_print_tokenization(pattern.buffer, pattern.size, stdout);
+  status = crex_print_tokenization(str.buffer, str.size, stdout);
 
   if (status != CREX_OK) {
-    free(pattern.buffer);
+    free(str.buffer);
     return 1;
   }
 
   putchar('\n');
 
-  status = crex_print_parsetree(pattern.buffer, pattern.size, stdout);
+  status = crex_print_parsetree(str.buffer, str.size, stdout);
 
   if (status != CREX_OK) {
-    free(pattern.buffer);
+    free(str.buffer);
     return 1;
   }
 
   putchar('\n');
 
   if (status != CREX_OK) {
-    free(pattern.buffer);
+    free(str.buffer);
     return 1;
   }
 
-  crex_regex_t *regex = crex_compile(&status, pattern.buffer, pattern.size);
+  crex_regex_t *regex = crex_compile(&status, str.buffer, str.size);
 
   if (regex == NULL) {
-    free(pattern.buffer);
+    free(str.buffer);
     return 1;
   }
 
@@ -77,11 +77,9 @@ int main(void) {
 
   if (context == NULL) {
     crex_destroy_regex(regex);
-    free(pattern.buffer);
+    free(str.buffer);
     return 1;
   }
-
-  string_t str = {0, 0, NULL};
 
   while (!feof(stdin)) {
     putchar('\n');
@@ -90,7 +88,7 @@ int main(void) {
     if (!read_line(&str)) {
       crex_destroy_context(context);
       crex_destroy_regex(regex);
-      free(pattern.buffer);
+      free(str.buffer);
       return 1;
     }
 
@@ -101,7 +99,7 @@ int main(void) {
     if (status != CREX_OK) {
       crex_destroy_context(context);
       crex_destroy_regex(regex);
-      free(pattern.buffer);
+      free(str.buffer);
       return 1;
     }
 
@@ -137,7 +135,7 @@ int main(void) {
 
   crex_destroy_context(context);
   crex_destroy_regex(regex);
-  free(pattern.buffer);
+  free(str.buffer);
 
   return 0;
 }
