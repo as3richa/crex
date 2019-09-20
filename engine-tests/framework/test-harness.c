@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 
 #include <assert.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -29,6 +30,42 @@ static size_t parse_size(char *str) {
   }
 
   return value;
+}
+
+static size_t literallify(char *result, const char *str, size_t size) {
+  char *begin = result;
+
+  *(result++) = '"';
+
+  for (size_t i = 0; i < size; i++) {
+    switch (str[i]) {
+    case '\\': {
+      *(result++) = '\\';
+      *(result++) = '\\';
+      break;
+    }
+
+    case '\n': {
+      *(result++) = '\\';
+      *(result++) = '\n';
+      break;
+    }
+
+    default: {
+      if (isprint(str[i])) {
+        *(result++) = str[i];
+      } else {
+        result +=
+            sprintf(result, "\\\\x%x%x", (unsigned char)str[i] / 16, (unsigned char)str[i] % 16);
+      }
+    }
+    }
+  }
+
+  *(result++) = '"';
+  *(result++) = 0;
+
+  return result - begin;
 }
 
 static double delta(struct timespec *finish, struct timespec *start) {
@@ -158,6 +195,13 @@ int run(int argc, char **argv, const test_harness_t *harness) {
     allocator = NULL;
   }
 
+  struct {
+    ts_pattern_t *pattern;
+    ts_str_t *str;
+    match_t *expectation;
+    match_t *matches;
+  } failure = {NULL};
+
   void *harness_data = harness->create(allocator);
 
   match_t *matches = NULL;
@@ -170,6 +214,8 @@ int run(int argc, char **argv, const test_harness_t *harness) {
   clock_gettime(CLOCK_MONOTONIC, &start);
 
   for (size_t i = 0; i < n_suites; i++) {
+    ts_pattern_t *pattern = NULL;
+
     void *regex = NULL;
     size_t n_capturing_groups = SIZE_MAX;
 
@@ -177,13 +223,11 @@ int run(int argc, char **argv, const test_harness_t *harness) {
       ts_cmd_t *cmd = (ts_cmd_t *)cursor;
 
       if (cmd->type == TS_CMD_PATTERN) {
-        ts_pattern_t *pattern = &cmd->u.pattern;
+        pattern = &cmd->u.pattern;
         cursor += TS_PATTERN_SIZE(pattern->size);
 
         for (size_t j = 0; j < options.compile_iterations; j++) {
-          if (regex != NULL) {
-            harness->destroy_regex(harness_data, regex);
-          }
+          harness->destroy_regex(harness_data, regex);
 
           regex = harness->compile_regex(harness_data,
                                          pattern->pattern,
@@ -192,13 +236,14 @@ int run(int argc, char **argv, const test_harness_t *harness) {
                                          allocator);
         }
 
+        // Cache this for better locality
         n_capturing_groups = pattern->n_capturing_groups;
 
         continue;
       }
 
       assert(cmd->type == TS_CMD_STR);
-      assert(n_capturing_groups != SIZE_MAX);
+      assert(pattern != NULL && n_capturing_groups != SIZE_MAX);
 
       if (options.testcase_iterations == 0) {
         continue;
@@ -235,14 +280,24 @@ int run(int argc, char **argv, const test_harness_t *harness) {
         n_tests++;
 
         if (harness->benchmark_type == BM_NONE) {
-          n_passed += memcmp(matches, expectation, sizeof(match_t) * n_capturing_groups) == 0;
+          const int ok = memcmp(matches, expectation, sizeof(match_t) * n_capturing_groups) == 0;
+          n_passed += ok;
+
+          if (!ok && failure.pattern == NULL && pattern->size <= 50 && str->size <= 50) {
+            failure.pattern = pattern;
+            failure.str = str;
+            failure.expectation = expectation;
+
+            failure.matches = malloc(sizeof(match_t) * n_capturing_groups);
+            assert(failure.matches != NULL);
+
+            memcpy(failure.matches, matches, sizeof(match_t) * n_capturing_groups);
+          }
         }
       }
     }
 
-    if (regex != NULL) {
-      harness->destroy_regex(harness_data, regex);
-    }
+    harness->destroy_regex(harness_data, regex);
   }
 
   struct timespec finish;
@@ -250,20 +305,61 @@ int run(int argc, char **argv, const test_harness_t *harness) {
 
   const double total_time = delta(&finish, &start);
 
+  int ok = 1;
+
   if (harness->benchmark_type != BM_NONE) {
     fprintf(stderr, "\x1b[32mran %zu test(s) in %0.4fs\x1b[0m\n", n_tests, total_time);
-    return 0;
-  }
-
-  if (n_passed == n_tests && n_tests > 0) {
+  } else if (n_passed == n_tests && n_tests > 0) {
     fprintf(
         stderr, "\x1b[32m%zu/%zu test(s) passed in %0.4fs\x1b[0m\n", n_passed, n_tests, total_time);
+  } else {
+    ok = 0;
 
-    return 1;
+    fprintf(
+        stderr, "\x1b[33m%zu/%zu test(s) passed in %0.4fs\x1b[0m\n", n_passed, n_tests, total_time);
+
+    if (failure.pattern != NULL) {
+      char buffer[1000];
+
+      literallify(buffer, failure.pattern->pattern, failure.pattern->size);
+
+      fprintf(stderr, "\nfailing case:\n  pattern: %s\n", buffer);
+
+      literallify(buffer, failure.str->str, failure.str->size);
+      fprintf(stderr, "  str: %s\n", buffer);
+
+      for (size_t k = 0; k <= 1; k++) {
+        fprintf(stderr, "  %s:\n", (k == 0) ? "matches" : "expectation");
+
+        // FIXME: don't shadow, it's evil
+        match_t *matches = (k == 0) ? failure.matches : failure.expectation;
+
+        for (size_t i = 0; i < failure.pattern->n_capturing_groups; i++) {
+          const int ok = failure.matches[i].begin == failure.expectation[i].begin &&
+                         failure.matches[i].end == failure.expectation[i].end;
+
+          const char *color_code = ok ? "\x1b[32m" : "\x1b[31m";
+
+          fprintf(stderr, "    %s%zu => ", color_code, i);
+
+          if (matches[i].begin != NULL) {
+            literallify(buffer, matches[i].begin, matches[i].end - matches[i].begin);
+
+            fprintf(stderr,
+                    "%s (@ %zu)\x1b[0m\n",
+                    buffer,
+                    (size_t)(matches[i].begin - failure.str->str));
+          } else {
+            fputs("<unmatched>\x1b[0m\n", stderr);
+          }
+        }
+      }
+
+      free(failure.matches);
+    }
   }
 
-  fprintf(
-      stderr, "\x1b[33m%zu/%zu test(s) passedin %0.4fs\x1b[0m\n", n_passed, n_tests, total_time);
+  free(matches);
 
-  return 0;
+  return ok;
 }

@@ -254,16 +254,16 @@ lex_escape_code(token_t *token, const char **pattern, const char *eof) {
         return CREX_E_BAD_ESCAPE;
       }
 
-      const char heR_byte = *((*pattern)++);
+      const char hex_byte = *((*pattern)++);
 
       int digit;
 
-      if ('0' <= heR_byte && heR_byte <= '9') {
-        digit = heR_byte - '0';
-      } else if ('a' <= heR_byte && heR_byte <= 'f') {
-        digit = heR_byte - 'a' + 0xa;
-      } else if ('A' <= heR_byte && heR_byte <= 'F') {
-        digit = heR_byte - 'A' + 0xa;
+      if ('0' <= hex_byte && hex_byte <= '9') {
+        digit = hex_byte - '0';
+      } else if ('a' <= hex_byte && hex_byte <= 'f') {
+        digit = hex_byte - 'a' + 0xa;
+      } else if ('A' <= hex_byte && hex_byte <= 'F') {
+        digit = hex_byte - 'A' + 0xa;
       } else {
         return CREX_E_BAD_ESCAPE;
       }

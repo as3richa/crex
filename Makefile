@@ -75,6 +75,6 @@ run-engine-tests: bin/engine-tests/crex-correctness-default $(ENGINE_TEST_SUITES
 	bin/engine-tests/crex-correctness-default $(ENGINE_TEST_SUITES)
 
 clean:
-	rm -rf build bin
+	rm -rf build bin $(STATIC_LIBRARY) $(DYNAMIC_LIBRARY)
 
 include $(DEPENDENCY_FILES)
