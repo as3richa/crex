@@ -187,6 +187,8 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
     code = emit_bytecode_copy(code, &right);
     code = emit_bytecode(code, VM_TEST_AND_SET_FLAG, flag, flag_size);
 
+    // FIXME: strange things happening over here
+
     shrink_bytecode(bytecode, code, allocator);
 
     DESTROY_BYTECODE(left, allocator);

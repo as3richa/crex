@@ -384,11 +384,12 @@ static status_t lex_char_class(char_classes_t *classes,
         bitmap_set(bitmap, i);                                                                     \
       }                                                                                            \
       prev_character = -1;                                                                         \
+      is_range = 0;                                                                                \
     } else {                                                                                       \
       bitmap_set(bitmap, character);                                                               \
       prev_character = character;                                                                  \
     }                                                                                              \
-    is_range = 0;                                                                                  \
+                                                                                                   \
   } while (0)
 
   for (;;) {
@@ -492,6 +493,10 @@ static status_t lex_char_class(char_classes_t *classes,
     default:
       PUSH_CHAR(character);
     }
+  }
+
+  if (is_range) {
+    bitmap_set(bitmap, '-');
   }
 
 #undef PUSH_CHAR

@@ -161,7 +161,7 @@ WARN_UNUSED_RESULT static int grow_assembler(assembler_t *as) {
   }
 
   // Otherwise, allocate an entirely new mapping
-  munmap(next, capacity);
+  munmap(next, capacity - as->capacity);
   unsigned char *code = mmap(NULL, capacity, prot, flags, -1, 0);
 
   if (next == MAP_FAILED) {

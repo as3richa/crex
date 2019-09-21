@@ -1,7 +1,7 @@
-#include "../framework/builder.h"
+#include "../framework/suite-builder.h"
 
 int main(int argc, char **argv) {
-  test_suite_builder_t *suite = create_test_suite_argv(argc, argv);
+  suite_builder_t *suite = create_test_suite_argv(argc, argv);
 
   const char *special_chars = ".*+?[^$()|\\";
 

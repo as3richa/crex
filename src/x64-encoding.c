@@ -132,6 +132,7 @@ static void copy_displacement(unsigned char *destination, long value, size_t siz
   if (size == 1) {
     assert(-128 <= value && value <= 127);
     *destination = value;
+    return;
   }
 
   assert(-2147483648 <= value && value <= 2147483647);

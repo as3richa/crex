@@ -1,15 +1,15 @@
 CFLAGS := $(CFLAGS) -std=c99 -pedantic -Wall -Wextra -fPIC -Iinclude
 
 ifeq ($(ENV),development)
-	CFLAGS := $(CFLAGS) -g -O0
+  CFLAGS := $(CFLAGS) -g -O0
 else
-	CFLAGS := $(CFLAGS) -O3 -DNDEBUG
+  CFLAGS := $(CFLAGS) -O3 -DNDEBUG
 
-	ifeq ($(shell uname),Darwin)
-		LDFLAGS := $(LDFLAGS) -Wl,-x
-	else
-		LDFLAGS := $(LDFLAGS) -Wl,-x,-s,--version-script=libcrex.version
-	endif
+  ifeq ($(shell uname),Darwin)
+    LDFLAGS := $(LDFLAGS) -Wl,-x
+  else
+    LDFLAGS := $(LDFLAGS) -Wl,-x,-s,--version-script=libcrex.version
+  endif
 endif
 
 $(shell mkdir -p build/src/tools bin/{tools,engine-tests} build/engine-tests/{framework,generators,harnesses})
@@ -19,6 +19,9 @@ DYNAMIC_LIBRARY := libcrex.so.1
 STATIC_LIBRARY := libcrex.a
 
 X64_ASSEMBLER := build/x64.h
+
+ENGINE_TEST_FRAMEWORK_STATIC_LIBRARY := build/engine-tests/framework.a
+ENGINE_TEST_FRAMEWORK_OBJECTS := $(addprefix build/engine-tests/framework/,$(addsuffix .o,$(basename $(notdir $(wildcard engine-tests/framework/*.c)))))
 
 ENGINE_TEST_HARNESSES := $(addprefix bin/engine-tests/,$(basename $(notdir $(wildcard engine-tests/harnesses/*.c))))
 ENGINE_TEST_GENERATORS := $(addprefix build/engine-tests/generators/,$(basename $(notdir $(wildcard engine-tests/generators/*.c))))
@@ -60,19 +63,22 @@ build/%.o: %.c
 bin/tools/%: build/src/tools/%.o $(STATIC_LIBRARY)
 	$(CC) $(CFLAGS) -o $@ $^
 
+run-engine-tests: bin/engine-tests/crex-correctness-default $(ENGINE_TEST_SUITES)
+	bin/engine-tests/crex-correctness-default $(ENGINE_TEST_SUITES)
+
 engine-tests: $(ENGINE_TEST_HARNESSES) $(ENGINE_TEST_SUITES)
 
-bin/engine-tests/%: build/engine-tests/harnesses/%.o build/engine-tests/framework/test-harness.o build/engine-tests/framework/harnesses.o $(STATIC_LIBRARY)
+$(ENGINE_TEST_FRAMEWORK_STATIC_LIBRARY): $(ENGINE_TEST_FRAMEWORK_OBJECTS)
+	$(AR) rcs $@ $^
+
+bin/engine-tests/%: build/engine-tests/harnesses/%.o $(ENGINE_TEST_FRAMEWORK_STATIC_LIBRARY) $(STATIC_LIBRARY)
 	$(CC) $(CFLAGS) -o $@ $^
+
+build/engine-tests/generators/%: build/engine-tests/generators/%.o $(ENGINE_TEST_FRAMEWORK_STATIC_LIBRARY)
+	$(CC) $(CFLAGS) -o $@ $^ 
 
 bin/engine-tests/%.bin: build/engine-tests/generators/%
 	$^ $@
-
-build/engine-tests/generators/%: build/engine-tests/generators/%.o build/engine-tests/framework/builder.o
-	$(CC) $(CFLAGS) -o $@ $^ 
-
-run-engine-tests: bin/engine-tests/crex-correctness-default $(ENGINE_TEST_SUITES)
-	bin/engine-tests/crex-correctness-default $(ENGINE_TEST_SUITES)
 
 clean:
 	rm -rf build bin $(STATIC_LIBRARY) $(DYNAMIC_LIBRARY)

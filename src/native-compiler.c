@@ -38,6 +38,8 @@
 
 #define STACK_FRAME_SIZE 72
 
+#define M_FLAG_BUFFER M_INDIRECT_REG(R_BUFFER)
+
 #define M_DEREF_HANDLE(reg) M_INDIRECT_BSXD(R_BUFFER, SCALE_1, reg, 0)
 
 #define R_IS_CALLEE_SAVED(reg) (reg == RBX || reg == RBP || (R12 <= reg && reg <= R15))
@@ -109,6 +111,9 @@ enum {
 
 // INSTR_LABEL(k) is a label pointing to the bytecode instruction starting at index k, if any
 #define INSTR_LABEL(index) (N_STATIC_LABELS + (index))
+
+// The first 64 flags are stored in a register, the remainder in memory
+#define FLAG_BUFFER_SIZE(n_flags) (((((n_flags)-64) + 63) / 64) * 8)
 
 WARN_UNUSED_RESULT static int
 compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *allocator);
@@ -264,8 +269,10 @@ static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *
   ASM2(mov64_reg_i32, R_FREELIST, -1);
 
   if (n_flags > 64) {
-    // FIXME: allocate flag buffer if necessary
-    assert(0);
+    ASM2(mov32_reg_i32, R_SCRATCH, FLAG_BUFFER_SIZE(n_flags));
+    ASM1(call_label, LABEL_ALLOC_MEMORY);
+
+    // The result is in R_SCRATCH, but it is necessarily 0 (because that was the first allocation)
   }
 
   return 1;
@@ -390,11 +397,16 @@ compile_state_list_loop(assembler_t *as, const regex_t *regex, const allocator_t
   ASM2(mov64_reg_i32, R_PREDECESSOR, -1);
   ASM2(mov64_reg_mem, R_STATE, M_HEAD);
 
-  ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
+  if (regex->n_flags > 0) {
+    ASM2(xor32_reg_reg, R_FLAGS, R_FLAGS);
 
-  if (regex->n_flags > 64) {
-    // FIXME: wipe flag bitmap
-    assert(0);
+    if (regex->n_flags >= 64) {
+      const size_t quadwords = FLAG_BUFFER_SIZE(regex->n_flags) / 8;
+
+      for (size_t i = 0; i < quadwords; i++) {
+        ASM2(mov64_mem_i32, M_DISPLACED(M_FLAG_BUFFER, 8 * i), 0);
+      }
+    }
   }
 
   // If we've already found a match, we needn't push the initial state; clear M_INITIAL_STATE_PUSHED
@@ -984,12 +996,13 @@ static int compile_bytecode_instruction(assembler_t *as,
   case VM_TEST_AND_SET_FLAG: {
     assert(operand < regex->n_flags);
 
-    if (operand <= 32) {
+    if (operand < 32) {
       ASM2(bts32_reg_u8, R_FLAGS, operand);
-    } else if (operand <= 64) {
+    } else if (operand < 64) {
       ASM2(bts64_reg_u8, R_FLAGS, operand);
     } else {
-      assert(0); // FIXME
+      const size_t word_index = (operand - 64) / 32;
+      ASM2(bts32_mem_u8, M_DISPLACED(M_FLAG_BUFFER, 4 * word_index), operand % 32);
     }
 
     ASM2(jcc_label, JCC_JC, LABEL_DESTROY_STATE);

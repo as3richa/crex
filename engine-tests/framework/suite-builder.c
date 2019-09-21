@@ -12,11 +12,11 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "builder.h"
 #include "common.h"
 #include "crex.h"
+#include "suite-builder.h"
 
-struct test_suite_builder {
+struct suite_builder {
   const char *path;
   int fd;
 
@@ -33,10 +33,10 @@ struct test_suite_builder {
 #define CHECK_ERROR(condition, suite)                                                              \
   (condition || ((delete_test_suite(suite), 1) && (assert(condition), 1)))
 
-static void delete_test_suite(test_suite_builder_t *suite);
+static void delete_test_suite(suite_builder_t *suite);
 
-test_suite_builder_t *create_test_suite(const char *path) {
-  test_suite_builder_t *suite = malloc(sizeof(test_suite_builder_t));
+suite_builder_t *create_test_suite(const char *path) {
+  suite_builder_t *suite = malloc(sizeof(suite_builder_t));
   assert(suite != NULL);
 
   // User/group read-write permissions
@@ -55,16 +55,16 @@ test_suite_builder_t *create_test_suite(const char *path) {
   return suite;
 }
 
-test_suite_builder_t *create_test_suite_argv(int argc, char **argv) {
+suite_builder_t *create_test_suite_argv(int argc, char **argv) {
   assert(argc == 2);
   return create_test_suite(argv[1]);
 }
 
-static void delete_test_suite(test_suite_builder_t *suite) {
+static void delete_test_suite(suite_builder_t *suite) {
   unlink(suite->path);
 }
 
-void finalize_test_suite(test_suite_builder_t *suite) {
+void finalize_test_suite(suite_builder_t *suite) {
   ftruncate(suite->fd, suite->size);
   close(suite->fd);
 
@@ -74,9 +74,9 @@ void finalize_test_suite(test_suite_builder_t *suite) {
   free(suite);
 }
 
-static void *append_to_suite(test_suite_builder_t *suite, size_t size);
+static void *append_to_suite(suite_builder_t *suite, size_t size);
 
-void emit_pattern(test_suite_builder_t *suite,
+void emit_pattern(suite_builder_t *suite,
                   const char *pattern,
                   size_t size,
                   size_t n_capturing_groups) {
@@ -91,12 +91,18 @@ void emit_pattern(test_suite_builder_t *suite,
   suite->n_capturing_groups = n_capturing_groups;
 }
 
-void emit_pattern_str(test_suite_builder_t *suite, const char *pattern, size_t n_capturing_groups) {
+void emit_pattern_str(suite_builder_t *suite, const char *pattern, size_t n_capturing_groups) {
   emit_pattern(suite, pattern, strlen(pattern), n_capturing_groups);
 }
 
+void emit_pattern_sb(suite_builder_t *suite,
+                     const str_builder_t *pattern,
+                     size_t n_capturing_groups) {
+  emit_pattern(suite, sb2str(pattern), sb_size(pattern), n_capturing_groups);
+}
+
 static void
-variadic_emit_testcase(test_suite_builder_t *suite, const char *str, size_t size, va_list args) {
+variadic_emit_testcase(suite_builder_t *suite, const char *str, size_t size, va_list args) {
   assert(suite->n_capturing_groups != SIZE_MAX);
 
   ts_cmd_t *cmd = append_to_suite(suite, TS_STR_SIZE(size));
@@ -168,21 +174,29 @@ variadic_emit_testcase(test_suite_builder_t *suite, const char *str, size_t size
   }
 }
 
-void emit_testcase(test_suite_builder_t *suite, const char *str, size_t size, ...) {
+void emit_testcase(suite_builder_t *suite, const char *str, size_t size, ...) {
   va_list args;
   va_start(args, size);
   variadic_emit_testcase(suite, str, size, args);
   va_end(args);
 }
 
-void emit_testcase_str(test_suite_builder_t *suite, const char *str, ...) {
+void emit_testcase_str(suite_builder_t *suite, const char *str, ...) {
   va_list args;
   va_start(args, str);
   variadic_emit_testcase(suite, str, strlen(str), args);
   va_end(args);
 }
 
-static void *append_to_suite(test_suite_builder_t *suite, size_t size) {
+void emit_testcase_sb(suite_builder_t *suite, const str_builder_t *str, ...) {
+  va_list args;
+  va_start(args, str);
+  ;
+  variadic_emit_testcase(suite, sb2str(str), sb_size(str), args);
+  va_end(args);
+}
+
+static void *append_to_suite(suite_builder_t *suite, size_t size) {
   if (suite->size + size <= suite->capacity) {
     char *result = suite->mapping + suite->size;
     suite->size += size;

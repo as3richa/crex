@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "common.h"
+#include "str-builder.h"
 #include "test-harness.h"
 
 static size_t parse_size(char *str) {
@@ -32,40 +33,38 @@ static size_t parse_size(char *str) {
   return value;
 }
 
-static size_t literallify(char *result, const char *str, size_t size) {
-  char *begin = result;
+static str_builder_t *literallify(const char *str, size_t size) {
+  str_builder_t *sb = create_str_builder();
 
-  *(result++) = '"';
+  sb_putchar(sb, '"');
 
   for (size_t i = 0; i < size; i++) {
     switch (str[i]) {
     case '\\': {
-      *(result++) = '\\';
-      *(result++) = '\\';
+      sb_strcat(sb, "\\\\");
+      ;
       break;
     }
 
     case '\n': {
-      *(result++) = '\\';
-      *(result++) = '\n';
+      sb_strcat(sb, "\\n");
       break;
     }
 
     default: {
       if (isprint(str[i])) {
-        *(result++) = str[i];
+        sb_putchar(sb, str[i]);
       } else {
-        result +=
-            sprintf(result, "\\\\x%x%x", (unsigned char)str[i] / 16, (unsigned char)str[i] % 16);
+        unsigned char c = str[i];
+        sb_cat_sprintf(sb, "\\\\x%x%x", c / 16, c % 16);
       }
     }
     }
   }
 
-  *(result++) = '"';
-  *(result++) = 0;
+  sb_putchar(sb, '"');
 
-  return result - begin;
+  return sb;
 }
 
 static double delta(struct timespec *finish, struct timespec *start) {
@@ -114,10 +113,9 @@ int run(int argc, char **argv, const test_harness_t *harness) {
   options.verbose = 0;
 
   options.compile_iterations =
-      (harness->benchmark_type != BM_NONE && harness->compile_only) ? 1000 : 1;
+      (harness->benchmark_type != BM_NONE && harness->compile_only) ? 100 : 1;
 
-  options.testcase_iterations =
-      (harness->benchmark_type == BM_NONE) ? !harness->compile_only : 1000;
+  options.testcase_iterations = (harness->benchmark_type == BM_NONE) ? !harness->compile_only : 100;
 
   for (int i = 0; i < argc - 1; i++) {
     if (strcmp(paths[i], "-v") == 0) {
@@ -283,7 +281,8 @@ int run(int argc, char **argv, const test_harness_t *harness) {
           const int ok = memcmp(matches, expectation, sizeof(match_t) * n_capturing_groups) == 0;
           n_passed += ok;
 
-          if (!ok && failure.pattern == NULL && pattern->size <= 50 && str->size <= 50) {
+          if (!ok && failure.pattern == NULL &&
+              (options.verbose || (pattern->size <= 50 && str->size <= 50))) {
             failure.pattern = pattern;
             failure.str = str;
             failure.expectation = expectation;
@@ -299,6 +298,8 @@ int run(int argc, char **argv, const test_harness_t *harness) {
 
     harness->destroy_regex(harness_data, regex);
   }
+
+  harness->destroy(harness_data);
 
   struct timespec finish;
   clock_gettime(CLOCK_MONOTONIC, &finish);
@@ -319,14 +320,14 @@ int run(int argc, char **argv, const test_harness_t *harness) {
         stderr, "\x1b[33m%zu/%zu test(s) passed in %0.4fs\x1b[0m\n", n_passed, n_tests, total_time);
 
     if (failure.pattern != NULL) {
-      char buffer[1000];
+      str_builder_t *literal = literallify(failure.pattern->pattern, failure.pattern->size);
+      fprintf(stderr, "\nfailing case:\n  pattern: %s\n", sb2str(literal));
+      destroy_str_builder(literal);
 
-      literallify(buffer, failure.pattern->pattern, failure.pattern->size);
-
-      fprintf(stderr, "\nfailing case:\n  pattern: %s\n", buffer);
-
-      literallify(buffer, failure.str->str, failure.str->size);
-      fprintf(stderr, "  str: %s\n", buffer);
+      literal = literallify(failure.str->str, failure.str->size);
+      fprintf(stderr, "  str: %s\n", sb2str(literal));
+      destroy_str_builder(literal);
+      ;
 
       for (size_t k = 0; k <= 1; k++) {
         fprintf(stderr, "  %s:\n", (k == 0) ? "matches" : "expectation");
@@ -343,12 +344,14 @@ int run(int argc, char **argv, const test_harness_t *harness) {
           fprintf(stderr, "    %s%zu => ", color_code, i);
 
           if (matches[i].begin != NULL) {
-            literallify(buffer, matches[i].begin, matches[i].end - matches[i].begin);
+            literal = literallify(matches[i].begin, matches[i].end - matches[i].begin);
 
             fprintf(stderr,
                     "%s (@ %zu)\x1b[0m\n",
-                    buffer,
+                    sb2str(literal),
                     (size_t)(matches[i].begin - failure.str->str));
+
+            destroy_str_builder(literal);
           } else {
             fputs("<unmatched>\x1b[0m\n", stderr);
           }
@@ -360,6 +363,12 @@ int run(int argc, char **argv, const test_harness_t *harness) {
   }
 
   free(matches);
+
+  for (size_t i = 0; i < n_suites; i++) {
+    munmap(suites[i].mapping, suites[i].size);
+  }
+
+  free(suites);
 
   return ok;
 }
