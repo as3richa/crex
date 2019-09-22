@@ -88,6 +88,36 @@ void sb_cat_random(str_builder_t *sb, size_t min_size, size_t max_size, const ch
   }
 }
 
+void sb_cat_literal(str_builder_t *sb, const char *str, size_t size) {
+  sb_putchar(sb, '"');
+
+  for (size_t i = 0; i < size; i++) {
+    switch (str[i]) {
+    case '\\': {
+      sb_strcat(sb, "\\\\");
+      ;
+      break;
+    }
+
+    case '\n': {
+      sb_strcat(sb, "\\n");
+      break;
+    }
+
+    default: {
+      if (isprint(str[i])) {
+        sb_putchar(sb, str[i]);
+      } else {
+        unsigned char c = str[i];
+        sb_cat_sprintf(sb, "\\\\x%x%x", c / 16, c % 16);
+      }
+    }
+    }
+  }
+
+  sb_putchar(sb, '"');
+}
+
 void sb_clear(str_builder_t *sb) {
   sb->size = 0;
 }

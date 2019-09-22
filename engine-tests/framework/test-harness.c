@@ -33,40 +33,6 @@ static size_t parse_size(char *str) {
   return value;
 }
 
-static str_builder_t *literallify(const char *str, size_t size) {
-  str_builder_t *sb = create_str_builder();
-
-  sb_putchar(sb, '"');
-
-  for (size_t i = 0; i < size; i++) {
-    switch (str[i]) {
-    case '\\': {
-      sb_strcat(sb, "\\\\");
-      ;
-      break;
-    }
-
-    case '\n': {
-      sb_strcat(sb, "\\n");
-      break;
-    }
-
-    default: {
-      if (isprint(str[i])) {
-        sb_putchar(sb, str[i]);
-      } else {
-        unsigned char c = str[i];
-        sb_cat_sprintf(sb, "\\\\x%x%x", c / 16, c % 16);
-      }
-    }
-    }
-  }
-
-  sb_putchar(sb, '"');
-
-  return sb;
-}
-
 static double delta(struct timespec *finish, struct timespec *start) {
   return finish->tv_sec - start->tv_sec + (finish->tv_nsec - start->tv_nsec) / 1e9;
 }
@@ -320,14 +286,14 @@ int run(int argc, char **argv, const test_harness_t *harness) {
         stderr, "\x1b[33m%zu/%zu test(s) passed in %0.4fs\x1b[0m\n", n_passed, n_tests, total_time);
 
     if (failure.pattern != NULL) {
-      str_builder_t *literal = literallify(failure.pattern->pattern, failure.pattern->size);
-      fprintf(stderr, "\nfailing case:\n  pattern: %s\n", sb2str(literal));
-      destroy_str_builder(literal);
+      str_builder_t *sb = create_str_builder();
 
-      literal = literallify(failure.str->str, failure.str->size);
-      fprintf(stderr, "  str: %s\n", sb2str(literal));
-      destroy_str_builder(literal);
-      ;
+      sb_cat_literal(sb, failure.pattern->pattern, failure.pattern->size);
+      fprintf(stderr, "\nfailing case:\n  pattern: %s\n", sb2str(sb));
+
+      sb_clear(sb);
+      sb_cat_literal(sb, failure.str->str, failure.str->size);
+      fprintf(stderr, "  str: %s\n", sb2str(sb));
 
       for (size_t k = 0; k <= 1; k++) {
         fprintf(stderr, "  %s:\n", (k == 0) ? "matches" : "expectation");
@@ -344,20 +310,20 @@ int run(int argc, char **argv, const test_harness_t *harness) {
           fprintf(stderr, "    %s%zu => ", color_code, i);
 
           if (matches[i].begin != NULL) {
-            literal = literallify(matches[i].begin, matches[i].end - matches[i].begin);
+            sb_clear(sb);
+            sb_cat_literal(sb, matches[i].begin, matches[i].end - matches[i].begin);
 
             fprintf(stderr,
                     "%s (@ %zu)\x1b[0m\n",
-                    sb2str(literal),
+                    sb2str(sb),
                     (size_t)(matches[i].begin - failure.str->str));
-
-            destroy_str_builder(literal);
           } else {
             fputs("<unmatched>\x1b[0m\n", stderr);
           }
         }
-      }
 
+        destroy_str_builder(sb);
+      }
       free(failure.matches);
     }
   }

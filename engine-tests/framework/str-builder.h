@@ -2,6 +2,7 @@
 #define STR_BUILDER_H
 
 #include <stddef.h>
+#include <ctype.h>
 
 typedef struct str_builder str_builder_t;
 
@@ -12,6 +13,7 @@ void sb_strcat(str_builder_t *sb, const char *str);
 void sb_putchar(str_builder_t *sb, char c);
 void sb_cat_sprintf(str_builder_t *sb, const char *fmt, ...);
 void sb_cat_random(str_builder_t *sb, size_t min_size, size_t max_size, const char *characters);
+void sb_cat_literal(str_builder_t *sb, const char *str, size_t size);
 void sb_clear(str_builder_t *sb);
 
 const char *sb2str(const str_builder_t *sb);
