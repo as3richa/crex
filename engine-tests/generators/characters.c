@@ -1,4 +1,4 @@
-#include "../framework/suite-builder.h"
+#include "../suite-builder.h"
 
 int main(int argc, char **argv) {
   suite_builder_t *suite = create_test_suite_argv(argc, argv);

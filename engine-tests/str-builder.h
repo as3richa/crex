@@ -1,8 +1,8 @@
 #ifndef STR_BUILDER_H
 #define STR_BUILDER_H
 
-#include <stddef.h>
 #include <ctype.h>
+#include <stddef.h>
 
 typedef struct str_builder str_builder_t;
 

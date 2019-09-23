@@ -1,5 +1,3 @@
-#define _GNU_SOURCE // For MAP_ANONYMOUS
-
 #include <assert.h>
 #include <limits.h>
 #include <stddef.h>

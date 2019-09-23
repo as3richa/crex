@@ -1,8 +1,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../framework/str-builder.h"
-#include "../framework/suite-builder.h"
+#include "../str-builder.h"
+#include "../suite-builder.h"
 
 #define N_CASES 50000
 

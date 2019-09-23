@@ -28,12 +28,12 @@ typedef struct {
   size_t begin;
   size_t end;
   const char *substr;
-} testcase_match_t;
+} match_expectation_t;
 
-#define UNMATCHED ((testcase_match_t){SIZE_MAX, SIZE_MAX, NULL})
-#define SUBSTR(substr) ((testcase_match_t){SIZE_MAX, SIZE_MAX, substr})
-#define SUBSTR_AT(substr, begin) ((testcase_match_t){begin, SIZE_MAX, substr})
-#define SPAN(begin, end) ((testcase_match_t){begin, end, NULL})
+#define UNMATCHED ((match_expectation_t){SIZE_MAX, SIZE_MAX, NULL})
+#define SUBSTR(substr) ((match_expectation_t){SIZE_MAX, SIZE_MAX, substr})
+#define SUBSTR_AT(substr, begin) ((match_expectation_t){begin, SIZE_MAX, substr})
+#define SPAN(begin, end) ((match_expectation_t){begin, end, NULL})
 
 void emit_testcase(suite_builder_t *suite, const char *str, size_t size, ...);
 
