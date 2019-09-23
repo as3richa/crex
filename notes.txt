@@ -1,0 +1,10 @@
+- bytecode compiler inliner and branch optimizer
+- collapse chains of jmps in both native and bytecode compilers
+- special case patterns:
+  * empty
+  * single string, all combinations of anchors
+  * alternation of several strings unanchored => aho-corasick
+  * branchless patterns (don't need thread scheduler!)
+- run native compiler async?
+- backtracking engine?? can vectorize some things wrt the string
+- integrate asan's poisoning
