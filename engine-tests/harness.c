@@ -105,6 +105,57 @@ void destroy_suites(suite_t *suites, size_t n_suites) {
   free(suites);
 }
 
+const execution_engine_t **load_engines(size_t *n_engines,
+                                        const execution_engine_t *all_engines[],
+                                        char **names,
+                                        size_t n_names,
+                                        const execution_engine_t *default_engine) {
+  if (n_names == 0) {
+    const execution_engine_t **engines = malloc(sizeof(execution_engine_t *));
+    assert(engines != NULL);
+
+    engines[0] = default_engine;
+
+    return engines;
+  }
+
+  if (n_names == 1 && strcmp(names[0], "all") == 0) {
+    const size_t size = sizeof(execution_engine_t *) * (*n_engines);
+
+    const execution_engine_t **engines = malloc(size);
+    assert(engines != NULL);
+
+    memcpy(engines, all_engines, size);
+
+    return engines;
+  }
+
+  const execution_engine_t **engines = malloc(sizeof(execution_engine_t *) * n_names);
+  assert(engines);
+
+  for (size_t i = 0; i < n_names; i++) {
+    engines[i] = NULL;
+
+    for (size_t j = 0; j < *n_engines; j++) {
+      if (strcmp(names[i], all_engines[j]->name) == 0) {
+        engines[i] = all_engines[j];
+        break;
+      }
+    }
+
+    if (engines[i] == NULL) {
+      free(engines);
+      return NULL;
+    }
+  }
+
+  return engines;
+}
+
+void destroy_engines(const execution_engine_t **engines) {
+  free((void *)engines);
+}
+
 void start_timer(bench_timer_t *timer) {
   const int status = clock_gettime(CLOCK_MONOTONIC, timer);
   assert(status != -1);

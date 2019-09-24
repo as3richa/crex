@@ -10,6 +10,14 @@
 suite_t *load_suites(char **paths, size_t n_paths);
 void destroy_suites(suite_t *suites, size_t n_suites);
 
+const execution_engine_t **load_engines(size_t *n_engines,
+                                        const execution_engine_t *all_engines[],
+                                        char **names,
+                                        size_t n_names,
+                                        const execution_engine_t *default_engine);
+
+void destroy_engines(const execution_engine_t **engines);
+
 typedef struct timespec bench_timer_t;
 
 void start_timer(bench_timer_t *timer);

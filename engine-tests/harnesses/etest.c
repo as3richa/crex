@@ -22,8 +22,6 @@ extern const execution_engine_t ex_pcre_jit;
 static const execution_engine_t *all_engines[N_ENGINES] = {
     &ex_default, &ex_alloc_hygiene, &ex_pcre_default, &ex_pcre_jit};
 
-static char *default_engine_name = "default";
-
 static size_t execute_suite_with_engine(const execution_engine_t *engine,
                                         void *self,
                                         suite_t *suite,
@@ -32,51 +30,27 @@ static size_t execute_suite_with_engine(const execution_engine_t *engine,
 static void usage(char **argv);
 
 int main(int argc, char **argv) {
-  size_t n_engines;
+  size_t n_engine_names;
   char **engine_names = argv + 1;
 
-  for (n_engines = 0; n_engines < (size_t)argc - 1; n_engines++) {
-    if (strcmp(engine_names[n_engines], "--") == 0) {
+  for (n_engine_names = 0; n_engine_names < (size_t)argc - 1; n_engine_names++) {
+    if (strcmp(engine_names[n_engine_names], "--") == 0) {
       break;
     }
   }
 
-  if (n_engines == (size_t)argc - 1) {
+  if (n_engine_names + 1 >= (size_t)argc - 1) {
+    // No suites given, or missing -- seperator
     usage(argv);
     return EXIT_FAILURE;
   }
 
-  char **suite_paths = argv + 1 + n_engines + 1;
+  char **suite_paths = argv + 1 + n_engine_names + 1;
   const size_t n_suites = (argv + argc) - suite_paths;
 
-  if (n_suites == 0) {
-    usage(argv);
-    return EXIT_FAILURE;
-  }
-
-  if (n_engines == 0) {
-    n_engines = 1;
-    engine_names = &default_engine_name;
-  }
-
-  const execution_engine_t **engines = malloc(sizeof(execution_engine_t *) * n_engines);
-  assert(engines);
-
-  for (size_t i = 0; i < n_engines; i++) {
-    engines[i] = NULL;
-
-    for (size_t j = 0; j < N_ENGINES; j++) {
-      if (strcmp(engine_names[i], all_engines[j]->name) == 0) {
-        engines[i] = all_engines[j];
-        break;
-      }
-    }
-
-    if (engines[i] == NULL) {
-      usage(argv);
-      return EXIT_FAILURE;
-    }
-  }
+  size_t n_engines = N_ENGINES;
+  const execution_engine_t **engines =
+      load_engines(&n_engines, all_engines, engine_names, n_engine_names, &ex_default);
 
   bench_timer_t total_time_timer;
   start_timer(&total_time_timer);
@@ -146,17 +120,20 @@ int main(int argc, char **argv) {
   const double total_time = stop_timer(&total_time_timer);
   fprintf(stderr, "done in %0.4fs\n", total_time);
 
+  destroy_engines(engines);
   destroy_suites(suites, n_suites);
-
-  free(engines);
 
   return ok ? 0 : EXIT_FAILURE;
 }
 
 static void usage(char **argv) {
-  fprintf(stderr,
-          "usage: %s [ex. engine] [...] -- <suite> [...]\navailable execution engines:\n",
-          argv[0]);
+  const char *fmt = "usage:\n"
+                    "  %s <engine> [...] -- <suite> [...]\n"
+                    "  %s -- <suite> [...]\n"
+                    "  %s all -- <suite> [...]\n"
+                    "available engines:\n";
+
+  fprintf(stderr, fmt, argv[0], argv[0], argv[0]);
 
   for (size_t i = 0; i < N_ENGINES; i++) {
     fprintf(stderr, "  %s\n", all_engines[i]->name);
@@ -236,8 +213,7 @@ static size_t execute_suite_with_engine(const execution_engine_t *engine,
       expected_matches = suite_get_testcase_matches_pcre(suite, i);
     }
 
-    int ok = 1;
-    ok &= engine->run(self, matches, regex, str, size, allocator);
+    int ok = engine->run(self, matches, regex, str, size, allocator);
 
     if (engine->convention == CONVENTION_CREX) {
       ok &= memcmp(expected_matches, matches, sizeof(crex_match_t) * n_capturing_groups) == 0;
