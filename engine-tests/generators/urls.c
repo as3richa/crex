@@ -4,7 +4,7 @@
 #include "../str-builder.h"
 #include "../suite-builder.h"
 
-#define N_CASES 50000
+#define N_CASES 200000
 
 const char *schemes[] = {"arbe",
                          "arbela-gaugamela",

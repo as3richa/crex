@@ -55,6 +55,7 @@ suite_get_pattern(size_t *size, size_t *n_capturing_groups, const suite_t *suite
 const char *
 suite_get_testcase_str(size_t *pattern_index, size_t *size, const suite_t *suite, size_t index);
 
-void suite_get_testcase_matches(crex_match_t *matches, const suite_t *suite, size_t index);
+void suite_get_testcase_matches_crex(crex_match_t *matches, const suite_t *suite, size_t index);
+size_t *suite_get_testcase_matches_pcre(const suite_t *suite, size_t index);
 
 #endif

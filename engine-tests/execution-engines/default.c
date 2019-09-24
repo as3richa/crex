@@ -1,3 +1,5 @@
+#undef NDEBUG
+
 #include <assert.h>
 
 #include "../execution-engine.h"
@@ -34,12 +36,8 @@ static void destroy_regex(void *context, void *regex, void *allocator) {
   crex_destroy_regex(regex);
 }
 
-static int run(void *context,
-               crex_match_t *matches,
-               void *regex,
-               const char *str,
-               size_t size,
-               void *allocator) {
+static int
+run(void *context, void *matches, void *regex, const char *str, size_t size, void *allocator) {
   (void)allocator;
 
   const crex_status_t status = crex_match_groups(matches, context, regex, str, size);
@@ -49,4 +47,4 @@ static int run(void *context,
 }
 
 const execution_engine_t ex_default = {
-    "default", AT_CREX, create, destroy, compile_regex, destroy_regex, run};
+    "default", 0, 1, create, destroy, compile_regex, destroy_regex, run};

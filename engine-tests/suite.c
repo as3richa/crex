@@ -58,7 +58,7 @@ suite_get_testcase_str(size_t *pattern_index, size_t *size, const suite_t *suite
   return str;
 }
 
-void suite_get_testcase_matches(crex_match_t *matches, const suite_t *suite, size_t index) {
+void suite_get_testcase_matches_crex(crex_match_t *matches, const suite_t *suite, size_t index) {
   assert(index < suite->n_testcases);
   const suite_testcase_t *testcase = &suite->testcases[index];
   const char *str = (char *)suite->mapping + testcase->str_offset;
@@ -79,4 +79,10 @@ void suite_get_testcase_matches(crex_match_t *matches, const suite_t *suite, siz
     matches->begin = str + match[0];
     matches->end = str + match[1];
   }
+}
+
+size_t *suite_get_testcase_matches_pcre(const suite_t *suite, size_t index) {
+  assert(index < suite->n_testcases);
+  const suite_testcase_t *testcase = &suite->testcases[index];
+  return (size_t *)(suite->mapping + testcase->matches_offset);
 }

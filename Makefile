@@ -78,7 +78,7 @@ bin/engine-tests/%.bin: build/engine-tests/generators/%
 	$^ $@
 
 bin/engine-tests/%: build/engine-tests/harnesses/%.o $(ENGINE_TEST_FRAMEWORK_STATIC_LIBRARY) $(STATIC_LIBRARY)
-	$(CC) $(CFLAGS) -o $@ $^ 
+	$(CC) $(CFLAGS) $(shell pkg-config --cflags --libs libpcre2-8) -o $@ $^ 
 
 clean:
 	rm -rf build bin $(STATIC_LIBRARY) $(DYNAMIC_LIBRARY)

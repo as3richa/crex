@@ -1,8 +1,12 @@
+#define PCRE2_CODE_UNIT_WIDTH 8
+
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <pcre2.h>
 
 #include "../execution-engine.h"
 #include "../harness.h"
@@ -10,10 +14,13 @@
 
 extern const execution_engine_t ex_default;
 extern const execution_engine_t ex_alloc_hygiene;
+extern const execution_engine_t ex_pcre_default;
+extern const execution_engine_t ex_pcre_jit;
 
-#define N_ENGINES 2
+#define N_ENGINES 4
 
-static const execution_engine_t *all_engines[N_ENGINES] = {&ex_default, &ex_alloc_hygiene};
+static const execution_engine_t *all_engines[N_ENGINES] = {
+    &ex_default, &ex_alloc_hygiene, &ex_pcre_default, &ex_pcre_jit};
 
 static char *default_engine_name = "default";
 
@@ -86,7 +93,10 @@ int main(int argc, char **argv) {
     start_timer(&engine_time_timer);
 
     allocator_t allocator;
-    reset_allocator(&allocator, engine->allocator_type, 0);
+
+    if (engine->needs_allocator) {
+      reset_allocator(&allocator, engine->convention, 0);
+    }
 
     void *self = (engine->create == NULL) ? NULL : engine->create(&allocator);
 
@@ -159,8 +169,12 @@ static size_t execute_suite_with_engine(const execution_engine_t *engine,
                                         allocator_t *allocator) {
   size_t testcases_passed = 0;
 
-  crex_match_t *matches = NULL;
-  crex_match_t *expected_matches = NULL;
+  // If engine->convention == CONVENTION_CREX, matches and expected_matches are arrays of
+  // crex_match_t; otherwise, matches is a pcre_match_data and expected_matches is an array of
+  // size_t
+
+  void *matches = NULL;
+  void *expected_matches = NULL;
   size_t max_groups = 0;
 
   void *regex = NULL;
@@ -187,9 +201,20 @@ static size_t execute_suite_with_engine(const execution_engine_t *engine,
       regex = engine->compile_regex(self, pattern, pattern_size, n_capturing_groups, allocator);
 
       if (n_capturing_groups > max_groups) {
-        max_groups = n_capturing_groups;
-        matches = realloc(matches, 2 * sizeof(crex_match_t) * max_groups);
-        expected_matches = matches + max_groups;
+        if (engine->convention == CONVENTION_PCRE) {
+          // If the assertion holds, as it does as of this writing, the testcase
+          // match format on-disk is actually identical to PCRE's
+          // representation. We need not rehydrate the match data, nor allocate
+          // space for it
+          assert(sizeof(PCRE2_SIZE) == sizeof(size_t) && PCRE2_UNSET == SIZE_MAX);
+
+          pcre2_match_data_free(matches);
+          matches = pcre2_match_data_create(n_capturing_groups, NULL);
+        } else {
+          // Allocate enough for matches and expected_matches in a single allocation
+          matches = realloc(matches, sizeof(crex_match_t) * 2 * n_capturing_groups);
+          expected_matches = (crex_match_t *)matches + n_capturing_groups;
+        }
       }
 
       prev_pattern_index = pattern_index;
@@ -199,10 +224,27 @@ static size_t execute_suite_with_engine(const execution_engine_t *engine,
       continue;
     }
 
-    suite_get_testcase_matches(expected_matches, suite, i);
+    if (engine->convention == CONVENTION_CREX) {
+      suite_get_testcase_matches_crex(expected_matches, suite, i);
+    } else {
+      PCRE2_SIZE *ovector = pcre2_get_ovector_pointer(matches);
 
-    int ok = engine->run(self, matches, regex, str, size, allocator);
-    ok &= memcmp(expected_matches, matches, sizeof(crex_match_t) * n_capturing_groups) == 0;
+      for (size_t i = 0; i < 2 * n_capturing_groups; i++) {
+        ovector[i] = PCRE2_UNSET;
+      }
+
+      expected_matches = suite_get_testcase_matches_pcre(suite, i);
+    }
+
+    int ok = 1;
+    ok &= engine->run(self, matches, regex, str, size, allocator);
+
+    if (engine->convention == CONVENTION_CREX) {
+      ok &= memcmp(expected_matches, matches, sizeof(crex_match_t) * n_capturing_groups) == 0;
+    } else {
+      PCRE2_SIZE *ovector = pcre2_get_ovector_pointer(matches);
+      ok &= memcmp(expected_matches, ovector, sizeof(size_t) * 2 * n_capturing_groups) == 0;
+    }
 
     testcases_passed += ok;
   }
@@ -211,7 +253,11 @@ static size_t execute_suite_with_engine(const execution_engine_t *engine,
     engine->destroy_regex(self, regex, allocator);
   }
 
-  free(matches);
+  if (engine->convention == CONVENTION_CREX) {
+    free(matches);
+  } else {
+    pcre2_match_data_free(matches);
+  }
 
   return testcases_passed;
 }

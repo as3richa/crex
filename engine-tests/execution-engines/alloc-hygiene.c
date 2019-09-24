@@ -1,3 +1,5 @@
+#undef NDEBUG
+
 #include <assert.h>
 #include <stdlib.h>
 
@@ -81,7 +83,7 @@ static void destroy_regex(void *self, void *regex, void *allocator) {
 }
 
 static int
-run(void *self, crex_match_t *matches, void *regex, const char *str, size_t size, void *allocator) {
+run(void *self, void *matches, void *regex, const char *str, size_t size, void *allocator) {
   (void)self;
   (void)allocator;
 
@@ -123,4 +125,4 @@ run(void *self, crex_match_t *matches, void *regex, const char *str, size_t size
 }
 
 const execution_engine_t ex_alloc_hygiene = {
-    "alloc-hygiene", AT_NONE, NULL, NULL, compile_regex, destroy_regex, run};
+    "alloc-hygiene", 0, 0, NULL, NULL, compile_regex, destroy_regex, run};

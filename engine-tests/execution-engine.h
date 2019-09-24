@@ -2,12 +2,21 @@
 #define EXECUTION_ENGINE_H
 
 #include "crex.h"
-#include "harness.h"
+
+typedef enum { CONVENTION_CREX, CONVENTION_PCRE } ex_convention_t;
+
+typedef struct {
+  void *data;
+  void *(*alloc)(size_t, void *);
+  void (*free)(void *, void *);
+} pcre_allocator_t;
 
 typedef struct {
   const char *name;
 
-  allocator_type_t allocator_type;
+  ex_convention_t convention;
+
+  enum { NO_ALLOCATOR, NEEDS_ALLOCATOR } needs_allocator : 1;
 
   void *(*create)(void *allocator);
   void (*destroy)(void *self, void *allocator);
@@ -17,12 +26,7 @@ typedef struct {
 
   void (*destroy_regex)(void *self, void *regex, void *allocator);
 
-  int (*run)(void *self,
-             crex_match_t *matches,
-             void *regex,
-             const char *str,
-             size_t size,
-             void *allocator);
+  int (*run)(void *self, void *matches, void *regex, const char *str, size_t size, void *allocator);
 } execution_engine_t;
 
 #define CREX_ALLOC(allocator, size)                                                                \

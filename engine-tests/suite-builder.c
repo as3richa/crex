@@ -51,7 +51,7 @@ suite_builder_t *create_test_suite(const char *path) {
 
   suite->size = 0;
   suite->capacity = 0;
-
+  suite->mapping = NULL;
   append(suite, sizeof(suite_header_t));
 
   suite->patterns.size = 0;
@@ -75,7 +75,7 @@ suite_builder_t *create_test_suite_argv(int argc, char **argv) {
 void finalize_test_suite(suite_builder_t *suite) {
   align_to_size_t(suite);
 
-  suite_header_t *header = (void *)suite->mapping;
+  suite_header_t *header = (suite_header_t *)suite->mapping;
   header->patterns_offset = suite->size;
   header->n_patterns = suite->patterns.size;
   header->n_testcases = suite->testcases.size;

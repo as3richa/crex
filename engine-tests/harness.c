@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "execution-engine.h"
 #include "harness.h"
 #include "str-builder.h"
 #include "suite.h"
@@ -58,19 +59,15 @@ static void measured_free_pcre(void *pointer, void *data) {
   free(pointer);
 }
 
-void reset_allocator(allocator_t *allocator, allocator_type_t type, int measure) {
-  if (type == AT_NONE) {
-    return;
-  }
-
-  if (type == AT_CREX) {
+void reset_allocator(allocator_t *allocator, ex_convention_t convention, int measure) {
+  if (convention == CONVENTION_CREX) {
     allocator->u.crex.context = measure ? &allocator->stats : NULL;
     allocator->u.crex.alloc = measure ? measured_alloc_crex : default_alloc_crex;
     allocator->u.crex.free = measure ? measured_free_crex : default_free_crex;
     return;
   }
 
-  assert(type == AT_PCRE);
+  assert(convention == CONVENTION_PCRE);
 
   allocator->u.pcre.data = measure ? &allocator->stats : NULL;
   allocator->u.pcre.alloc = measure ? measured_alloc_pcre : default_alloc_pcre;
