@@ -8,3 +8,6 @@
 - run native compiler async?
 - backtracking engine?? can vectorize some things wrt the string
 - integrate asan's poisoning
+- prefix factorization algorithm: repeatedly, select all branches that share a non-empty common prefix with the highest-priority unprocessed branch
+- lookahead (even in non-backtracking mode)
+- graph based IR
