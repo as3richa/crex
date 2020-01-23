@@ -116,6 +116,8 @@ const execution_engine_t **load_engines(size_t *n_engines,
 
     engines[0] = default_engine;
 
+    *n_engines = 1;
+
     return engines;
   }
 
@@ -148,6 +150,8 @@ const execution_engine_t **load_engines(size_t *n_engines,
       return NULL;
     }
   }
+
+  *n_engines = n_names;
 
   return engines;
 }
