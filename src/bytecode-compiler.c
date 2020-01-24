@@ -1,70 +1,58 @@
 #include "bytecode-compiler.h"
 #include "vm.h"
 
-WUR static unsigned char *
-create_bytecode(bytecode_t *bytecode, size_t size, const allocator_t *allocator) {
-  bytecode->size = size;
+#define NAME bytecode
+#define CONTAINED_TYPE unsigned char
+#define STACK_CAPACITY 64
+#include "vector.c"
 
-  if (size <= BYTECODE_MAX_STACK_SIZE) {
-    return bytecode->code.stack_buffer;
+WUR static int compile_parsetree(bytecode_t *bytecode,
+                                 size_t *n_flags,
+                                 parsetree_t *tree,
+                                 const allocator_t *allocator);
+
+WUR static unsigned char *
+emit_bytecode(unsigned char *code, unsigned char opcode, size_t operand, size_t operand_size);
+
+WUR static unsigned char *emit_bytecode_copy(unsigned char *code, bytecode_t *source);
+
+WUR static unsigned char *compile_to_bytecode(size_t *size,
+                                              size_t *n_flags,
+                                              parsetree_t *tree,
+                                              const allocator_t *allocator) {
+  *n_flags = 0;
+
+  bytecode_t bytecode;
+
+  if (!compile_parsetree(&bytecode, n_flags, tree, allocator)) {
+    return NULL;
   }
 
-  bytecode->code.heap_buffer = ALLOC(allocator, size);
+  unsigned char *code = unpack_bytecode(&bytecode, size, allocator);
 
-  return bytecode->code.heap_buffer;
-}
-
-WUR static unsigned char *
-emit_bytecode(unsigned char *code, unsigned char opcode, size_t operand, size_t operand_size) {
-  *(code++) = opcode | (operand_size << 5u);
-
-  serialize_operand(code, operand, operand_size);
-  code += operand_size;
+  if (code == NULL) {
+    destroy_bytecode(&bytecode, allocator);
+    return NULL;
+  }
 
   return code;
-}
-
-WUR static unsigned char *emit_bytecode_copy(unsigned char *code, bytecode_t *source) {
-  safe_memcpy(code, BYTECODE_CODE(*source), source->size);
-  return code + source->size;
-}
-
-static void
-shrink_bytecode(bytecode_t *bytecode, unsigned char *code, const allocator_t *allocator) {
-  const size_t size = code - BYTECODE_CODE(*bytecode);
-  assert(size <= bytecode->size);
-
-  // If we initially allocated the bytecode's buffer on the heap, but in actual fact the code is
-  // within bounds to be allocated on the stack, copy it over. This is necessary because we
-  // distinguish heap- and stack-allocated bytecode buffers only by bytecode->size
-
-  if (!BYTECODE_IS_HEAP_ALLOCATED(*bytecode) || size > BYTECODE_MAX_STACK_SIZE) {
-    bytecode->size = size;
-    return;
-  }
-
-  unsigned char *heap_buffer = bytecode->code.heap_buffer;
-
-  memcpy(bytecode->code.stack_buffer, heap_buffer, size);
-  FREE(allocator, heap_buffer);
-
-  bytecode->size = size;
-
-  assert(!BYTECODE_IS_HEAP_ALLOCATED(*bytecode));
 }
 
 WUR static int compile_parsetree(bytecode_t *bytecode,
                                  size_t *n_flags,
                                  parsetree_t *tree,
                                  const allocator_t *allocator) {
-  switch (tree->type) {
-  case PT_EMPTY: {
-    unsigned char *code = create_bytecode(bytecode, 0, allocator);
-    return code != NULL;
+  create_bytecode(bytecode);
+
+  if (tree->type == PT_EMPTY) {
+    return 1;
   }
 
+  unsigned char *code;
+
+  switch (tree->type) {
   case PT_CHARACTER: {
-    unsigned char *code = create_bytecode(bytecode, 2, allocator);
+    code = bytecode_reserve(bytecode, 2, allocator);
 
     if (code == NULL) {
       return 0;
@@ -72,7 +60,7 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
 
     code = emit_bytecode(code, VM_CHARACTER, tree->data.character, 1);
 
-    return 1;
+    break;
   }
 
   case PT_CHAR_CLASS:
@@ -80,7 +68,7 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
     const size_t index = tree->data.char_class_index;
     const size_t index_size = size_for_operand(index);
 
-    unsigned char *code = create_bytecode(bytecode, 1 + index_size, allocator);
+    code = bytecode_reserve(bytecode, 1 + index_size, allocator);
 
     if (code == NULL) {
       return 0;
@@ -91,11 +79,11 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
 
     code = emit_bytecode(code, opcode, index, index_size);
 
-    return 1;
+    break;
   }
 
   case PT_ANCHOR: {
-    unsigned char *code = create_bytecode(bytecode, 1, allocator);
+    code = bytecode_reserve(bytecode, 1, allocator);
 
     if (code == NULL) {
       return 0;
@@ -105,7 +93,7 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
 
     code = emit_bytecode(code, opcode, 0, 0);
 
-    return 1;
+    break;
   }
 
   case PT_CONCATENATION: {
@@ -118,25 +106,25 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
     bytecode_t right;
 
     if (!compile_parsetree(&right, n_flags, tree->data.children.right, allocator)) {
-      DESTROY_BYTECODE(left, allocator);
+      destroy_bytecode(&left, allocator);
       return 0;
     }
 
-    unsigned char *code = create_bytecode(bytecode, left.size + right.size, allocator);
+    code = bytecode_reserve(bytecode, left.size + right.size, allocator);
 
     if (code == NULL) {
-      DESTROY_BYTECODE(left, allocator);
-      DESTROY_BYTECODE(right, allocator);
+      destroy_bytecode(&left, allocator);
+      destroy_bytecode(&right, allocator);
       return 0;
     }
 
     code = emit_bytecode_copy(code, &left);
     code = emit_bytecode_copy(code, &right);
 
-    DESTROY_BYTECODE(left, allocator);
-    DESTROY_BYTECODE(right, allocator);
+    destroy_bytecode(&left, allocator);
+    destroy_bytecode(&right, allocator);
 
-    return 1;
+    break;
   }
 
   case PT_ALTERNATION: {
@@ -149,7 +137,7 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
     bytecode_t right;
 
     if (!compile_parsetree(&right, n_flags, tree->data.children.right, allocator)) {
-      DESTROY_BYTECODE(left, allocator);
+      destroy_bytecode(&left, allocator);
       return 0;
     }
 
@@ -163,11 +151,11 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
 
     const size_t max_size = (1 + 4) + left.size + (1 + 4) + right.size + (1 + 4);
 
-    unsigned char *code = create_bytecode(bytecode, max_size, allocator);
+    code = bytecode_reserve(bytecode, max_size, allocator);
 
     if (code == NULL) {
-      DESTROY_BYTECODE(left, allocator);
-      DESTROY_BYTECODE(right, allocator);
+      destroy_bytecode(&left, allocator);
+      destroy_bytecode(&right, allocator);
       return 0;
     }
 
@@ -186,14 +174,10 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
     code = emit_bytecode_copy(code, &right);
     code = emit_bytecode(code, VM_TEST_AND_SET_FLAG, flag, flag_size);
 
-    // FIXME: strange things happening over here
+    destroy_bytecode(&left, allocator);
+    destroy_bytecode(&right, allocator);
 
-    shrink_bytecode(bytecode, code, allocator);
-
-    DESTROY_BYTECODE(left, allocator);
-    DESTROY_BYTECODE(right, allocator);
-
-    return 1;
+    break;
   }
 
   case PT_GREEDY_REPETITION:
@@ -217,10 +201,10 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
       max_size += (upper_bound - lower_bound) * ((1 + 4) + child.size) + (1 + 4);
     }
 
-    unsigned char *code = create_bytecode(bytecode, max_size, allocator);
+    code = bytecode_reserve(bytecode, max_size, allocator);
 
     if (code == NULL) {
-      DESTROY_BYTECODE(child, allocator);
+      destroy_bytecode(&child, allocator);
       return 0;
     }
 
@@ -322,7 +306,7 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
       // the end of the buffer; however, because the top level parsetree is necessarily a PT_GROUP,
       // we always free it before yielding the final compiled regex
 
-      unsigned char *end = BYTECODE_CODE(*bytecode) + max_size;
+      unsigned char *end = bytecode_buffer(bytecode) + max_size;
       unsigned char *begin = end;
 
       const size_t flag = (*n_flags)++;
@@ -356,11 +340,9 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
       code += end - begin;
     }
 
-    shrink_bytecode(bytecode, code, allocator);
+    destroy_bytecode(&child, allocator);
 
-    DESTROY_BYTECODE(child, allocator);
-
-    return 1;
+    break;
   }
 
   case PT_GROUP: {
@@ -380,11 +362,11 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
     const size_t leading_size = size_for_operand(leading_index);
     const size_t trailing_size = size_for_operand(trailing_index);
 
-    unsigned char *code =
-        create_bytecode(bytecode, (1 + leading_size) + child.size + (1 + trailing_size), allocator);
+    code = bytecode_reserve(
+        bytecode, (1 + leading_size) + child.size + (1 + trailing_size), allocator);
 
     if (code == NULL) {
-      DESTROY_BYTECODE(child, allocator);
+      destroy_bytecode(&child, allocator);
       return 0;
     }
 
@@ -392,21 +374,31 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
     code = emit_bytecode_copy(code, &child);
     code = emit_bytecode(code, VM_WRITE_POINTER, trailing_index, trailing_size);
 
-    DESTROY_BYTECODE(child, allocator);
+    destroy_bytecode(&child, allocator);
 
-    return 1;
+    break;
   }
 
   default:
     UNREACHABLE();
-    return 0;
   }
+
+  bytecode_extend(bytecode, code);
+
+  return 1;
 }
 
-WUR static int compile_to_bytecode(bytecode_t *bytecode,
-                                   size_t *n_flags,
-                                   parsetree_t *tree,
-                                   const allocator_t *allocator) {
-  *n_flags = 0;
-  return compile_parsetree(bytecode, n_flags, tree, allocator);
+WUR static unsigned char *
+emit_bytecode(unsigned char *code, unsigned char opcode, size_t operand, size_t operand_size) {
+  *(code++) = opcode | (operand_size << 5u);
+
+  serialize_operand(code, operand, operand_size);
+  code += operand_size;
+
+  return code;
+}
+
+WUR static unsigned char *emit_bytecode_copy(unsigned char *code, bytecode_t *source) {
+  safe_memcpy(code, bytecode_buffer(source), source->size);
+  return code + source->size;
 }

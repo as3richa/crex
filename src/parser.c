@@ -64,6 +64,9 @@ WUR static parsetree_t *parse(status_t *status,
 #define DIE(code)                                                                                  \
   do {                                                                                             \
     destroy_operator_stack(&operators, allocator);                                                 \
+    for (size_t i = 0; i < trees.size; i++) {                                                      \
+      destroy_parsetree(parsetree_stack_at(&trees, i), allocator);                                 \
+    }                                                                                              \
     destroy_parsetree_stack(&trees, allocator);                                                    \
     *status = code;                                                                                \
     return NULL;                                                                                   \
@@ -127,7 +130,7 @@ WUR static parsetree_t *parse(status_t *status,
       }
 
       if (!parsetree_stack_push(&trees, tree, allocator)) {
-        FREE(allocator, tree);
+        destroy_parsetree(tree, allocator);
         DIE(CREX_E_NOMEM);
       }
 
@@ -241,7 +244,7 @@ WUR static parsetree_t *parse(status_t *status,
 
   tree->type = PT_GROUP;
   tree->data.group.index = 0;
-  tree->data.group.child = *parsetree_stack_at(&trees, 0);
+  tree->data.group.child = parsetree_stack_at(&trees, 0);
 
   destroy_operator_stack(&operators, allocator);
   destroy_parsetree_stack(&trees, allocator);
@@ -306,7 +309,7 @@ WUR static int parser_push_empty(parsetree_stack_t *trees, const allocator_t *al
   tree->type = PT_EMPTY;
 
   if (!parsetree_stack_push(trees, tree, allocator)) {
-    FREE(allocator, tree);
+    destroy_parsetree(tree, allocator);
     return 0;
   }
 
@@ -388,7 +391,7 @@ WUR static int parser_pop_operator(operator_stack_t *operators,
   }
 
   if (!parsetree_stack_push(trees, tree, allocator)) {
-    FREE(allocator, tree);
+    destroy_parsetree(tree, allocator);
     return 0;
   }
 

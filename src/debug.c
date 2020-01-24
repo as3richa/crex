@@ -334,7 +334,7 @@ print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *cla
 }
 
 void crex_print_bytecode(const regex_t *regex, FILE *file) {
-  const unsigned char *base = BYTECODE_CODE(regex->bytecode);
+  const unsigned char *base = regex->bytecode.code;
   const unsigned char *code = base;
 
   for (;;) {

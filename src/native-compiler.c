@@ -786,7 +786,7 @@ static int compile_bytecode_instruction(assembler_t *as,
                                         const allocator_t *allocator) {
   ASM1(define_label, INSTR_LABEL(*index));
 
-  const unsigned char *bytecode = BYTECODE_CODE(regex->bytecode);
+  const unsigned char *bytecode = regex->bytecode.code;
 
   const unsigned char byte = bytecode[(*index)++];
 

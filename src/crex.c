@@ -23,7 +23,10 @@ struct crex_regex {
 
   char_class_t *classes;
 
-  bytecode_t bytecode;
+  struct {
+    size_t size;
+    void *code;
+  } bytecode;
 
 #ifdef NATIVE_COMPILER
   struct {
@@ -215,7 +218,10 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
     return NULL;
   }
 
-  if (!compile_to_bytecode(&regex->bytecode, &regex->n_flags, tree, allocator)) {
+  regex->bytecode.code =
+      compile_to_bytecode(&regex->bytecode.size, &regex->n_flags, tree, allocator);
+
+  if (regex->bytecode.code == NULL) {
     *status = CREX_E_NOMEM;
 
     destroy_parsetree(tree, allocator);
@@ -239,7 +245,7 @@ PUBLIC regex_t *crex_compile_with_allocator(status_t *status,
 
   if (*status != CREX_OK) {
     FREE(allocator, regex->classes);
-    DESTROY_BYTECODE(regex->bytecode, allocator);
+    FREE(allocator, regex->bytecode.code);
     FREE(allocator, regex);
     return NULL;
   }
@@ -290,7 +296,7 @@ PUBLIC void crex_destroy_regex(regex_t *regex) {
 
   // regex->allocator isn't actually an allocator (it's missing alloc) but our macros don't care
 
-  DESTROY_BYTECODE(regex->bytecode, &regex->allocator);
+  FREE(&regex->allocator, regex->bytecode.code);
   FREE(&regex->allocator, regex->classes);
 
 #ifdef NATIVE_COMPILER

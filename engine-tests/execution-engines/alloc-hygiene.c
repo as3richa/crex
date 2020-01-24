@@ -1,4 +1,5 @@
-#undef NDEBUG
+// #undef NDEBUG
+#define NDEBUG
 
 #include <assert.h>
 #include <stdlib.h>
@@ -55,17 +56,12 @@ static void *compile_regex(
       break;
     }
 
-    if (stats.allocs != stats.frees) {
-      abort();
-      return NULL;
-    }
+    assert(stats.allocs == stats.frees);
   }
 
   crex_destroy_regex(regex);
 
-  if (stats.allocs != stats.frees) {
-    return NULL;
-  }
+  assert(stats.allocs == stats.frees);
 
   regex = crex_compile(NULL, pattern, size);
   assert(regex != NULL);

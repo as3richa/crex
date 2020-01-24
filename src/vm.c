@@ -26,7 +26,7 @@ WUR static int create_vm(
   vm->matched_thread = NULL_HANDLE;
 
   vm->size = regex->bytecode.size;
-  vm->code = BYTECODE_CODE(regex->bytecode);
+  vm->code = regex->bytecode.code;
 
   vm->classes = regex->classes;
 
