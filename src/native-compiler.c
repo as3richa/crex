@@ -115,33 +115,31 @@ enum {
 // The first 64 flags are stored in a register, the remainder in memory
 #define FLAG_BUFFER_SIZE(n_flags) (((((n_flags)-64) + 63) / 64) * 8)
 
-WARN_UNUSED_RESULT static int
-compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *allocator);
+WUR static int compile_prologue(assembler_t *as, size_t n_flags, const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int
+WUR static int
 compile_string_loop(assembler_t *as, const regex_t *regex, const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int
+WUR static int
 compile_state_list_loop(assembler_t *as, const regex_t *regex, const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int compile_epilogue(assembler_t *as, const allocator_t *allocator);
+WUR static int compile_epilogue(assembler_t *as, const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int compile_allocator(assembler_t *as, const allocator_t *allocator);
+WUR static int compile_allocator(assembler_t *as, const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int
+WUR static int
 compile_push_state_copy(assembler_t *as, size_t n_capturing_groups, const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int compile_bytecode_instruction(assembler_t *as,
-                                                           regex_t *regex,
-                                                           size_t *index,
-                                                           const allocator_t *allocator);
+WUR static int compile_bytecode_instruction(assembler_t *as,
+                                            regex_t *regex,
+                                            size_t *index,
+                                            const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *allocator);
+WUR static int compile_match(assembler_t *as, const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int compile_debugging_boundary(assembler_t *as,
-                                                         const allocator_t *allocator);
+WUR static int compile_debugging_boundary(assembler_t *as, const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static status_t compile_to_native(regex_t *regex, const allocator_t *allocator) {
+WUR static status_t compile_to_native(regex_t *regex, const allocator_t *allocator) {
   assembler_t as;
   create_assembler(&as);
 
@@ -392,7 +390,7 @@ compile_string_loop(assembler_t *as, const regex_t *regex, const allocator_t *al
   return 1;
 }
 
-WARN_UNUSED_RESULT static int
+WUR static int
 compile_state_list_loop(assembler_t *as, const regex_t *regex, const allocator_t *allocator) {
   ASM2(mov64_reg_i32, R_PREDECESSOR, -1);
   ASM2(mov64_reg_mem, R_STATE, M_HEAD);
@@ -727,7 +725,7 @@ static int compile_allocator(assembler_t *as, const allocator_t *allocator) {
   return 1;
 }
 
-WARN_UNUSED_RESULT static int
+WUR static int
 compile_push_state_copy(assembler_t *as, size_t n_capturing_groups, const allocator_t *allocator) {
   ASM1(define_label, LABEL_PUSH_STATE_COPY);
 
@@ -1017,7 +1015,7 @@ static int compile_bytecode_instruction(assembler_t *as,
   return 1;
 }
 
-WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *allocator) {
+WUR static int compile_match(assembler_t *as, const allocator_t *allocator) {
   // FIXME: use 32-bit operations on R_N_POINTERS if applicable
   ASM2(cmp64_reg_i8, R_N_POINTERS, 0);
   BRANCH(jne_i8, n_pointers_nonzero);
@@ -1094,8 +1092,7 @@ WARN_UNUSED_RESULT static int compile_match(assembler_t *as, const allocator_t *
   return 1;
 }
 
-WARN_UNUSED_RESULT static int compile_debugging_boundary(assembler_t *as,
-                                                         const allocator_t *allocator) {
+WUR static int compile_debugging_boundary(assembler_t *as, const allocator_t *allocator) {
 #ifdef NDEBUG
   (void)as;
   (void)allocator;

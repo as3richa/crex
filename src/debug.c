@@ -280,17 +280,17 @@ print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *cla
 
   case PT_CONCATENATION:
     fputs("(PT_CONCATENATION\n", file);
-    print_parsetree(tree->data.children[0], depth + 1, classes, file);
+    print_parsetree(tree->data.children.left, depth + 1, classes, file);
     fputc('\n', file);
-    print_parsetree(tree->data.children[1], depth + 1, classes, file);
+    print_parsetree(tree->data.children.right, depth + 1, classes, file);
     fputc(')', file);
     break;
 
   case PT_ALTERNATION:
     fputs("(PT_ALTERNATION\n", file);
-    print_parsetree(tree->data.children[0], depth + 1, classes, file);
+    print_parsetree(tree->data.children.left, depth + 1, classes, file);
     fputc('\n', file);
-    print_parsetree(tree->data.children[1], depth + 1, classes, file);
+    print_parsetree(tree->data.children.right, depth + 1, classes, file);
     fputc(')', file);
     break;
 

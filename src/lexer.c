@@ -2,22 +2,21 @@
 
 #include "lexer.h"
 
-WARN_UNUSED_RESULT static size_t str_to_size(const char *begin, const char *end);
+WUR static size_t str_to_size(const char *begin, const char *end);
 
-WARN_UNUSED_RESULT static status_t lex_char_class(char_classes_t *classes,
-                                                  token_t *token,
-                                                  const char **pattern,
-                                                  const char *eof,
-                                                  const allocator_t *allocator);
+WUR static status_t lex_char_class(char_classes_t *classes,
+                                   token_t *token,
+                                   const char **pattern,
+                                   const char *eof,
+                                   const allocator_t *allocator);
 
-WARN_UNUSED_RESULT static int
-lex_escape_code(token_t *token, const char **pattern, const char *eof);
+WUR static int lex_escape_code(token_t *token, const char **pattern, const char *eof);
 
-WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
-                                       token_t *token,
-                                       const char **pattern,
-                                       const char *eof,
-                                       const allocator_t *allocator) {
+WUR static status_t lex(char_classes_t *classes,
+                        token_t *token,
+                        const char **pattern,
+                        const char *eof,
+                        const allocator_t *allocator) {
   assert(*pattern < eof);
 
   const unsigned char character = **pattern;
@@ -188,8 +187,7 @@ WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
   return CREX_OK;
 }
 
-WARN_UNUSED_RESULT static int
-lex_escape_code(token_t *token, const char **pattern, const char *eof) {
+WUR static int lex_escape_code(token_t *token, const char **pattern, const char *eof) {
   assert(*pattern <= eof);
 
   if (*pattern == eof) {
@@ -529,7 +527,7 @@ static status_t lex_char_class(char_classes_t *classes,
   return CREX_OK;
 }
 
-WARN_UNUSED_RESULT static size_t str_to_size(const char *begin, const char *end) {
+WUR static size_t str_to_size(const char *begin, const char *end) {
   size_t result = 0;
 
   for (const char *it = begin; it != end; it++) {

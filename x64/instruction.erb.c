@@ -1,4 +1,4 @@
-MAYBE_UNUSED static int <%= function_name %>(assembler_t *assembler, <%= param_list && "#{param_list}, " %>const allocator_t *allocator) {
+MU static int <%= function_name %>(assembler_t *assembler, <%= param_list && "#{param_list}, " %>const allocator_t *allocator) {
   (void)allocator;
 
   unsigned char* code = reserve_assembler_space(assembler, <%= max_size %>);

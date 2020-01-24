@@ -66,23 +66,22 @@ typedef enum { VM_STATUS_CONTINUE, VM_STATUS_DONE, VM_STATUS_E_NOMEM } vm_status
 
 typedef thread_status_t (*step_function_t)(vm_t *, size_t, size_t *, const char *, int, int);
 
-WARN_UNUSED_RESULT static int
+WUR static int
 create_vm(vm_t *vm, context_t *context, const regex_t *regex, size_t n_pointers, size_t extra_size);
 
-WARN_UNUSED_RESULT static vm_status_t
+WUR static vm_status_t
 run_threads(vm_t *vm, step_function_t step, const char *str, int character, int prev_character);
 
 // FIXME: semantically, the following two prototypes are private
 
-WARN_UNUSED_RESULT static thread_status_t step_thread(vm_t *vm,
-                                                      vm_handle_t thread,
-                                                      size_t *instr_pointer,
-                                                      const char *str,
-                                                      int character,
-                                                      int prev_character);
+WUR static thread_status_t step_thread(vm_t *vm,
+                                       vm_handle_t thread,
+                                       size_t *instr_pointer,
+                                       const char *str,
+                                       int character,
+                                       int prev_character);
 
-WARN_UNUSED_RESULT static vm_status_t
-on_match(vm_t *vm, vm_handle_t thread, vm_handle_t prev_thread);
+WUR static vm_status_t on_match(vm_t *vm, vm_handle_t thread, vm_handle_t prev_thread);
 
 #define BLOCK_SIZE                                                                                 \
   sizeof(union {                                                                                   \

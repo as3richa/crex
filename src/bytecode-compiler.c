@@ -1,7 +1,7 @@
 #include "bytecode-compiler.h"
 #include "vm.h"
 
-WARN_UNUSED_RESULT static unsigned char *
+WUR static unsigned char *
 create_bytecode(bytecode_t *bytecode, size_t size, const allocator_t *allocator) {
   bytecode->size = size;
 
@@ -14,7 +14,7 @@ create_bytecode(bytecode_t *bytecode, size_t size, const allocator_t *allocator)
   return bytecode->code.heap_buffer;
 }
 
-WARN_UNUSED_RESULT static unsigned char *
+WUR static unsigned char *
 emit_bytecode(unsigned char *code, unsigned char opcode, size_t operand, size_t operand_size) {
   *(code++) = opcode | (operand_size << 5u);
 
@@ -24,8 +24,7 @@ emit_bytecode(unsigned char *code, unsigned char opcode, size_t operand, size_t 
   return code;
 }
 
-WARN_UNUSED_RESULT static unsigned char *emit_bytecode_copy(unsigned char *code,
-                                                            bytecode_t *source) {
+WUR static unsigned char *emit_bytecode_copy(unsigned char *code, bytecode_t *source) {
   safe_memcpy(code, BYTECODE_CODE(*source), source->size);
   return code + source->size;
 }
@@ -54,10 +53,10 @@ shrink_bytecode(bytecode_t *bytecode, unsigned char *code, const allocator_t *al
   assert(!BYTECODE_IS_HEAP_ALLOCATED(*bytecode));
 }
 
-WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
-                                                size_t *n_flags,
-                                                parsetree_t *tree,
-                                                const allocator_t *allocator) {
+WUR static int compile_parsetree(bytecode_t *bytecode,
+                                 size_t *n_flags,
+                                 parsetree_t *tree,
+                                 const allocator_t *allocator) {
   switch (tree->type) {
   case PT_EMPTY: {
     unsigned char *code = create_bytecode(bytecode, 0, allocator);
@@ -112,13 +111,13 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
   case PT_CONCATENATION: {
     bytecode_t left;
 
-    if (!compile_parsetree(&left, n_flags, tree->data.children[0], allocator)) {
+    if (!compile_parsetree(&left, n_flags, tree->data.children.left, allocator)) {
       return 0;
     }
 
     bytecode_t right;
 
-    if (!compile_parsetree(&right, n_flags, tree->data.children[1], allocator)) {
+    if (!compile_parsetree(&right, n_flags, tree->data.children.right, allocator)) {
       DESTROY_BYTECODE(left, allocator);
       return 0;
     }
@@ -143,13 +142,13 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
   case PT_ALTERNATION: {
     bytecode_t left;
 
-    if (!compile_parsetree(&left, n_flags, tree->data.children[0], allocator)) {
+    if (!compile_parsetree(&left, n_flags, tree->data.children.left, allocator)) {
       return 0;
     }
 
     bytecode_t right;
 
-    if (!compile_parsetree(&right, n_flags, tree->data.children[1], allocator)) {
+    if (!compile_parsetree(&right, n_flags, tree->data.children.right, allocator)) {
       DESTROY_BYTECODE(left, allocator);
       return 0;
     }
@@ -404,10 +403,10 @@ WARN_UNUSED_RESULT static int compile_parsetree(bytecode_t *bytecode,
   }
 }
 
-WARN_UNUSED_RESULT static int compile_to_bytecode(bytecode_t *bytecode,
-                                                  size_t *n_flags,
-                                                  parsetree_t *tree,
-                                                  const allocator_t *allocator) {
+WUR static int compile_to_bytecode(bytecode_t *bytecode,
+                                   size_t *n_flags,
+                                   parsetree_t *tree,
+                                   const allocator_t *allocator) {
   *n_flags = 0;
   return compile_parsetree(bytecode, n_flags, tree, allocator);
 }

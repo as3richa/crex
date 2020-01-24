@@ -1,11 +1,11 @@
 #include "vm.h"
 
-WARN_UNUSED_RESULT static status_t execute_regex(void *result,
-                                                 context_t *context,
-                                                 const regex_t *regex,
-                                                 const char *str,
-                                                 size_t size,
-                                                 size_t n_pointers) {
+WUR static status_t execute_regex(void *result,
+                                  context_t *context,
+                                  const regex_t *regex,
+                                  const char *str,
+                                  size_t size,
+                                  size_t n_pointers) {
   vm_t vm;
 
   if (!create_vm(&vm, context, regex, n_pointers, 0)) {

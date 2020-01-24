@@ -26,10 +26,14 @@ typedef struct parsetree {
 
     anchor_type_t anchor_type;
 
-    struct parsetree *children[2];
+    struct {
+      struct parsetree *left;
+      struct parsetree *right;
+    } children;
 
     struct {
-      size_t lower_bound, upper_bound;
+      size_t lower_bound;
+      size_t upper_bound;
       struct parsetree *child;
     } repetition;
 
@@ -38,14 +42,17 @@ typedef struct parsetree {
       struct parsetree *child;
     } group;
   } data;
+
+  // Soon^{TM}
+  // struct parsetree *next;
 } parsetree_t;
 
-WARN_UNUSED_RESULT static parsetree_t *parse(status_t *status,
-                                             size_t *n_capturing_groups,
-                                             char_classes_t *classes,
-                                             const char *str,
-                                             size_t size,
-                                             const allocator_t *allocator);
+WUR static parsetree_t *parse(status_t *status,
+                              size_t *n_capturing_groups,
+                              char_classes_t *classes,
+                              const char *str,
+                              size_t size,
+                              const allocator_t *allocator);
 
 static void destroy_parsetree(parsetree_t *tree, const allocator_t *allocator);
 

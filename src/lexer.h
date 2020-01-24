@@ -49,10 +49,10 @@ typedef struct {
 
 #define REPETITION_INFINITY SIZE_MAX
 
-WARN_UNUSED_RESULT static status_t lex(char_classes_t *classes,
-                                       token_t *token,
-                                       const char **pattern,
-                                       const char *eof,
-                                       const allocator_t *allocator);
+WUR static status_t lex(char_classes_t *classes,
+                        token_t *token,
+                        const char **pattern,
+                        const char *eof,
+                        const allocator_t *allocator);
 
 #endif

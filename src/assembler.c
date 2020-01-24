@@ -84,8 +84,7 @@ typedef struct {
   (((target) >= (origin) && (long)((target) - (origin)) <= 2147483647L) ||                         \
    ((target) < (origin) && (long)((origin) - (target)) - 1 <= 2147483647L))
 
-WARN_UNUSED_RESULT static int resolve_assembler_labels(assembler_t *as,
-                                                       const allocator_t *allocator);
+WUR static int resolve_assembler_labels(assembler_t *as, const allocator_t *allocator);
 
 static void create_assembler(assembler_t *as) {
   as->size = 0;
@@ -107,7 +106,7 @@ static void destroy_assembler(assembler_t *as, const allocator_t *allocator) {
   munmap(as->code, as->capacity);
 }
 
-WARN_UNUSED_RESULT static unsigned char *
+WUR static unsigned char *
 finalize_assembler(size_t *size, assembler_t *as, const allocator_t *allocator) {
 
   assert(as->size <= as->capacity);
@@ -136,7 +135,7 @@ finalize_assembler(size_t *size, assembler_t *as, const allocator_t *allocator) 
   return as->code;
 }
 
-WARN_UNUSED_RESULT static int grow_assembler(assembler_t *as) {
+WUR static int grow_assembler(assembler_t *as) {
   assert(as->capacity % as->page_size == 0);
 
   const size_t capacity = 2 * as->capacity + as->page_size;
@@ -178,7 +177,7 @@ WARN_UNUSED_RESULT static int grow_assembler(assembler_t *as) {
   return 1;
 }
 
-WARN_UNUSED_RESULT static unsigned char *reserve_assembler_space(assembler_t *as, size_t size) {
+WUR static unsigned char *reserve_assembler_space(assembler_t *as, size_t size) {
   if (as->size + size > as->capacity) {
     if (!grow_assembler(as)) {
       return NULL;
@@ -196,12 +195,11 @@ static void resize_assembler(assembler_t *as, unsigned char *end) {
 
 #include "../build/x64.h"
 
-WARN_UNUSED_RESULT static label_t create_label(assembler_t *as) {
+WUR static label_t create_label(assembler_t *as) {
   return as->n_labels++;
 }
 
-WARN_UNUSED_RESULT static label_use_t *push_label_use(assembler_t *as,
-                                                      const allocator_t *allocator) {
+WUR static label_use_t *push_label_use(assembler_t *as, const allocator_t *allocator) {
   assert(as->label_uses.size <= as->label_uses.capacity);
 
   if (as->label_uses.size == as->label_uses.capacity) {
@@ -222,8 +220,7 @@ WARN_UNUSED_RESULT static label_use_t *push_label_use(assembler_t *as,
   return &as->label_uses.uses[as->label_uses.size++];
 }
 
-WARN_UNUSED_RESULT static int
-define_label(assembler_t *as, label_t label, const allocator_t *allocator) {
+WUR static int define_label(assembler_t *as, label_t label, const allocator_t *allocator) {
   label_use_t *use = push_label_use(as, allocator);
 
   if (use == NULL) {
@@ -237,8 +234,7 @@ define_label(assembler_t *as, label_t label, const allocator_t *allocator) {
   return 1;
 }
 
-WARN_UNUSED_RESULT static int
-call_label(assembler_t *as, label_t label, const allocator_t *allocator) {
+WUR static int call_label(assembler_t *as, label_t label, const allocator_t *allocator) {
   if (reserve_assembler_space(as, 5) == NULL) {
     return 0;
   }
@@ -258,8 +254,7 @@ call_label(assembler_t *as, label_t label, const allocator_t *allocator) {
   return 1;
 }
 
-WARN_UNUSED_RESULT static int
-jmp_label(assembler_t *as, label_t label, const allocator_t *allocator) {
+WUR static int jmp_label(assembler_t *as, label_t label, const allocator_t *allocator) {
   if (reserve_assembler_space(as, 5) == NULL) {
     return 0;
   }
@@ -280,7 +275,7 @@ jmp_label(assembler_t *as, label_t label, const allocator_t *allocator) {
   return 1;
 }
 
-WARN_UNUSED_RESULT static int
+WUR static int
 lea64_reg_label(assembler_t *as, reg_t reg, label_t label, const allocator_t *allocator) {
   if (reserve_assembler_space(as, 7) == NULL) {
     return 0;
@@ -302,7 +297,7 @@ lea64_reg_label(assembler_t *as, reg_t reg, label_t label, const allocator_t *al
   return 1;
 }
 
-WARN_UNUSED_RESULT static int
+WUR static int
 jcc_label(assembler_t *as, jcc_type_t jcc_type, label_t label, const allocator_t *allocator) {
   if (reserve_assembler_space(as, 6) == NULL) {
     return 0;
@@ -325,8 +320,7 @@ jcc_label(assembler_t *as, jcc_type_t jcc_type, label_t label, const allocator_t
   return 1;
 }
 
-WARN_UNUSED_RESULT static int resolve_assembler_labels(assembler_t *as,
-                                                       const allocator_t *allocator) {
+WUR static int resolve_assembler_labels(assembler_t *as, const allocator_t *allocator) {
   size_t *label_values = ALLOC(allocator, sizeof(size_t) * as->n_labels);
 
   if (label_values == NULL) {

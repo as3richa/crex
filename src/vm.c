@@ -4,9 +4,9 @@
 
 #define THREAD_SIZE(vm) (BLOCK_SIZE * (2 + (vm).n_pointers) + (vm).extra_size)
 
-WARN_UNUSED_RESULT static vm_handle_t vm_alloc(vm_t *vm, size_t size);
+WUR static vm_handle_t vm_alloc(vm_t *vm, size_t size);
 
-WARN_UNUSED_RESULT static int create_vm(
+WUR static int create_vm(
     vm_t *vm, context_t *context, const regex_t *regex, size_t n_pointers, size_t extra_size) {
   assert(n_pointers == 0 || n_pointers == 2 || n_pointers == 2 * regex->n_capturing_groups);
 
@@ -49,7 +49,7 @@ WARN_UNUSED_RESULT static int create_vm(
   return 1;
 }
 
-WARN_UNUSED_RESULT static vm_handle_t vm_alloc(vm_t *vm, size_t size) {
+WUR static vm_handle_t vm_alloc(vm_t *vm, size_t size) {
   // Round size up to the nearest multiple of the required alignment
   size = (size + BLOCK_SIZE - 1) / BLOCK_SIZE * BLOCK_SIZE;
 
@@ -96,7 +96,7 @@ static void vm_free(vm_t *vm, vm_handle_t handle) {
   vm->freelist = handle;
 }
 
-WARN_UNUSED_RESULT static vm_handle_t spawn_thread(vm_t *vm, vm_handle_t prev_thread) {
+WUR static vm_handle_t spawn_thread(vm_t *vm, vm_handle_t prev_thread) {
   const vm_handle_t thread = vm_alloc(vm, THREAD_SIZE(*vm));
 
   if (thread == NULL_HANDLE) {
@@ -121,8 +121,7 @@ WARN_UNUSED_RESULT static vm_handle_t spawn_thread(vm_t *vm, vm_handle_t prev_th
   return thread;
 }
 
-WARN_UNUSED_RESULT static int
-split_thread(vm_t *vm, size_t instr_pointer, vm_handle_t prev_thread) {
+WUR static int split_thread(vm_t *vm, size_t instr_pointer, vm_handle_t prev_thread) {
   assert(instr_pointer <= vm->size);
 
   const vm_handle_t thread = vm_alloc(vm, THREAD_SIZE(*vm));
@@ -160,12 +159,12 @@ static vm_handle_t destroy_thread(vm_t *vm, vm_handle_t thread, vm_handle_t prev
   return next_thread;
 }
 
-WARN_UNUSED_RESULT static thread_status_t step_thread(vm_t *vm,
-                                                      vm_handle_t thread,
-                                                      size_t *instr_pointer,
-                                                      const char *str,
-                                                      int character,
-                                                      int prev_character) {
+WUR static thread_status_t step_thread(vm_t *vm,
+                                       vm_handle_t thread,
+                                       size_t *instr_pointer,
+                                       const char *str,
+                                       int character,
+                                       int prev_character) {
   assert(*instr_pointer < vm->size);
 
   const unsigned char byte = vm->code[(*instr_pointer)++];
@@ -298,7 +297,7 @@ WARN_UNUSED_RESULT static thread_status_t step_thread(vm_t *vm,
   }
 }
 
-WARN_UNUSED_RESULT static vm_status_t
+WUR static vm_status_t
 run_threads(vm_t *vm, step_function_t step, const char *str, int character, int prev_character) {
   bitmap_clear(FLAGS(*vm), vm->flags_size);
 

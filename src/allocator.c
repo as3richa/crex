@@ -9,6 +9,3 @@ static void default_free(void *context, void *pointer) {
 }
 
 static const allocator_t default_allocator = {NULL, default_alloc, default_free};
-
-#define ALLOC(allocator, size) ((allocator)->alloc)((allocator)->context, size)
-#define FREE(allocator, pointer) ((allocator)->free)((allocator)->context, pointer)

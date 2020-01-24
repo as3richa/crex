@@ -1,40 +1,4 @@
-#include <assert.h>
-#include <limits.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include "crex.h"
-
-#if defined(__x86_64__) && !defined(NO_NATIVE_COMPILER)
-#define NATIVE_COMPILER
-#endif
-
-#if (defined(__GNUC__) || defined(__clang__))
-
-#define MAYBE_UNUSED __attribute__((unused))
-
-#define UNREACHABLE()                                                                              \
-  do {                                                                                             \
-    assert(0);                                                                                     \
-    __builtin_unreachable();                                                                       \
-  } while (0)
-
-#else
-
-#define MAYBE_UNUSED
-#define UNREACHABLE() assert(0)
-
-#endif
-
-// For brevity
-typedef crex_allocator_t allocator_t;
-typedef crex_context_t context_t;
-typedef crex_match_t match_t;
-typedef crex_status_t status_t;
-typedef crex_regex_t regex_t;
-#define WARN_UNUSED_RESULT CREX_WARN_UNUSED_RESULT
+#include "common.h"
 
 static void safe_memcpy(void *destination, const void *source, size_t size) {
   assert((destination != NULL && source != NULL) || size == 0);
@@ -185,13 +149,13 @@ static int bitmap_test(const unsigned char *bitmap, size_t index) {
   return (bitmap[index >> 3u] >> (index & 7u)) & 1u;
 }
 
-MAYBE_UNUSED static int bitmap_test_and_set(unsigned char *bitmap, size_t index) {
+MU static int bitmap_test_and_set(unsigned char *bitmap, size_t index) {
   const int result = bitmap_test(bitmap, index);
   bitmap_set(bitmap, index);
   return result;
 }
 
-MAYBE_UNUSED static size_t bitmap_size_for_bits(size_t bits) {
+MU static size_t bitmap_size_for_bits(size_t bits) {
   return (bits + 7) / 8;
 }
 
@@ -379,12 +343,12 @@ PUBLIC crex_status_t crex_match_groups(crex_match_t *matches,
 typedef status_t (*native_function_t)(
     void *, context_t *, const char *, const char *, size_t, const unsigned char *);
 
-WARN_UNUSED_RESULT static status_t call_regex_native_code(void *result,
-                                                          crex_context_t *context,
-                                                          const crex_regex_t *regex,
-                                                          const char *str,
-                                                          size_t size,
-                                                          size_t n_pointers) {
+WUR static status_t call_regex_native_code(void *result,
+                                           crex_context_t *context,
+                                           const crex_regex_t *regex,
+                                           const char *str,
+                                           size_t size,
+                                           size_t n_pointers) {
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic ignored "-Wpedantic"
 #endif

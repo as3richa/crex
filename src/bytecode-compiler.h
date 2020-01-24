@@ -28,9 +28,9 @@ typedef struct {
     FREE(allocator, bytecode.code.heap_buffer);                                                    \
   } while (0)
 
-WARN_UNUSED_RESULT static int compile_to_bytecode(bytecode_t *bytecode,
-                                                  size_t *n_flags,
-                                                  parsetree_t *tree,
-                                                  const allocator_t *allocator);
+WUR static int compile_to_bytecode(bytecode_t *bytecode,
+                                   size_t *n_flags,
+                                   parsetree_t *tree,
+                                   const allocator_t *allocator);
 
 #endif
