@@ -23,6 +23,7 @@ WUR static unsigned char *compile_to_bytecode(size_t *size,
   *n_flags = 0;
 
   bytecode_t bytecode;
+  create_bytecode(&bytecode);
 
   if (!compile_parsetree(&bytecode, n_flags, tree, allocator)) {
     return NULL;
@@ -42,17 +43,13 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
                                  size_t *n_flags,
                                  parsetree_t *tree,
                                  const allocator_t *allocator) {
-  create_bytecode(bytecode);
-
   if (tree->type == PT_EMPTY) {
     return 1;
   }
 
-  unsigned char *code;
-
   switch (tree->type) {
   case PT_CHARACTER: {
-    code = bytecode_reserve(bytecode, 2, allocator);
+    unsigned char *code = bytecode_reserve(bytecode, 2, allocator);
 
     if (code == NULL) {
       return 0;
@@ -60,7 +57,9 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
 
     code = emit_bytecode(code, VM_CHARACTER, tree->data.character, 1);
 
-    break;
+    bytecode_extend(bytecode, code);
+
+    return 1;
   }
 
   case PT_CHAR_CLASS:
@@ -68,7 +67,7 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
     const size_t index = tree->data.char_class_index;
     const size_t index_size = size_for_operand(index);
 
-    code = bytecode_reserve(bytecode, 1 + index_size, allocator);
+    unsigned char *code = bytecode_reserve(bytecode, 1 + index_size, allocator);
 
     if (code == NULL) {
       return 0;
@@ -79,11 +78,13 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
 
     code = emit_bytecode(code, opcode, index, index_size);
 
-    break;
+    bytecode_extend(bytecode, code);
+
+    return 1;
   }
 
   case PT_ANCHOR: {
-    code = bytecode_reserve(bytecode, 1, allocator);
+    unsigned char *code = bytecode_reserve(bytecode, 1, allocator);
 
     if (code == NULL) {
       return 0;
@@ -93,51 +94,38 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
 
     code = emit_bytecode(code, opcode, 0, 0);
 
-    break;
+    bytecode_extend(bytecode, code);
+
+    return 1;
   }
 
   case PT_CONCATENATION: {
-    bytecode_t left;
-
-    if (!compile_parsetree(&left, n_flags, tree->data.children.left, allocator)) {
+    if (!compile_parsetree(bytecode, n_flags, tree->data.children.left, allocator)) {
       return 0;
     }
 
-    bytecode_t right;
-
-    if (!compile_parsetree(&right, n_flags, tree->data.children.right, allocator)) {
-      destroy_bytecode(&left, allocator);
+    if (!compile_parsetree(bytecode, n_flags, tree->data.children.right, allocator)) {
       return 0;
     }
 
-    code = bytecode_reserve(bytecode, left.size + right.size, allocator);
-
-    if (code == NULL) {
-      destroy_bytecode(&left, allocator);
-      destroy_bytecode(&right, allocator);
-      return 0;
-    }
-
-    code = emit_bytecode_copy(code, &left);
-    code = emit_bytecode_copy(code, &right);
-
-    destroy_bytecode(&left, allocator);
-    destroy_bytecode(&right, allocator);
-
-    break;
+    return 1;
   }
 
   case PT_ALTERNATION: {
     bytecode_t left;
+    create_bytecode(&left);
 
     if (!compile_parsetree(&left, n_flags, tree->data.children.left, allocator)) {
+      destroy_bytecode(&left, allocator);
       return 0;
     }
 
     bytecode_t right;
+    create_bytecode(&right);
 
     if (!compile_parsetree(&right, n_flags, tree->data.children.right, allocator)) {
       destroy_bytecode(&left, allocator);
+      destroy_bytecode(&right, allocator);
       return 0;
     }
 
@@ -151,7 +139,7 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
 
     const size_t max_size = (1 + 4) + left.size + (1 + 4) + right.size + (1 + 4);
 
-    code = bytecode_reserve(bytecode, max_size, allocator);
+    unsigned char *code = bytecode_reserve(bytecode, max_size, allocator);
 
     if (code == NULL) {
       destroy_bytecode(&left, allocator);
@@ -177,14 +165,18 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
     destroy_bytecode(&left, allocator);
     destroy_bytecode(&right, allocator);
 
-    break;
+    bytecode_extend(bytecode, code);
+
+    return 1;
   }
 
   case PT_GREEDY_REPETITION:
   case PT_LAZY_REPETITION: {
     bytecode_t child;
+    create_bytecode(&child);
 
     if (!compile_parsetree(&child, n_flags, tree->data.repetition.child, allocator)) {
+      destroy_bytecode(&child, allocator);
       return 0;
     }
 
@@ -201,7 +193,10 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
       max_size += (upper_bound - lower_bound) * ((1 + 4) + child.size) + (1 + 4);
     }
 
-    code = bytecode_reserve(bytecode, max_size, allocator);
+    unsigned char *code = bytecode_reserve(bytecode, max_size, allocator);
+
+    // FIXME: this is vile
+    unsigned char *end = code + max_size;
 
     if (code == NULL) {
       destroy_bytecode(&child, allocator);
@@ -306,7 +301,6 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
       // the end of the buffer; however, because the top level parsetree is necessarily a PT_GROUP,
       // we always free it before yielding the final compiled regex
 
-      unsigned char *end = bytecode_buffer(bytecode) + max_size;
       unsigned char *begin = end;
 
       const size_t flag = (*n_flags)++;
@@ -342,7 +336,9 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
 
     destroy_bytecode(&child, allocator);
 
-    break;
+    bytecode_extend(bytecode, code);
+
+    return 1;
   }
 
   case PT_GROUP: {
@@ -351,8 +347,10 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
     }
 
     bytecode_t child;
+    create_bytecode(&child);
 
     if (!compile_parsetree(&child, n_flags, tree->data.group.child, allocator)) {
+      destroy_bytecode(&child, allocator);
       return 0;
     }
 
@@ -362,8 +360,9 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
     const size_t leading_size = size_for_operand(leading_index);
     const size_t trailing_size = size_for_operand(trailing_index);
 
-    code = bytecode_reserve(
-        bytecode, (1 + leading_size) + child.size + (1 + trailing_size), allocator);
+    const size_t max_size = (1 + leading_size) + child.size + (1 + trailing_size);
+
+    unsigned char *code = bytecode_reserve(bytecode, max_size, allocator);
 
     if (code == NULL) {
       destroy_bytecode(&child, allocator);
@@ -376,16 +375,14 @@ WUR static int compile_parsetree(bytecode_t *bytecode,
 
     destroy_bytecode(&child, allocator);
 
-    break;
+    bytecode_extend(bytecode, code);
+
+    return 1;
   }
 
   default:
     UNREACHABLE();
   }
-
-  bytecode_extend(bytecode, code);
-
-  return 1;
 }
 
 WUR static unsigned char *
