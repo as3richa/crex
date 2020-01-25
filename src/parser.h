@@ -4,7 +4,6 @@
 #include "lexer.h"
 
 typedef enum {
-  PT_CONCATENATION,
   PT_ALTERNATION,
   PT_GREEDY_REPETITION,
   PT_LAZY_REPETITION,
@@ -29,7 +28,7 @@ typedef struct parsetree {
     struct {
       struct parsetree *left;
       struct parsetree *right;
-    } children;
+    } alternation;
 
     struct {
       size_t lower_bound;
@@ -43,8 +42,7 @@ typedef struct parsetree {
     } group;
   } data;
 
-  // Soon^{TM}
-  // struct parsetree *next;
+  struct parsetree *next;
 } parsetree_t;
 
 WUR static parsetree_t *parse(status_t *status,

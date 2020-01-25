@@ -129,6 +129,8 @@ WUR static parsetree_t *parse(status_t *status,
         UNREACHABLE();
       }
 
+      tree->next = NULL;
+
       if (!parsetree_stack_push(&trees, tree, allocator)) {
         destroy_parsetree(tree, allocator);
         DIE(CREX_E_NOMEM);
@@ -245,6 +247,7 @@ WUR static parsetree_t *parse(status_t *status,
   tree->type = PT_GROUP;
   tree->data.group.index = 0;
   tree->data.group.child = parsetree_stack_at(&trees, 0);
+  tree->next = NULL;
 
   destroy_operator_stack(&operators, allocator);
   destroy_parsetree_stack(&trees, allocator);
@@ -266,13 +269,12 @@ static void destroy_parsetree(parsetree_t *tree, const allocator_t *allocator) {
       return;
     }
 
-    case PT_CONCATENATION:
     case PT_ALTERNATION: {
       // Destroy one subtree recursively
-      destroy_parsetree(tree->data.children.left, allocator);
+      destroy_parsetree(tree->data.alternation.left, allocator);
 
       // Destroy the other iteratively
-      parsetree_t *child = tree->data.children.right;
+      parsetree_t *child = tree->data.alternation.right;
       FREE(allocator, tree);
       tree = child;
       break;
@@ -307,6 +309,7 @@ WUR static int parser_push_empty(parsetree_stack_t *trees, const allocator_t *al
   }
 
   tree->type = PT_EMPTY;
+  tree->next = NULL;
 
   if (!parsetree_stack_push(trees, tree, allocator)) {
     destroy_parsetree(tree, allocator);
@@ -345,13 +348,21 @@ WUR static int parser_pop_operator(operator_stack_t *operators,
                                    const allocator_t *allocator) {
   const operator_t op = operator_stack_pop(operators);
 
-  // Soon^{TM}
-  /* if (op->type == OP_CONCATENATION) {
+  if (op.type == OP_CONCATENATION) {
     assert(trees->size >= 2);
     parsetree_t *next = parsetree_stack_pop(trees);
-    (*parsetree_stack_top(trees))->next = next;
+
+    // FIXME: ugh
+
+    parsetree_t *tree;
+
+    for(tree = *parsetree_stack_top(trees); tree->next != NULL; tree = tree->next) {
+    }
+
+    tree->next = next;
+
     return 1;
-  } */
+  }
 
   parsetree_t *tree = ALLOC(allocator, sizeof(parsetree_t));
 
@@ -360,12 +371,11 @@ WUR static int parser_pop_operator(operator_stack_t *operators,
   }
 
   switch (op.type) {
-  case OP_ALTERNATION:
-  case OP_CONCATENATION: {
+  case OP_ALTERNATION: {
     assert(trees->size >= 2);
-    tree->type = (op.type == OP_ALTERNATION) ? PT_ALTERNATION : PT_CONCATENATION;
-    tree->data.children.right = parsetree_stack_pop(trees);
-    tree->data.children.left = parsetree_stack_pop(trees);
+    tree->type = PT_ALTERNATION;
+    tree->data.alternation.right = parsetree_stack_pop(trees);
+    tree->data.alternation.left = parsetree_stack_pop(trees);
     break;
   }
 
@@ -389,6 +399,8 @@ WUR static int parser_pop_operator(operator_stack_t *operators,
   default:
     UNREACHABLE();
   }
+
+  tree->next = NULL;
 
   if (!parsetree_stack_push(trees, tree, allocator)) {
     destroy_parsetree(tree, allocator);

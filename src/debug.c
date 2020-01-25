@@ -278,19 +278,20 @@ print_parsetree(const parsetree_t *tree, size_t depth, const char_classes_t *cla
     fprintf(file, "(PT_ANCHOR %s)", anchor_type_to_str(tree->data.anchor_type));
     break;
 
-  case PT_CONCATENATION:
+  // FIXME
+  /* case PT_CONCATENATION:
     fputs("(PT_CONCATENATION\n", file);
     print_parsetree(tree->data.children.left, depth + 1, classes, file);
     fputc('\n', file);
     print_parsetree(tree->data.children.right, depth + 1, classes, file);
     fputc(')', file);
-    break;
+    break; */
 
   case PT_ALTERNATION:
     fputs("(PT_ALTERNATION\n", file);
-    print_parsetree(tree->data.children.left, depth + 1, classes, file);
+    print_parsetree(tree->data.alternation.left, depth + 1, classes, file);
     fputc('\n', file);
-    print_parsetree(tree->data.children.right, depth + 1, classes, file);
+    print_parsetree(tree->data.alternation.right, depth + 1, classes, file);
     fputc(')', file);
     break;
 
