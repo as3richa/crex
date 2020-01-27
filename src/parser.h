@@ -3,7 +3,12 @@
 
 #include "lexer.h"
 
+#define NAME concatenation
+#define CONTAINED_TYPE struct parsetree *
+#include "vector.h"
+
 typedef enum {
+  PT_CONCATENATION,
   PT_ALTERNATION,
   PT_GREEDY_REPETITION,
   PT_LAZY_REPETITION,
@@ -25,6 +30,8 @@ typedef struct parsetree {
 
     anchor_type_t anchor_type;
 
+    concatenation_t concatenation;
+
     struct {
       struct parsetree *left;
       struct parsetree *right;
@@ -41,8 +48,6 @@ typedef struct parsetree {
       struct parsetree *child;
     } group;
   } data;
-
-  struct parsetree *next;
 } parsetree_t;
 
 WUR static parsetree_t *parse(status_t *status,

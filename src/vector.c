@@ -1,32 +1,26 @@
-#include "common.h"
+#define VECTOR_C
 
-#define PASTE(x, y) x##y
-#define C(x, y) PASTE(x, y)
-
-#define TYPE C(NAME, _t)
-
-// L for lifecycle (constructor, etc.), M for method
-#define L(method_name) C(C(method_name, _), NAME)
-#define M(method_name) C(C(NAME, _), method_name)
-
-typedef struct {
-  size_t size;
-  size_t capacity;
-
-  union {
-    CONTAINED_TYPE stack[STACK_CAPACITY];
-    CONTAINED_TYPE *heap;
-  } buffer;
-} TYPE;
+#include "vector.h"
 
 MU WUR static int M(heap_allocated)(const TYPE *vector) {
+#ifdef STACK_CAPACITY
   assert(vector->capacity >= STACK_CAPACITY);
   return vector->capacity > STACK_CAPACITY;
+#else
+  (void)vector;
+  return 1;
+#endif
 }
 
 static void L(create)(TYPE *vector) {
   vector->size = 0;
+
+#ifdef STACK_CAPACITY
   vector->capacity = STACK_CAPACITY;
+#else
+  vector->capacity = 0;
+  vector->buffer.heap = NULL;
+#endif
 }
 
 static void L(destroy)(TYPE *vector, const allocator_t *allocator) {
@@ -38,6 +32,7 @@ static void L(destroy)(TYPE *vector, const allocator_t *allocator) {
 }
 
 MU static CONTAINED_TYPE *L(unpack)(TYPE *vector, size_t *size, const allocator_t *allocator) {
+#ifdef STACK_CAPACITY
   if (M(heap_allocated)(vector)) {
     *size = vector->size;
     return vector->buffer.heap;
@@ -53,21 +48,40 @@ MU static CONTAINED_TYPE *L(unpack)(TYPE *vector, size_t *size, const allocator_
 
   *size = vector->size;
   return buffer;
+#else
+  (void)allocator;
+  *size = vector->size;
+  return vector->buffer.heap;
+#endif
 }
 
 MU WUR static CONTAINED_TYPE *M(buffer)(TYPE *vector) {
+#ifdef STACK_CAPACITY
   assert(vector->capacity >= STACK_CAPACITY);
 
   if (vector->capacity == STACK_CAPACITY) {
     return vector->buffer.stack;
   }
+#endif
 
   return vector->buffer.heap;
 }
 
-MU WUR static CONTAINED_TYPE M(at)(TYPE *vector, size_t index) {
+MU static CONTAINED_TYPE const *M(const_buffer)(const TYPE *vector) {
+#ifdef STACK_CAPACITY
+  assert(vector->capacity >= STACK_CAPACITY);
+
+  if (vector->capacity == STACK_CAPACITY) {
+    return vector->buffer.stack;
+  }
+#endif
+
+  return vector->buffer.heap;
+}
+
+MU WUR static CONTAINED_TYPE M(at)(const TYPE *vector, size_t index) {
   assert(index < vector->size);
-  return M(buffer)(vector)[index];
+  return M(const_buffer)(vector)[index];
 }
 
 MU WUR static int M(empty)(const TYPE *vector) {
@@ -78,7 +92,13 @@ MU WUR static CONTAINED_TYPE *M(reserve)(TYPE *vector, size_t size, const alloca
   assert(vector->size <= vector->capacity);
 
   if (vector->size + size > vector->capacity) {
-    const size_t capacity = 2 * (vector->size + size);
+    size_t capacity = 2 * (vector->size + size);
+
+#ifdef MIN_ALLOCATION
+    if (capacity < MIN_ALLOCATION) {
+      capacity = MIN_ALLOCATION;
+    }
+#endif
 
     CONTAINED_TYPE *buffer = ALLOC(allocator, sizeof(CONTAINED_TYPE) * capacity);
 
@@ -86,7 +106,12 @@ MU WUR static CONTAINED_TYPE *M(reserve)(TYPE *vector, size_t size, const alloca
       return NULL;
     }
 
+#ifdef STACK_CAPACITY
+    // If STACK_CAPACITY is defined, M(buffer)(vector) is guaranteed to be non-null
     memcpy(buffer, M(buffer)(vector), sizeof(CONTAINED_TYPE) * vector->size);
+#else
+    safe_memcpy(buffer, M(buffer)(vector), sizeof(CONTAINED_TYPE) * vector->size);
+#endif
 
     if (M(heap_allocated)(vector)) {
       FREE(allocator, vector->buffer.heap);
@@ -137,6 +162,8 @@ MU WUR static CONTAINED_TYPE *M(top)(TYPE *vector) {
 #undef NAME
 #undef CONTAINED_TYPE
 #undef STACK_CAPACITY
+#undef STRUCT_DEFINED
+
 #undef PASTE
 #undef C
 #undef TYPE
